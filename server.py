@@ -1033,7 +1033,9 @@ async def halopsa_get_recurring_invoices(
                 params=params,
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
             response.raise_for_status()
-            data = response.json() recurring = data.get("invoices", data.get("recurring_invoices", [])) # Or if it's a root array: # recurring = data if isinstance(data, list) else data.get("invoices", [])
+            response.raise_for_status()
+            data = response.json()
+            recurring = data.get("invoices", data.get("recurring_invoices", []))
         
         if not recurring:
             return "No recurring invoices found."
