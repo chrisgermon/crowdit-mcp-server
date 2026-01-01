@@ -1,6 +1,6 @@
 """
 Crowd IT Unified MCP Server
-Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, and Pax8 integration.
+Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, and Maxotel VoIP integration.
 """
 
 import os
@@ -21,7 +21,7 @@ CLOUD_RUN_URL = os.getenv("CLOUD_RUN_URL", "https://crowdit-mcp-server-lypf4vkh4
 
 mcp = FastMCP(
     name="crowdit-mcp-server",
-    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, and Pax8 integration for MSP operations.",
+    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, and Maxotel VoIP integration for MSP operations.",
     stateless_http=True  # Required for Cloud Run - enables stateless sessions
 )
 
@@ -5208,6 +5208,730 @@ async def bigquery_sample_data(
 
 
 # ============================================================================
+# Maxotel VoIP Integration
+# ============================================================================
+
+class MaxotelConfig:
+    """Maxotel API configuration using username + API key authentication."""
+    def __init__(self):
+        self.username = os.getenv("MAXOTEL_USERNAME", "")
+        self.api_key = os.getenv("MAXOTEL_API_KEY", "")
+        self.base_url = "https://api.maxo.com.au/wla/"
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.username) and bool(self.api_key)
+
+    def get_base_params(self) -> dict:
+        """Get base query parameters for all API requests."""
+        return {
+            "user": self.username,
+            "key": self.api_key
+        }
+
+maxotel_config = MaxotelConfig()
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def maxotel_get_cdr(
+    start_date: str = Field(..., description="Start date/time in YYYY-MM-DD or YYYY-MM-DD HH:MM:SS format"),
+    end_date: str = Field(..., description="End date/time in YYYY-MM-DD or YYYY-MM-DD HH:MM:SS format"),
+    charges_only: bool = Field(False, description="If true, only include calls with charges"),
+    connected_only: bool = Field(False, description="If true, only include connected calls"),
+    accref: Optional[str] = Field(None, description="Filter by account/billing reference"),
+    client_id: Optional[str] = Field(None, description="Filter by MaxoTel client ID"),
+    cust_id: Optional[str] = Field(None, description="Filter by customer ID"),
+    limit: int = Field(100, description="Maximum number of records to return")
+) -> str:
+    """
+    Get Call Detail Records (CDR) from Maxotel VoIP system.
+    Returns call history including direction, duration, origin, destination, and costs.
+    """
+    if not maxotel_config.is_configured:
+        return "Error: Maxotel not configured. Set MAXOTEL_USERNAME and MAXOTEL_API_KEY environment variables."
+
+    try:
+        # Parse dates to unix timestamps
+        from datetime import datetime as dt
+
+        def parse_to_unix(date_str: str) -> int:
+            for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]:
+                try:
+                    return int(dt.strptime(date_str, fmt).timestamp())
+                except ValueError:
+                    continue
+            raise ValueError(f"Invalid date format: {date_str}")
+
+        start_unix = parse_to_unix(start_date)
+        end_unix = parse_to_unix(end_date)
+
+        params = maxotel_config.get_base_params()
+        params.update({
+            "action": "getcdr",
+            "chargesonly": "1" if charges_only else "0",
+            "start": str(start_unix),
+            "end": str(end_unix)
+        })
+
+        if connected_only:
+            params["connectedonly"] = "1"
+        if accref:
+            params["accref"] = accref
+        if client_id:
+            params["clientid"] = client_id
+        if cust_id:
+            params["custid"] = cust_id
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(maxotel_config.base_url, params=params, timeout=60.0)
+            response.raise_for_status()
+            data = response.json()
+
+        if data.get("response") == "ERROR":
+            return f"Maxotel API Error: {data.get('response_text', 'Unknown error')}"
+
+        response_data = data.get("response_data", {})
+        call_count = response_data.get("Calls", 0)
+        calls = response_data.get("call_data", [])
+
+        if not calls:
+            return "No call records found for the specified period."
+
+        # Limit results
+        calls = calls[:limit]
+
+        # Format as markdown table
+        output = [
+            f"# Call Detail Records\n",
+            f"**Period:** {start_date} to {end_date}",
+            f"**Total Calls:** {call_count}\n",
+            "| Date/Time | Direction | Origin | Destination | Duration | Status | Cost |",
+            "| --- | --- | --- | --- | --- | --- | --- |"
+        ]
+
+        for call in calls:
+            datetime_str = call.get("datetime", "N/A")
+            direction = call.get("direction", "N/A")
+            origin = call.get("origin", "N/A")
+            destination = call.get("destination", "N/A")
+            duration = call.get("duration_2", call.get("duration", "N/A"))
+            status = call.get("status", "N/A")
+            cost = f"${float(call.get('cost', 0)):.2f}" if call.get("cost") else "$0.00"
+
+            output.append(f"| {datetime_str} | {direction} | {origin} | {destination} | {duration} | {status} | {cost} |")
+
+        if len(calls) < call_count:
+            output.append(f"\n*Showing {len(calls)} of {call_count} records*")
+
+        return "\n".join(output)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Maxotel CDR error: {e}")
+        return f"Maxotel error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def maxotel_get_cdr_csv(
+    start_date: str = Field(..., description="Start date/time in YYYY-MM-DD or YYYY-MM-DD HH:MM:SS format"),
+    end_date: str = Field(..., description="End date/time in YYYY-MM-DD or YYYY-MM-DD HH:MM:SS format"),
+    charges_only: bool = Field(False, description="If true, only include calls with charges"),
+    connected_only: bool = Field(False, description="If true, only include connected calls"),
+    accref: Optional[str] = Field(None, description="Filter by account/billing reference"),
+    include_headings: bool = Field(True, description="Include header row in CSV output")
+) -> str:
+    """
+    Export Call Detail Records (CDR) as CSV format from Maxotel VoIP system.
+    Useful for bulk data export and analysis.
+    """
+    if not maxotel_config.is_configured:
+        return "Error: Maxotel not configured. Set MAXOTEL_USERNAME and MAXOTEL_API_KEY environment variables."
+
+    try:
+        from datetime import datetime as dt
+
+        def parse_to_unix(date_str: str) -> int:
+            for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]:
+                try:
+                    return int(dt.strptime(date_str, fmt).timestamp())
+                except ValueError:
+                    continue
+            raise ValueError(f"Invalid date format: {date_str}")
+
+        start_unix = parse_to_unix(start_date)
+        end_unix = parse_to_unix(end_date)
+
+        params = maxotel_config.get_base_params()
+        params.update({
+            "action": "getcdrcsv",
+            "chargesonly": "1" if charges_only else "0",
+            "start": str(start_unix),
+            "end": str(end_unix)
+        })
+
+        if connected_only:
+            params["connectedonly"] = "1"
+        if accref:
+            params["accref"] = accref
+        if include_headings:
+            params["showheadings"] = "1"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(maxotel_config.base_url, params=params, timeout=60.0)
+            response.raise_for_status()
+
+        csv_content = response.text
+        if not csv_content.strip():
+            return "No call records found for the specified period."
+
+        # Return CSV with markdown code block formatting
+        lines = csv_content.strip().split('\n')
+        return f"# CDR Export (CSV)\n\n**Period:** {start_date} to {end_date}\n**Records:** {len(lines) - (1 if include_headings else 0)}\n\n```csv\n{csv_content}\n```"
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Maxotel CDR CSV error: {e}")
+        return f"Maxotel error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def maxotel_get_customer_transactions(
+    start_date: str = Field(..., description="Start date/time in YYYY-MM-DD or YYYY-MM-DD HH:MM:SS format"),
+    end_date: str = Field(..., description="End date/time in YYYY-MM-DD or YYYY-MM-DD HH:MM:SS format"),
+    accref: Optional[str] = Field(None, description="Filter by account/billing reference"),
+    client_id: Optional[str] = Field(None, description="Filter by MaxoTel client ID"),
+    cust_id: Optional[str] = Field(None, description="Filter by customer ID"),
+    subscriptions_only: bool = Field(False, description="Show only subscription-related transactions"),
+    payments_only: bool = Field(False, description="Show only payment transactions"),
+    as_csv: bool = Field(False, description="Return results as CSV format")
+) -> str:
+    """
+    Get customer transaction details from Maxotel.
+    Includes payments, subscriptions, and other account transactions.
+    """
+    if not maxotel_config.is_configured:
+        return "Error: Maxotel not configured. Set MAXOTEL_USERNAME and MAXOTEL_API_KEY environment variables."
+
+    try:
+        from datetime import datetime as dt
+
+        def parse_to_unix(date_str: str) -> int:
+            for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]:
+                try:
+                    return int(dt.strptime(date_str, fmt).timestamp())
+                except ValueError:
+                    continue
+            raise ValueError(f"Invalid date format: {date_str}")
+
+        start_unix = parse_to_unix(start_date)
+        end_unix = parse_to_unix(end_date)
+
+        params = maxotel_config.get_base_params()
+        params.update({
+            "action": "getCustTxns",
+            "start": str(start_unix),
+            "end": str(end_unix)
+        })
+
+        if accref:
+            params["accref"] = accref
+        if client_id:
+            params["clientid"] = client_id
+        if cust_id:
+            params["custid"] = cust_id
+        if subscriptions_only:
+            params["subscriptionsonly"] = "1"
+        if payments_only:
+            params["paymentsonly"] = "1"
+        if as_csv:
+            params["getcsv"] = "1"
+            params["showheadings"] = "1"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(maxotel_config.base_url, params=params, timeout=60.0)
+            response.raise_for_status()
+
+        if as_csv:
+            csv_content = response.text
+            if not csv_content.strip():
+                return "No transactions found for the specified period."
+            lines = csv_content.strip().split('\n')
+            return f"# Customer Transactions (CSV)\n\n**Period:** {start_date} to {end_date}\n**Records:** {len(lines) - 1}\n\n```csv\n{csv_content}\n```"
+
+        data = response.json()
+
+        if data.get("response") == "ERROR":
+            return f"Maxotel API Error: {data.get('response_text', 'Unknown error')}"
+
+        response_data = data.get("response_data", {})
+        txn_count = response_data.get("Transactions", 0)
+        transactions = response_data.get("transaction_data", [])
+
+        if not transactions:
+            return "No transactions found for the specified period."
+
+        output = [
+            f"# Customer Transactions\n",
+            f"**Period:** {start_date} to {end_date}",
+            f"**Total Transactions:** {txn_count}\n",
+            "| Date/Time | Description | Type | Period | Amount |",
+            "| --- | --- | --- | --- | --- |"
+        ]
+
+        total_amount = 0.0
+        for txn in transactions:
+            datetime_str = txn.get("datetime", "N/A")
+            description = txn.get("description", "N/A")[:50]
+
+            txn_type = []
+            if txn.get("payment") == "1":
+                txn_type.append("Payment")
+            if txn.get("subscription") == "1":
+                txn_type.append("Subscription")
+            type_str = ", ".join(txn_type) if txn_type else "Other"
+
+            period = txn.get("period", "-")
+            amount = float(txn.get("amount", 0))
+            total_amount += amount
+
+            output.append(f"| {datetime_str} | {description} | {type_str} | {period} | ${amount:.2f} |")
+
+        output.append(f"\n**Total Amount:** ${total_amount:.2f}")
+        return "\n".join(output)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Maxotel customer transactions error: {e}")
+        return f"Maxotel error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def maxotel_get_invoices(
+    month: int = Field(..., description="Month (1-12) the invoice was raised"),
+    year: int = Field(..., description="Year (YYYY) the invoice was raised"),
+    include_unpaid: bool = Field(False, description="Include unpaid invoices from any period")
+) -> str:
+    """
+    Get invoice details from Maxotel VoIP system.
+    Returns invoices for a specific billing month including amounts and payment status.
+    """
+    if not maxotel_config.is_configured:
+        return "Error: Maxotel not configured. Set MAXOTEL_USERNAME and MAXOTEL_API_KEY environment variables."
+
+    try:
+        params = maxotel_config.get_base_params()
+        params.update({
+            "action": "getInvoices",
+            "month": f"{month:02d}",
+            "year": str(year)
+        })
+
+        if include_unpaid:
+            params["unpaid"] = "1"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(maxotel_config.base_url, params=params, timeout=60.0)
+            response.raise_for_status()
+            data = response.json()
+
+        if data.get("response") == "ERROR":
+            return f"Maxotel API Error: {data.get('response_text', 'Unknown error')}"
+
+        response_data = data.get("response_data", {})
+        invoice_count = response_data.get("Invoices", 0)
+        invoices = response_data.get("invoice_data", [])
+
+        if not invoices:
+            return f"No invoices found for {month:02d}/{year}."
+
+        output = [
+            f"# Maxotel Invoices\n",
+            f"**Period:** {month:02d}/{year}",
+            f"**Total Invoices:** {invoice_count}\n",
+            "| Invoice ID | Customer | Business | Amount | Paid | Status |",
+            "| --- | --- | --- | --- | --- | --- |"
+        ]
+
+        total_amount = 0.0
+        total_paid = 0.0
+
+        for inv in invoices:
+            invoice_id = inv.get("invoice_id", "N/A")
+            customer = f"{inv.get('first_name', '')} {inv.get('last_name', '')}".strip() or "N/A"
+            business = inv.get("business_name", "-")[:30]
+            amount = float(inv.get("amount", 0))
+            paid = float(inv.get("amount_paid", 0))
+            status = inv.get("status", "Unknown")
+
+            total_amount += amount
+            total_paid += paid
+
+            output.append(f"| {invoice_id} | {customer} | {business} | ${amount:.2f} | ${paid:.2f} | {status} |")
+
+        output.append(f"\n**Total Amount:** ${total_amount:.2f}")
+        output.append(f"**Total Paid:** ${total_paid:.2f}")
+        output.append(f"**Outstanding:** ${total_amount - total_paid:.2f}")
+
+        return "\n".join(output)
+    except Exception as e:
+        logger.error(f"Maxotel invoices error: {e}")
+        return f"Maxotel error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def maxotel_get_transactions(
+    start_date: str = Field(..., description="Start date/time in YYYY-MM-DD or YYYY-MM-DD HH:MM:SS format"),
+    end_date: str = Field(..., description="End date/time in YYYY-MM-DD or YYYY-MM-DD HH:MM:SS format"),
+    subscriptions_only: bool = Field(False, description="Show only subscription-related transactions"),
+    payments_only: bool = Field(False, description="Show only payment transactions"),
+    as_csv: bool = Field(False, description="Return results as CSV format")
+) -> str:
+    """
+    Get wholesale transaction details from Maxotel.
+    Shows transactions at the whitelabel account level.
+    """
+    if not maxotel_config.is_configured:
+        return "Error: Maxotel not configured. Set MAXOTEL_USERNAME and MAXOTEL_API_KEY environment variables."
+
+    try:
+        from datetime import datetime as dt
+
+        def parse_to_unix(date_str: str) -> int:
+            for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]:
+                try:
+                    return int(dt.strptime(date_str, fmt).timestamp())
+                except ValueError:
+                    continue
+            raise ValueError(f"Invalid date format: {date_str}")
+
+        start_unix = parse_to_unix(start_date)
+        end_unix = parse_to_unix(end_date)
+
+        params = maxotel_config.get_base_params()
+        params.update({
+            "action": "getTxns",
+            "start": str(start_unix),
+            "end": str(end_unix)
+        })
+
+        if subscriptions_only:
+            params["subscriptionsonly"] = "1"
+        if payments_only:
+            params["paymentsonly"] = "1"
+        if as_csv:
+            params["getcsv"] = "1"
+            params["showheadings"] = "1"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(maxotel_config.base_url, params=params, timeout=60.0)
+            response.raise_for_status()
+
+        if as_csv:
+            csv_content = response.text
+            if not csv_content.strip():
+                return "No transactions found for the specified period."
+            lines = csv_content.strip().split('\n')
+            return f"# Wholesale Transactions (CSV)\n\n**Period:** {start_date} to {end_date}\n**Records:** {len(lines) - 1}\n\n```csv\n{csv_content}\n```"
+
+        data = response.json()
+
+        if data.get("response") == "ERROR":
+            return f"Maxotel API Error: {data.get('response_text', 'Unknown error')}"
+
+        response_data = data.get("response_data", {})
+        txn_count = response_data.get("Transactions", 0)
+        transactions = response_data.get("transaction_data", [])
+
+        if not transactions:
+            return "No transactions found for the specified period."
+
+        output = [
+            f"# Wholesale Transactions\n",
+            f"**Period:** {start_date} to {end_date}",
+            f"**Total Transactions:** {txn_count}\n",
+            "| Date/Time | Client ID | Description | Type | Period | Amount |",
+            "| --- | --- | --- | --- | --- | --- |"
+        ]
+
+        total_amount = 0.0
+        for txn in transactions:
+            datetime_str = txn.get("datetime", "N/A")
+            client_id = txn.get("clientid", "N/A")
+            description = txn.get("description", "N/A")[:40]
+
+            txn_type = []
+            if txn.get("payment") == "1":
+                txn_type.append("Payment")
+            if txn.get("subscription") == "1":
+                txn_type.append("Subscription")
+            type_str = ", ".join(txn_type) if txn_type else "Other"
+
+            period = txn.get("period", "-")
+            amount = float(txn.get("amount", 0))
+            total_amount += amount
+
+            output.append(f"| {datetime_str} | {client_id} | {description} | {type_str} | {period} | ${amount:.2f} |")
+
+        output.append(f"\n**Total Amount:** ${total_amount:.2f}")
+        return "\n".join(output)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Maxotel transactions error: {e}")
+        return f"Maxotel error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def maxotel_list_plans() -> str:
+    """
+    List available plans from Maxotel for customer provisioning.
+    Returns plan IDs, names, prices, and features.
+    """
+    if not maxotel_config.is_configured:
+        return "Error: Maxotel not configured. Set MAXOTEL_USERNAME and MAXOTEL_API_KEY environment variables."
+
+    try:
+        params = maxotel_config.get_base_params()
+        params.update({
+            "action": "newCustomer",
+            "list_plans": "1"
+        })
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(maxotel_config.base_url, params=params, timeout=60.0)
+            response.raise_for_status()
+            data = response.json()
+
+        if data.get("Response") == "ERROR":
+            return f"Maxotel API Error: {data.get('Response_text', 'Unknown error')}"
+
+        plans = data.get("Plans", [])
+
+        if not plans:
+            return "No plans available."
+
+        output = [
+            "# Maxotel Plans\n",
+            "| Plan ID | Name | Price | Lines | IP Trunks | PBX Extensions | DIDs | Active |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- |"
+        ]
+
+        for plan in plans:
+            plan_id = plan.get("Account_plan_id", "N/A")
+            name = plan.get("Name", "N/A")
+            price = f"${float(plan.get('Price', 0)):.2f}"
+            lines = plan.get("Lines", "0")
+            ip_trunks = plan.get("Ip_trunks", "0")
+            pbx_extens = plan.get("Pbx_extens", "0")
+            dids = plan.get("Dids", "0")
+            active = "Yes" if plan.get("Active") == "1" else "No"
+
+            output.append(f"| {plan_id} | {name} | {price} | {lines} | {ip_trunks} | {pbx_extens} | {dids} | {active} |")
+
+        output.append(f"\nTotal: {len(plans)} plan(s)")
+        return "\n".join(output)
+    except Exception as e:
+        logger.error(f"Maxotel list plans error: {e}")
+        return f"Maxotel error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False})
+async def maxotel_create_customer(
+    # Account credentials
+    account_username: str = Field(..., description="Customer username (min 6 alphanumeric characters)"),
+    account_password: str = Field(..., description="Customer password (min 6 characters)"),
+    account_cust_id: Optional[str] = Field(None, description="Your customer account reference"),
+    # Contact details
+    account_first_name: str = Field(..., description="Account holder first name (min 2 chars)"),
+    account_last_name: str = Field(..., description="Account holder surname (min 2 chars)"),
+    account_email: str = Field(..., description="Account holder email"),
+    account_mobile: Optional[str] = Field(None, description="Mobile number (min 10 digits, required if no phone)"),
+    account_phone: Optional[str] = Field(None, description="Phone number (min 10 digits, required if no mobile)"),
+    # Address
+    account_address: str = Field(..., description="Street address (min 7 chars)"),
+    account_city: str = Field(..., description="City/suburb (min 2 chars)"),
+    account_post_code: str = Field(..., description="Postcode (min 4 chars)"),
+    account_state: str = Field(..., description="State: QLD, NSW, ACT, VIC, TAS, SA, WA, NT"),
+    account_timezone: str = Field("Australia/Sydney", description="Timezone (e.g., Australia/Sydney, Australia/Melbourne)"),
+    # IPND Service Location
+    ipnd_street_number: str = Field(..., description="IPND street number"),
+    ipnd_street_name: str = Field(..., description="IPND street name (min 2, max 25 chars)"),
+    ipnd_street_type: str = Field(..., description="IPND street type (e.g., St, Ave, Rd)"),
+    ipnd_locality: str = Field(..., description="IPND suburb name"),
+    ipnd_state: str = Field(..., description="IPND state: QLD, NSW, ACT, VIC, TAS, SA, WA, NT"),
+    ipnd_postcode: str = Field(..., description="IPND postcode (4 digits)"),
+    ipnd_building_type: str = Field("OFF", description="Building type: APT, FF, FY, MB, OFF, RM, SE, SHE, SHOP, SITE, LU, VL, LLA, WE"),
+    ipnd_floor_type: str = Field("L", description="Floor type: BF, L, LG, LM, UG"),
+    # Plan & Billing
+    account_plan_id: str = Field(..., description="Plan ID (from maxotel_list_plans)"),
+    account_plan_prorated: bool = Field(True, description="Charge prorated plan fee"),
+    account_postpaid: bool = Field(False, description="True for postpaid, False for prepaid"),
+    account_credit_limit: float = Field(0.0, description="Account spend limit"),
+    # Flags
+    strict: bool = Field(True, description="When true, soft fails prevent processing"),
+    confirm: bool = Field(True, description="Activate account immediately")
+) -> str:
+    """
+    Create a new customer account in Maxotel VoIP system.
+
+    Security Warning: VoIP fraud is prevalent. Keep new customers prepaid,
+    verify details, and never set call rates to 0.
+    """
+    if not maxotel_config.is_configured:
+        return "Error: Maxotel not configured. Set MAXOTEL_USERNAME and MAXOTEL_API_KEY environment variables."
+
+    # Validate at least one phone number
+    if not account_mobile and not account_phone:
+        return "Error: Either account_mobile or account_phone is required."
+
+    try:
+        params = maxotel_config.get_base_params()
+        params["action"] = "newCustomer"
+
+        # Build POST data
+        form_data = {
+            # Account credentials
+            "account_username": account_username,
+            "account_password": account_password,
+            # Contact details
+            "account_first_name": account_first_name,
+            "account_last_name": account_last_name,
+            "account_email": account_email,
+            "account_timezone": account_timezone,
+            # Address
+            "account_address": account_address,
+            "account_city": account_city,
+            "account_post_code": account_post_code,
+            "account_state": account_state,
+            "account_country": "Australia",
+            # IPND Service Location
+            "ipnd_service_building_type": ipnd_building_type,
+            "ipnd_service_building_floor_type": ipnd_floor_type,
+            "ipnd_service_street_house_number_1": ipnd_street_number,
+            "ipnd_service_street_name_1": ipnd_street_name,
+            "ipnd_service_street_type_1": ipnd_street_type,
+            "ipnd_service_address_locality": ipnd_locality,
+            "ipnd_service_province_id": ipnd_state,
+            "ipnd_service_address_post_code": ipnd_postcode,
+            # Plan & Billing
+            "account_plan_id": account_plan_id,
+            "account_plan_prorated": "1" if account_plan_prorated else "0",
+            "account_postpaid": "1" if account_postpaid else "0",
+            "account_credit_limit": str(account_credit_limit),
+            # Flags
+            "strict": "1" if strict else "0",
+            "confirm": "1" if confirm else "0"
+        }
+
+        if account_cust_id:
+            form_data["account_cust_id"] = account_cust_id
+        if account_mobile:
+            form_data["account_mobile"] = account_mobile
+        if account_phone:
+            form_data["account_phone"] = account_phone
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                maxotel_config.base_url,
+                params=params,
+                data=form_data,
+                timeout=60.0
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        if data.get("Response") == "ERROR":
+            errors = data.get("Errors", [])
+            warnings = data.get("Warnings", [])
+
+            error_msgs = [f"- {e.get('Element', 'Unknown')}: {e.get('Error_msg', 'Error')}" for e in errors]
+            warning_msgs = [f"- {w.get('Element', 'Unknown')}: {w.get('Error_msg', 'Warning')}" for w in warnings]
+
+            output = [f"# Customer Creation Failed\n", data.get("Response_text", "Error adding customer")]
+            if error_msgs:
+                output.append("\n**Errors:**")
+                output.extend(error_msgs)
+            if warning_msgs:
+                output.append("\n**Warnings:**")
+                output.extend(warning_msgs)
+
+            return "\n".join(output)
+
+        customer = data.get("Customer", {})
+        return f"""# Customer Created Successfully
+
+**Client ID:** {customer.get('Clientid', 'N/A')}
+**Customer ID:** {customer.get('Custid', 'N/A')}
+**Account Reference:** {customer.get('Accref', 'N/A')}
+
+{data.get('Response_txt', 'Customer successfully added.')}"""
+
+    except Exception as e:
+        logger.error(f"Maxotel create customer error: {e}")
+        return f"Maxotel error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def maxotel_quick_login(
+    accref: Optional[str] = Field(None, description="Customer account reference (required if no client_id)"),
+    client_id: Optional[str] = Field(None, description="MaxoTel client ID (required if no accref)"),
+    cust_id: Optional[str] = Field(None, description="Your reference number for the customer"),
+    admin: bool = Field(False, description="True for staff access, False for customer access")
+) -> str:
+    """
+    Generate a quick login URL for a customer or staff member.
+    Allows single-sign-on into the Maxotel portal without credentials.
+
+    Token is valid for 30 seconds after generation.
+    """
+    if not maxotel_config.is_configured:
+        return "Error: Maxotel not configured. Set MAXOTEL_USERNAME and MAXOTEL_API_KEY environment variables."
+
+    if not accref and not client_id:
+        return "Error: Either accref or client_id is required."
+
+    try:
+        params = maxotel_config.get_base_params()
+        params.update({
+            "action": "quickLogin",
+            "admin": "1" if admin else "0"
+        })
+
+        if accref:
+            params["accref"] = accref
+        if client_id:
+            params["clientid"] = client_id
+        if cust_id:
+            params["custid"] = cust_id
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(maxotel_config.base_url, params=params, timeout=60.0)
+            response.raise_for_status()
+            data = response.json()
+
+        if data.get("Response") == "ERROR":
+            return f"Maxotel API Error: {data.get('Response_text', 'Unknown error')}"
+
+        response_data = data.get("Response_data", data.get("response_data", {}))
+        login_url = response_data.get("Login_url", response_data.get("login_url", ""))
+        key_valid = response_data.get("Key_valid", response_data.get("key_valid", 30))
+
+        return f"""# Quick Login Generated
+
+**Login URL:** {login_url}
+
+**Token Valid:** {key_valid} seconds
+
+**Access Type:** {"Staff (Admin)" if admin else "Customer"}
+
+Note: This URL is single-use and expires after {key_valid} seconds."""
+
+    except Exception as e:
+        logger.error(f"Maxotel quick login error: {e}")
+        return f"Maxotel error: {str(e)}"
+
+
+# ============================================================================
 # Server Status
 # ============================================================================
 
@@ -5293,6 +6017,17 @@ async def server_status() -> str:
         if not os.getenv("BIGQUERY_PROJECT_ID"):
             missing.append("BIGQUERY_PROJECT_ID")
         lines.append(f"⚠️ **BigQuery:** Missing: {', '.join(missing)}")
+
+    # Maxotel status
+    if maxotel_config.is_configured:
+        lines.append("✅ **Maxotel:** Configured")
+    else:
+        missing = []
+        if not os.getenv("MAXOTEL_USERNAME"):
+            missing.append("USERNAME")
+        if not os.getenv("MAXOTEL_API_KEY"):
+            missing.append("API_KEY")
+        lines.append(f"⚠️ **Maxotel:** Missing: {', '.join(missing)}")
 
     lines.append(f"\n**Cloud Run URL:** {CLOUD_RUN_URL}")
     return "\n".join(lines)
