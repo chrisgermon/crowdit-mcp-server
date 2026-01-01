@@ -1119,9 +1119,9 @@ async def halopsa_add_recurring_invoice_line(
         
         # First get the existing recurring invoice
         async with httpx.AsyncClient() as client:
-            response = await client.get(f"{halopsa_config.resource_server}/RecurringInvoice/{recurring_invoice_id}",
-                params={"includedetails": "true", "includelines": "true"},
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+            response = await client.get(f"{halopsa_config.resource_server}/RecurringInvoice",
+    params={"rinvoiceid": -abs(recurring_invoice_id), "includedetails": "true", "includelines": "true"},
+    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
             response.raise_for_status()
             existing = response.json()
         
