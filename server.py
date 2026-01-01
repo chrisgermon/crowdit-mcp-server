@@ -357,38 +357,38 @@ async def halopsa_get_invoices(
     """Get HaloPSA invoices."""
     if not halopsa_config.is_configured:
         return "Error: HaloPSA not configured."
-    
+
     try:
         token = await halopsa_config.get_access_token()
         params = {"count": min(limit, 100), "order": "date", "orderdesc": "true"}
-        
+
         if client_id:
             params["client_id"] = client_id
         if days:
             params["date_start"] = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.get(f"{halopsa_config.resource_server}/Invoice",
                 params=params,
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
             response.raise_for_status()
             invoices = response.json().get("invoices", [])
-        
+
         if not invoices:
             return "No invoices found."
-        
+
         results = []
         for inv in invoices[:limit]:
             inv_id = inv.get('id', 'N/A')
-            client_name = inv.get('client_name', 'Unknown')
-            total = inv.get('total', 0)
-            status_name = inv.get('status_name', 'N/A')
-            date_str = inv.get('date', '')[:10]
-            ref = inv.get('ref', 'N/A')
-            posted = "✓ Posted" if inv.get('posted_to_accounting') else "Not posted"
-            
+            client_name = inv.get('client_name', inv.get('clientname', 'Unknown'))
+            total = inv.get('total', inv.get('grosstotal', inv.get('gross_total', 0)))
+            status_name = inv.get('status_name', inv.get('statusname', inv.get('status', 'N/A')))
+            date_str = str(inv.get('date', inv.get('invoicedate', inv.get('dateoccurred', ''))))[:10]
+            ref = inv.get('ref', inv.get('invoicenumber', inv.get('invoice_number', 'N/A')))
+            posted = "✓ Posted" if inv.get('posted_to_accounting', inv.get('postedtoaccounting', False)) else "Not posted"
+
             results.append(f"**#{inv_id}** ({ref}) - {client_name}\n  Total: ${total:,.2f} | Status: {status_name} | Date: {date_str} | {posted}")
-        
+
         return f"Found {len(results)} invoice(s):\n\n" + "\n\n".join(results)
     except Exception as e:
         return f"Error: {str(e)}"
@@ -399,7 +399,7 @@ async def halopsa_get_invoice(invoice_id: int = Field(..., description="Invoice 
     """Get detailed invoice information including line items."""
     if not halopsa_config.is_configured:
         return "Error: HaloPSA not configured."
-    
+
     try:
         token = await halopsa_config.get_access_token()
         async with httpx.AsyncClient() as client:
@@ -408,32 +408,35 @@ async def halopsa_get_invoice(invoice_id: int = Field(..., description="Invoice 
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
             response.raise_for_status()
             inv = response.json()
-        
+
         lines = []
         for item in inv.get('lines', []):
-            desc = item.get('description', 'No description')[:80]
-            qty = item.get('count', 1)
-            price = item.get('price', 0)
-            total = item.get('total', 0)
+            desc = item.get('description', item.get('itemname', item.get('item_name', item.get('shortdescription', 'No description'))))[:80]
+            qty = item.get('quantity', item.get('qty', item.get('count', 1)))
+            price = item.get('price', item.get('unitprice', item.get('unit_price', 0)))
+            total = item.get('total', item.get('netamount', item.get('net_amount', 0)))
             lines.append(f"- {desc} (Qty: {qty} x ${price:,.2f}) = ${total:,.2f}")
-        
-        posted = "Posted to accounting" if inv.get('posted_to_accounting') else "Not posted to accounting"
-        xero_id = inv.get('accounting_id', 'N/A')
-        
-        return f"""# Invoice #{inv.get('id')} - {inv.get('ref', 'N/A')}
 
-**Client:** {inv.get('client_name', 'Unknown')}
-**Status:** {inv.get('status_name', 'N/A')}
-**Date:** {inv.get('date', '')[:10]}
-**Due Date:** {inv.get('duedate', '')[:10]}
-**PO Number:** {inv.get('ponumber', 'N/A')}
+        posted = "Posted to accounting" if inv.get('posted_to_accounting', inv.get('postedtoaccounting', False)) else "Not posted to accounting"
+        xero_id = inv.get('accounting_id', inv.get('accountingid', inv.get('xeroinvoiceid', 'N/A')))
+        client_name = inv.get('client_name', inv.get('clientname', 'Unknown'))
+        ref = inv.get('ref', inv.get('invoicenumber', inv.get('invoice_number', 'N/A')))
+        status_name = inv.get('status_name', inv.get('statusname', inv.get('status', 'N/A')))
+
+        return f"""# Invoice #{inv.get('id')} - {ref}
+
+**Client:** {client_name}
+**Status:** {status_name}
+**Date:** {str(inv.get('date', inv.get('invoicedate', '')))[:10]}
+**Due Date:** {str(inv.get('duedate', inv.get('due_date', '')))[:10]}
+**PO Number:** {inv.get('ponumber', inv.get('po_number', 'N/A'))}
 
 ## Line Items
 {chr(10).join(lines) if lines else 'No line items'}
 
-**Subtotal:** ${inv.get('subtotal', 0):,.2f}
-**Tax:** ${inv.get('tax', 0):,.2f}
-**Total:** ${inv.get('total', 0):,.2f}
+**Subtotal:** ${inv.get('subtotal', inv.get('nettotal', 0)):,.2f}
+**Tax:** ${inv.get('tax', inv.get('taxtotal', 0)):,.2f}
+**Total:** ${inv.get('total', inv.get('grosstotal', 0)):,.2f}
 
 **{posted}**
 **Xero Invoice ID:** {xero_id}"""
@@ -1053,11 +1056,12 @@ async def halopsa_get_recurring_invoices(
         results = []
         for r in recurring[:limit]:
             rec_id = r.get('id', 'N/A')
-            client_name = r.get('client_name', 'Unknown')
-            ref = r.get('ref', 'N/A')
-            total = r.get('total', 0)
-            billing = r.get('billing_cycle_name', 'N/A')
-            next_date = str(r.get('next_invoice_date', ''))[:10]
+            client_name = r.get('client_name', r.get('clientname', 'Unknown'))
+            ref = r.get('ref', r.get('invoicenumber', r.get('recurring_invoice_number', 'N/A')))
+            # Try multiple possible field names for totals
+            total = r.get('total', r.get('grosstotal', r.get('gross_total', r.get('nettotal', 0))))
+            billing = r.get('billing_cycle_name', r.get('billingcycle', 'N/A'))
+            next_date = str(r.get('next_invoice_date', r.get('nextinvoicedate', '')))[:10]
             active = "Active" if not r.get('inactive', False) else "Inactive"
 
             results.append(f"**{ref}** (ID: {rec_id})\n  Client: {client_name} | Total: ${total:,.2f} | Billing: {billing}\n  Next Invoice: {next_date} | Status: {active}")
@@ -1093,30 +1097,45 @@ async def halopsa_get_recurring_invoice(
         lines = []
         for idx, item in enumerate(r.get('lines', []), 1):
             line_id = item.get('id', 'N/A')
-            desc = item.get('description', 'No description')
-            qty = item.get('count', 1)
-            price = item.get('price', 0)
-            total = item.get('total', qty * price)
-            item_code = item.get('item_code', '')
-            lines.append(f"{idx}. **{desc}** (Line ID: {line_id})\n   Item Code: {item_code} | Qty: {qty} x ${price:,.2f} = ${total:,.2f}")
+            # Try multiple field names for description
+            desc = item.get('description', item.get('itemname', item.get('item_name', item.get('shortdescription', 'No description'))))
+            # Try multiple field names for quantity
+            qty = item.get('quantity', item.get('qty', item.get('count', 1)))
+            # Try multiple field names for price
+            price = item.get('price', item.get('unitprice', item.get('unit_price', item.get('baseprice', 0))))
+            # Try multiple field names for net amount
+            net = item.get('netamount', item.get('net_amount', item.get('nettotal', item.get('net_total', qty * price if price else 0))))
+            tax = item.get('tax', item.get('taxamount', item.get('tax_amount', 0)))
+            # Product/item code
+            item_code = item.get('accountsid', item.get('xero_product_id', item.get('item_code', item.get('itemcode', ''))))
+            active = "Active" if item.get('active', not item.get('inactive', False)) else "Inactive"
+
+            lines.append(f"{idx}. **{desc}** (Line ID: {line_id})\n   Code: {item_code} | Qty: {qty} x ${price:,.2f} = ${net:,.2f} (+ ${tax:,.2f} tax) | {active}")
 
         active = "Active" if not r.get('inactive', False) else "Inactive"
+        client_name = r.get('client_name', r.get('clientname', 'N/A'))
+        ref = r.get('ref', r.get('invoicenumber', r.get('recurring_invoice_number', 'Unknown')))
 
-        return f"""# Recurring Invoice: {r.get('ref', 'Unknown')}
+        # Totals - try multiple field names
+        subtotal = r.get('subtotal', r.get('nettotal', r.get('net_total', 0)))
+        tax = r.get('tax', r.get('taxtotal', r.get('tax_total', 0)))
+        total = r.get('total', r.get('grosstotal', r.get('gross_total', 0)))
+
+        return f"""# Recurring Invoice: {ref}
 
 **ID:** {r.get('id')}
-**Client:** {r.get('client_name', 'N/A')} (Client ID: {r.get('client_id', 'N/A')})
+**Client:** {client_name} (Client ID: {r.get('client_id', r.get('clientid', 'N/A'))})
 **Status:** {active}
-**Billing Cycle:** {r.get('billing_cycle_name', 'N/A')}
-**Next Invoice Date:** {str(r.get('next_invoice_date', 'N/A'))[:10] if r.get('next_invoice_date') else 'N/A'}
-**PO Number:** {r.get('ponumber', 'N/A')}
+**Billing Cycle:** {r.get('billing_cycle_name', r.get('billingcycle', 'N/A'))}
+**Next Invoice Date:** {str(r.get('next_invoice_date', r.get('nextinvoicedate', 'N/A')))[:10]}
+**PO Number:** {r.get('ponumber', r.get('po_number', 'N/A'))}
 
 ## Line Items
 {chr(10).join(lines) if lines else 'No line items'}
 
-**Subtotal:** ${r.get('subtotal', 0):,.2f}
-**Tax:** ${r.get('tax', 0):,.2f}
-**Total:** ${r.get('total', 0):,.2f}"""
+**Net Total:** ${subtotal:,.2f}
+**Tax:** ${tax:,.2f}
+**Gross Total:** ${total:,.2f}"""
     except Exception as e:
         return f"Error: {str(e)}"
 
