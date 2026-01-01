@@ -1406,6 +1406,60 @@ async def halopsa_delete_recurring_invoice_line(
         return f"Error: {str(e)}"
 
 
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False})
+async def halopsa_update_recurring_invoice(
+    recurring_invoice_id: int = Field(..., description="Recurring Invoice ID to update"),
+    invoice_name: Optional[str] = Field(None, description="New name/reference for the recurring invoice"),
+    po_number: Optional[str] = Field(None, description="New PO number"),
+    notes: Optional[str] = Field(None, description="Notes field")
+) -> str:
+    """Update a recurring invoice's header details (name/reference, PO number, notes)."""
+    if not halopsa_config.is_configured:
+        return "Error: HaloPSA not configured."
+
+    if not any([invoice_name, po_number, notes]):
+        return "Error: At least one field (invoice_name, po_number, or notes) must be provided"
+
+    try:
+        token = await halopsa_config.get_access_token()
+
+        # Build the update payload
+        payload = {
+            "id": recurring_invoice_id,
+        }
+
+        if invoice_name is not None:
+            payload["invoicename"] = invoice_name
+
+        if po_number is not None:
+            payload["ponumber"] = po_number
+
+        if notes is not None:
+            payload["notes"] = notes
+
+        # HaloPSA API expects an array for POST updates
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{halopsa_config.resource_server}/RecurringInvoice",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json=[payload],
+                timeout=30.0
+            )
+
+            if response.status_code != 200:
+                return f"HaloPSA API Error: {response.status_code} - {response.text}"
+
+            result = response.json()
+
+            if result and len(result) > 0:
+                updated = result[0]
+                return f"✅ Recurring Invoice **{recurring_invoice_id}** updated. Name: {updated.get('invoicename', 'N/A')}"
+
+            return f"✅ Recurring Invoice **{recurring_invoice_id}** updated."
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
 # ============================================================================
 # Xero Integration
 # ============================================================================
