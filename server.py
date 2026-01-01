@@ -1,6 +1,6 @@
 """
 Crowd IT Unified MCP Server
-Centralized MCP server for Cloud Run - HaloPSA, Xero, and Front integration.
+Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, and Pax8 integration.
 """
 
 import os
@@ -21,7 +21,7 @@ CLOUD_RUN_URL = os.getenv("CLOUD_RUN_URL", "https://crowdit-mcp-server-lypf4vkh4
 
 mcp = FastMCP(
     name="crowdit-mcp-server",
-    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, and Front integration for MSP operations.",
+    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, and Pax8 integration for MSP operations.",
     stateless_http=True  # Required for Cloud Run - enables stateless sessions
 )
 
@@ -2991,6 +2991,297 @@ async def quoter_list_suppliers(
 
 
 # ============================================================================
+# Pax8 Integration (Cloud Marketplace)
+# ============================================================================
+
+class Pax8Config:
+    def __init__(self):
+        self.client_id = os.getenv("PAX8_CLIENT_ID", "")
+        self.client_secret = os.getenv("PAX8_CLIENT_SECRET", "")
+        self.base_url = "https://api.pax8.com/v1"
+        self._access_token: Optional[str] = None
+        self._token_expiry: Optional[datetime] = None
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.client_id) and bool(self.client_secret)
+
+    async def get_access_token(self) -> str:
+        """Get valid access token, requesting new one if expired."""
+        if self._access_token and self._token_expiry and datetime.now() < self._token_expiry:
+            return self._access_token
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.base_url}/token",
+                json={
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                    "audience": "api://p8p.client",
+                    "grant_type": "client_credentials"
+                },
+                headers={"Content-Type": "application/json"}
+            )
+            response.raise_for_status()
+            data = response.json()
+            self._access_token = data["access_token"]
+            # Pax8 tokens are valid for 24 hours, refresh 1 hour early
+            expires_in = data.get("expires_in", 86400)
+            self._token_expiry = datetime.now() + timedelta(seconds=expires_in - 3600)
+            return self._access_token
+
+pax8_config = Pax8Config()
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def pax8_list_subscriptions(
+    company_id: Optional[str] = Field(None, description="Filter by Pax8 company ID"),
+    product_id: Optional[str] = Field(None, description="Filter by product ID"),
+    status: Optional[str] = Field(None, description="Filter by status: Active, Cancelled, PendingManual, etc."),
+    page: int = Field(0, description="Page number (0-indexed)"),
+    size: int = Field(50, description="Page size (max 200)")
+) -> str:
+    """List subscriptions from Pax8 for verification against Xero."""
+    if not pax8_config.is_configured:
+        return "Error: Pax8 not configured. Set PAX8_CLIENT_ID and PAX8_CLIENT_SECRET environment variables."
+
+    try:
+        token = await pax8_config.get_access_token()
+        params = {"page": page, "size": min(max(1, size), 200)}
+        if company_id:
+            params["companyId"] = company_id
+        if product_id:
+            params["productId"] = product_id
+        if status:
+            params["status"] = status
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{pax8_config.base_url}/subscriptions",
+                params=params,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        subscriptions = data.get("content", [])
+        page_info = data.get("page", {})
+
+        if not subscriptions:
+            return "No subscriptions found."
+
+        results = []
+        for s in subscriptions:
+            sub_id = s.get("id", "N/A")
+            company_name = s.get("companyName", s.get("companyId", "N/A"))
+            product_name = s.get("productName", s.get("productId", "N/A"))
+            quantity = s.get("quantity", 0)
+            status_val = s.get("status", "N/A")
+            billing_term = s.get("billingTerm", "N/A")
+            price = s.get("price", 0)
+            start_date = s.get("startDate", "")[:10] if s.get("startDate") else "N/A"
+
+            results.append(
+                f"**{product_name}** (ID: `{sub_id}`)\n"
+                f"  Company: {company_name} | Qty: {quantity} | Status: {status_val}\n"
+                f"  Price: ${price:,.2f} | Term: {billing_term} | Started: {start_date}"
+            )
+
+        total = page_info.get("totalElements", len(subscriptions))
+        total_pages = page_info.get("totalPages", 1)
+        current_page = page_info.get("number", page)
+
+        return f"## Pax8 Subscriptions (Page {current_page + 1}/{total_pages}, Total: {total})\n\n" + "\n\n".join(results)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def pax8_get_subscription(
+    subscription_id: str = Field(..., description="Pax8 subscription ID")
+) -> str:
+    """Get detailed subscription information from Pax8."""
+    if not pax8_config.is_configured:
+        return "Error: Pax8 not configured."
+
+    try:
+        token = await pax8_config.get_access_token()
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{pax8_config.base_url}/subscriptions/{subscription_id}",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            )
+            response.raise_for_status()
+            s = response.json()
+
+        lines = [
+            f"# Subscription: {s.get('productName', 'N/A')}",
+            f"\n**ID:** `{s.get('id', 'N/A')}`",
+            f"**Company:** {s.get('companyName', s.get('companyId', 'N/A'))}",
+            f"**Product ID:** `{s.get('productId', 'N/A')}`",
+            f"**Vendor Subscription ID:** `{s.get('vendorSubscriptionId', 'N/A')}`",
+            f"\n## Billing Details",
+            f"- **Status:** {s.get('status', 'N/A')}",
+            f"- **Quantity:** {s.get('quantity', 0)}",
+            f"- **Price:** ${s.get('price', 0):,.2f}",
+            f"- **Billing Term:** {s.get('billingTerm', 'N/A')}",
+            f"- **Commitment Term:** {s.get('commitmentTerm', 'N/A')}",
+            f"\n## Dates",
+            f"- **Start Date:** {s.get('startDate', 'N/A')}",
+            f"- **End Date:** {s.get('endDate', 'N/A')}",
+            f"- **Created:** {s.get('createdDate', 'N/A')}",
+        ]
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def pax8_list_companies(
+    city: Optional[str] = Field(None, description="Filter by city"),
+    country: Optional[str] = Field(None, description="Filter by country (e.g., 'AU', 'US')"),
+    page: int = Field(0, description="Page number (0-indexed)"),
+    size: int = Field(50, description="Page size (max 200)")
+) -> str:
+    """List companies from Pax8."""
+    if not pax8_config.is_configured:
+        return "Error: Pax8 not configured."
+
+    try:
+        token = await pax8_config.get_access_token()
+        params = {"page": page, "size": min(max(1, size), 200)}
+        if city:
+            params["city"] = city
+        if country:
+            params["country"] = country
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{pax8_config.base_url}/companies",
+                params=params,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        companies = data.get("content", [])
+        page_info = data.get("page", {})
+
+        if not companies:
+            return "No companies found."
+
+        results = []
+        for c in companies:
+            company_id = c.get("id", "N/A")
+            name = c.get("name", "Unknown")
+            city_val = c.get("city", "N/A")
+            country_val = c.get("country", "N/A")
+            status_val = c.get("status", "N/A")
+
+            results.append(f"**{name}** (ID: `{company_id}`)\n  Location: {city_val}, {country_val} | Status: {status_val}")
+
+        total = page_info.get("totalElements", len(companies))
+        total_pages = page_info.get("totalPages", 1)
+        current_page = page_info.get("number", page)
+
+        return f"## Pax8 Companies (Page {current_page + 1}/{total_pages}, Total: {total})\n\n" + "\n\n".join(results)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def pax8_get_company(
+    company_id: str = Field(..., description="Pax8 company ID")
+) -> str:
+    """Get detailed company information from Pax8."""
+    if not pax8_config.is_configured:
+        return "Error: Pax8 not configured."
+
+    try:
+        token = await pax8_config.get_access_token()
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{pax8_config.base_url}/companies/{company_id}",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            )
+            response.raise_for_status()
+            c = response.json()
+
+        lines = [
+            f"# Company: {c.get('name', 'N/A')}",
+            f"\n**ID:** `{c.get('id', 'N/A')}`",
+            f"**External ID:** `{c.get('externalId', 'N/A')}`",
+            f"\n## Contact Details",
+            f"- **Address:** {c.get('address', 'N/A')}",
+            f"- **City:** {c.get('city', 'N/A')}",
+            f"- **State/Province:** {c.get('stateOrProvince', 'N/A')}",
+            f"- **Postal Code:** {c.get('postalCode', 'N/A')}",
+            f"- **Country:** {c.get('country', 'N/A')}",
+            f"- **Phone:** {c.get('phone', 'N/A')}",
+            f"- **Website:** {c.get('website', 'N/A')}",
+            f"\n## Status",
+            f"- **Status:** {c.get('status', 'N/A')}",
+            f"- **Bill on Behalf:** {c.get('billOnBehalfOfEnabled', 'N/A')}",
+            f"- **Self-Service:** {c.get('selfServiceAllowed', 'N/A')}",
+        ]
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def pax8_list_products(
+    vendor_name: Optional[str] = Field(None, description="Filter by vendor name (e.g., 'Microsoft')"),
+    page: int = Field(0, description="Page number (0-indexed)"),
+    size: int = Field(50, description="Page size (max 200)")
+) -> str:
+    """List available products from Pax8 catalog."""
+    if not pax8_config.is_configured:
+        return "Error: Pax8 not configured."
+
+    try:
+        token = await pax8_config.get_access_token()
+        params = {"page": page, "size": min(max(1, size), 200)}
+        if vendor_name:
+            params["vendorName"] = vendor_name
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{pax8_config.base_url}/products",
+                params=params,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        products = data.get("content", [])
+        page_info = data.get("page", {})
+
+        if not products:
+            return "No products found."
+
+        results = []
+        for p in products:
+            product_id = p.get("id", "N/A")
+            name = p.get("name", "Unknown")
+            vendor = p.get("vendorName", "N/A")
+
+            results.append(f"**{name}** (ID: `{product_id}`)\n  Vendor: {vendor}")
+
+        total = page_info.get("totalElements", len(products))
+        total_pages = page_info.get("totalPages", 1)
+        current_page = page_info.get("number", page)
+
+        return f"## Pax8 Products (Page {current_page + 1}/{total_pages}, Total: {total})\n\n" + "\n\n".join(results)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+# ============================================================================
 # Server Status
 # ============================================================================
 
@@ -3049,7 +3340,19 @@ async def server_status() -> str:
             lines.append(f"❌ **Quoter:** Auth failed - {str(e)[:50]}")
     else:
         lines.append("⚠️ **Quoter:** Not configured (set QUOTER_API_KEY)")
-    
+
+    if pax8_config.is_configured:
+        try:
+            await pax8_config.get_access_token()
+            lines.append("✅ **Pax8:** Connected")
+        except Exception as e:
+            lines.append(f"❌ **Pax8:** Auth failed - {str(e)[:50]}")
+    else:
+        missing = []
+        if not os.getenv("PAX8_CLIENT_ID"): missing.append("CLIENT_ID")
+        if not os.getenv("PAX8_CLIENT_SECRET"): missing.append("CLIENT_SECRET")
+        lines.append(f"⚠️ **Pax8:** Missing: {', '.join(missing)}")
+
     lines.append(f"\n**Cloud Run URL:** {CLOUD_RUN_URL}")
     return "\n".join(lines)
 
