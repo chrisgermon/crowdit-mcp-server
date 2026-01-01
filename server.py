@@ -1011,34 +1011,45 @@ async def halopsa_get_recurring_invoices(
     client_id: Optional[int] = Field(None, description="Filter by client ID"),
     search: Optional[str] = Field(None, description="Search by name/reference"),
     active_only: bool = Field(True, description="Only show active recurring invoices"),
-    limit: int = Field(50, description="Max results")
+    limit: int = Field(50, description="Max results"),
+    debug: bool = Field(False, description="Return raw API response for debugging")
 ) -> str:
     """List HaloPSA recurring invoices."""
     if not halopsa_config.is_configured:
         return "Error: HaloPSA not configured."
-    
+
     try:
         token = await halopsa_config.get_access_token()
         params = {"count": min(limit, 100)}
-        
+
         if client_id:
             params["client_id"] = client_id
         if search:
             params["search"] = search
         if active_only:
             params["inactive"] = "false"
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.get(f"{halopsa_config.resource_server}/RecurringInvoice",
                 params=params,
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
             response.raise_for_status()
             data = response.json()
+
+            # Debug mode - return raw response
+            if debug:
+                import json
+                # Get first item to show field names
+                recurring = data.get("invoices", data.get("recurring_invoices", []))
+                if recurring:
+                    return f"**Raw API Response (first record):**\n```json\n{json.dumps(recurring[0], indent=2, default=str)}\n```"
+                return f"**Raw API Response:**\n```json\n{json.dumps(data, indent=2, default=str)}\n```"
+
             recurring = data.get("invoices", data.get("recurring_invoices", []))
-        
+
         if not recurring:
             return "No recurring invoices found."
-        
+
         results = []
         for r in recurring[:limit]:
             rec_id = r.get('id', 'N/A')
@@ -1046,22 +1057,25 @@ async def halopsa_get_recurring_invoices(
             ref = r.get('ref', 'N/A')
             total = r.get('total', 0)
             billing = r.get('billing_cycle_name', 'N/A')
-            next_date = r.get('next_invoice_date', '')[:10]
+            next_date = str(r.get('next_invoice_date', ''))[:10]
             active = "Active" if not r.get('inactive', False) else "Inactive"
-            
+
             results.append(f"**{ref}** (ID: {rec_id})\n  Client: {client_name} | Total: ${total:,.2f} | Billing: {billing}\n  Next Invoice: {next_date} | Status: {active}")
-        
+
         return f"Found {len(results)} recurring invoice(s):\n\n" + "\n\n".join(results)
     except Exception as e:
         return f"Error: {str(e)}"
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
-async def halopsa_get_recurring_invoice(recurring_invoice_id: int = Field(..., description="Recurring Invoice ID")) -> str:
+async def halopsa_get_recurring_invoice(
+    recurring_invoice_id: int = Field(..., description="Recurring Invoice ID"),
+    debug: bool = Field(False, description="Return raw API response for debugging")
+) -> str:
     """Get detailed recurring invoice information including line items."""
     if not halopsa_config.is_configured:
         return "Error: HaloPSA not configured."
-    
+
     try:
         token = await halopsa_config.get_access_token()
         async with httpx.AsyncClient() as client:
@@ -1070,7 +1084,12 @@ async def halopsa_get_recurring_invoice(recurring_invoice_id: int = Field(..., d
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
             response.raise_for_status()
             r = response.json()
-        
+
+        # Debug mode - return raw response
+        if debug:
+            import json
+            return f"**Raw API Response:**\n```json\n{json.dumps(r, indent=2, default=str)}\n```"
+
         lines = []
         for idx, item in enumerate(r.get('lines', []), 1):
             line_id = item.get('id', 'N/A')
@@ -1080,16 +1099,16 @@ async def halopsa_get_recurring_invoice(recurring_invoice_id: int = Field(..., d
             total = item.get('total', qty * price)
             item_code = item.get('item_code', '')
             lines.append(f"{idx}. **{desc}** (Line ID: {line_id})\n   Item Code: {item_code} | Qty: {qty} x ${price:,.2f} = ${total:,.2f}")
-        
+
         active = "Active" if not r.get('inactive', False) else "Inactive"
-        
+
         return f"""# Recurring Invoice: {r.get('ref', 'Unknown')}
 
 **ID:** {r.get('id')}
 **Client:** {r.get('client_name', 'N/A')} (Client ID: {r.get('client_id', 'N/A')})
 **Status:** {active}
 **Billing Cycle:** {r.get('billing_cycle_name', 'N/A')}
-**Next Invoice Date:** {r.get('next_invoice_date', 'N/A')[:10] if r.get('next_invoice_date') else 'N/A'}
+**Next Invoice Date:** {str(r.get('next_invoice_date', 'N/A'))[:10] if r.get('next_invoice_date') else 'N/A'}
 **PO Number:** {r.get('ponumber', 'N/A')}
 
 ## Line Items
