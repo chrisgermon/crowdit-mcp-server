@@ -1146,52 +1146,160 @@ async def halopsa_add_recurring_invoice_line(
     description: str = Field(..., description="Line item description"),
     unit_price: float = Field(..., description="Unit price (ex tax)"),
     quantity: float = Field(1, description="Quantity"),
-    item_id: Optional[int] = Field(None, description="HaloPSA Item ID (optional - for linking to catalog item)"),
-    tax_code: str = Field("GST", description="Tax code (default: GST)")
+    tax_code: str = Field("GST", description="Tax code (default: GST)"),
+    item_id: Optional[int] = Field(None, description="HaloPSA Item ID (optional - for linking to catalog item)")
 ) -> str:
     """Add a line item to a recurring invoice."""
     if not halopsa_config.is_configured:
         return "Error: HaloPSA not configured."
-    
+
     try:
         token = await halopsa_config.get_access_token()
-        
-        # First get the existing recurring invoice
+
         async with httpx.AsyncClient() as client:
-            response = await client.get(f"{halopsa_config.resource_server}/RecurringInvoice",
-                params={"rinvoiceid": -abs(recurring_invoice_id), "includedetails": "true", "includelines": "true"},
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
-            response.raise_for_status()
-            existing = response.json()
-        
-        # Create new line item
-        new_line = {
-            "description": description,
-            "count": quantity,
-            "price": unit_price,
-            "taxcode": tax_code
-        }
-        if item_id:
-            new_line["item_id"] = item_id
-        
-        # Get existing lines and append new one
-        existing_lines = existing.get('lines', [])
-        existing_lines.append(new_line)
-        
-        # Update the recurring invoice with new lines
-        payload = [{
-            "id": recurring_invoice_id,
-            "lines": existing_lines
-        }]
-        
+            # Step 1: GET the existing recurring invoice with all lines
+            response = await client.get(
+                f"{halopsa_config.resource_server}/RecurringInvoice/{recurring_invoice_id}",
+                params={"includedetails": "true", "includelines": "true"},
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            )
+            if response.status_code >= 400:
+                return f"Error: {response.status_code} - {response.text}"
+            invoice = response.json()
+
+            # Step 2: Map tax code string to HaloPSA tax code ID
+            tax_code_map = {
+                "GST": 12,
+                "NO TAX": 0,
+                "NONE": 0,
+                "BAS EXCLUDED": 4,
+            }
+            tax_code_id = tax_code_map.get(tax_code.upper(), 12)  # Default to GST
+
+            # Step 3: Create the new line item
+            new_line = {
+                "item_shortdescription": description,
+                "item_longdescription": description,
+                "baseprice": unit_price,
+                "qty_order": quantity,
+                "tax_code": str(tax_code_id),
+                "isinactive": False,
+                "isActive": True,
+            }
+
+            if item_id:
+                new_line["_itemid"] = item_id
+
+            # Step 4: Append the new line to existing lines
+            existing_lines = invoice.get("lines", [])
+            existing_lines.append(new_line)
+            invoice["lines"] = existing_lines
+
+            # Step 5: POST the complete invoice object back
+            response = await client.post(
+                f"{halopsa_config.resource_server}/RecurringInvoice",
+                json=[invoice],  # HaloPSA expects an array
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            )
+            if response.status_code >= 400:
+                return f"Error: {response.status_code} - {response.text}"
+
+        return f"✅ Added line item to recurring invoice #{recurring_invoice_id}:\n- {description}\n- Qty: {quantity} x ${unit_price:.2f} = ${quantity * unit_price:.2f}"
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: {e.response.status_code} - {e.response.text}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": False})
+async def halopsa_copy_recurring_invoice_lines(
+    source_recurring_invoice_id: int = Field(..., description="Source Recurring Invoice ID to copy lines FROM"),
+    target_recurring_invoice_id: int = Field(..., description="Target Recurring Invoice ID to copy lines TO"),
+    clear_existing: bool = Field(False, description="Clear existing lines on target before copying")
+) -> str:
+    """Copy all line items from one recurring invoice to another."""
+    if not halopsa_config.is_configured:
+        return "Error: HaloPSA not configured."
+
+    try:
+        token = await halopsa_config.get_access_token()
+
         async with httpx.AsyncClient() as client:
-            response = await client.post(f"{halopsa_config.resource_server}/RecurringInvoice",
-                json=payload,
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
-            response.raise_for_status()
-        
-        total_value = quantity * unit_price
-        return f"✅ Added line item to recurring invoice #{recurring_invoice_id}:\n- {description}\n- Qty: {quantity} x ${unit_price:,.2f} = ${total_value:,.2f}"
+            # Step 1: GET source recurring invoice
+            response = await client.get(
+                f"{halopsa_config.resource_server}/RecurringInvoice/{source_recurring_invoice_id}",
+                params={"includedetails": "true", "includelines": "true"},
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            )
+            if response.status_code >= 400:
+                return f"Error: {response.status_code} - {response.text}"
+            source_invoice = response.json()
+
+            # Step 2: GET target recurring invoice
+            response = await client.get(
+                f"{halopsa_config.resource_server}/RecurringInvoice/{target_recurring_invoice_id}",
+                params={"includedetails": "true", "includelines": "true"},
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            )
+            if response.status_code >= 400:
+                return f"Error: {response.status_code} - {response.text}"
+            target_invoice = response.json()
+
+            # Step 3: Get source lines and prepare them for the target
+            source_lines = source_invoice.get("lines", [])
+
+            new_lines = []
+            for line in source_lines:
+                # Create a copy of the line without IDs so HaloPSA creates new ones
+                new_line = {
+                    "item_shortdescription": line.get("item_shortdescription", ""),
+                    "item_longdescription": line.get("item_longdescription", ""),
+                    "baseprice": line.get("baseprice", 0),
+                    "qty_order": line.get("qty_order", 1),
+                    "tax_code": line.get("tax_code", "12"),
+                    "item_code": line.get("item_code", ""),
+                    "isinactive": False,
+                    "isActive": True,
+                    "isgroupdesc": line.get("isgroupdesc", False),
+                    "group_id": line.get("group_id", 0),
+                }
+
+                if line.get("_itemid"):
+                    new_line["_itemid"] = line.get("_itemid")
+
+                new_lines.append(new_line)
+
+            # Step 4: Set lines on target
+            if clear_existing:
+                target_invoice["lines"] = new_lines
+            else:
+                existing_lines = target_invoice.get("lines", [])
+                # Remove blank default lines (qty=1, price=0, no description)
+                existing_lines = [l for l in existing_lines if l.get("baseprice", 0) > 0 or l.get("item_shortdescription")]
+                existing_lines.extend(new_lines)
+                target_invoice["lines"] = existing_lines
+
+            # Step 5: POST the complete target invoice back
+            response = await client.post(
+                f"{halopsa_config.resource_server}/RecurringInvoice",
+                json=[target_invoice],
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            )
+            if response.status_code >= 400:
+                return f"Error: {response.status_code} - {response.text}"
+
+        total_value = sum(l.get("baseprice", 0) * l.get("qty_order", 1) for l in new_lines)
+
+        return f"""✅ Copied {len(new_lines)} line items from recurring invoice #{source_recurring_invoice_id} to #{target_recurring_invoice_id}
+
+**Lines copied:**
+{chr(10).join(f"- {l.get('item_shortdescription', 'No desc')}: {l.get('qty_order', 1)} x ${l.get('baseprice', 0):.2f}" for l in new_lines)}
+
+**Total value:** ${total_value:,.2f} + GST"""
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: {e.response.status_code} - {e.response.text}"
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -1319,7 +1427,7 @@ class XeroConfig:
         """Get valid access token, refreshing if needed."""
         if self._access_token and self._token_expiry and datetime.now() < self._token_expiry:
             return self._access_token
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 "https://identity.xero.com/connect/token",
@@ -1331,7 +1439,13 @@ class XeroConfig:
                 },
                 headers={"Content-Type": "application/x-www-form-urlencoded"}
             )
-            response.raise_for_status()
+            if response.status_code >= 400:
+                if response.status_code == 401:
+                    raise Exception("Xero authentication expired or invalid. Run xero_auth_start to reconnect.")
+                elif response.status_code == 400:
+                    raise Exception("Xero token refresh failed. The refresh token may be invalid or expired. Run xero_auth_start to reconnect.")
+                else:
+                    raise Exception(f"Xero token refresh failed: {response.status_code} - {response.text}")
             data = response.json()
             
             self._access_token = data["access_token"]
@@ -1347,6 +1461,42 @@ class XeroConfig:
             return self._access_token
 
 xero_config = XeroConfig()
+
+
+def _check_xero_response(response: httpx.Response) -> Optional[str]:
+    """
+    Check Xero API response for errors and return a user-friendly error message.
+    Returns None if the response is successful, otherwise returns an error string.
+    """
+    if response.status_code >= 400:
+        # Try to extract error details from response
+        try:
+            error_data = response.json()
+            if "Message" in error_data:
+                return f"Xero API Error: {response.status_code} - {error_data['Message']}"
+            elif "Detail" in error_data:
+                return f"Xero API Error: {response.status_code} - {error_data['Detail']}"
+            elif "Elements" in error_data:
+                # Validation errors
+                elements = error_data.get("Elements", [])
+                if elements and "ValidationErrors" in elements[0]:
+                    errors = [e.get("Message", "") for e in elements[0]["ValidationErrors"]]
+                    return f"Xero API Error: {response.status_code} - {'; '.join(errors)}"
+        except Exception:
+            pass
+
+        # Handle specific status codes
+        if response.status_code == 401:
+            return "Xero API Error: 401 - Authentication expired. Run xero_auth_start to reconnect."
+        elif response.status_code == 403:
+            return "Xero API Error: 403 - Access forbidden. Check your Xero app permissions."
+        elif response.status_code == 404:
+            return "Xero API Error: 404 - Resource not found."
+        elif response.status_code == 429:
+            return "Xero API Error: 429 - Rate limit exceeded. Please wait before retrying."
+
+        return f"Xero API Error: {response.status_code} - {response.text}"
+    return None
 
 
 async def _resolve_invoice_id(invoice_id: str, access_token: str, tenant_id: str) -> str:
@@ -1387,7 +1537,8 @@ async def _resolve_invoice_id(invoice_id: str, access_token: str, tenant_id: str
 
     async with httpx.AsyncClient() as client:
         response = await client.get(url, headers=headers)
-        response.raise_for_status()
+        if response.status_code >= 400:
+            raise Exception(f"Xero API Error: {response.status_code} - {response.text}")
         data = response.json()
 
     invoices = data.get("Invoices", [])
@@ -1432,17 +1583,19 @@ async def xero_get_invoices(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             invoices = response.json().get("Invoices", [])
-        
+
         if contact_name:
             invoices = [i for i in invoices if contact_name.lower() in i.get("Contact", {}).get("Name", "").lower()]
-        
+
         invoices = invoices[:limit]
-        
+
         if not invoices:
             return "No invoices found."
-        
+
         results = []
         for inv in invoices:
             contact = inv.get("Contact", {}).get("Name", "Unknown")
@@ -1451,14 +1604,10 @@ async def xero_get_invoices(
             total = inv.get("Total", 0)
             due = inv.get("AmountDue", 0)
             date_str = inv.get("DateString", "")[:10]
-            
+
             results.append(f"**{inv_num}** - {contact}\n  Status: {status_val} | Total: ${total:,.2f} | Due: ${due:,.2f} | Date: {date_str}")
-        
+
         return f"Found {len(results)} invoice(s):\n\n" + "\n\n".join(results)
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 401:
-            return "Error: Xero authentication expired. Run xero_auth_start to reconnect."
-        return f"Error: {str(e)}"
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -1468,10 +1617,10 @@ async def xero_get_invoice(invoice_id: str = Field(..., description="Invoice ID 
     """Get full invoice details including line items."""
     if not xero_config.is_configured:
         return "Error: Xero not configured."
-    
+
     try:
         token = await xero_config.get_access_token()
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"https://api.xero.com/api.xro/2.0/Invoices/{invoice_id}",
@@ -1481,7 +1630,9 @@ async def xero_get_invoice(invoice_id: str = Field(..., description="Invoice ID 
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             inv = response.json().get("Invoices", [{}])[0]
         
         lines = []
@@ -1536,14 +1687,16 @@ async def xero_create_invoice(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             contacts = response.json().get("Contacts", [])
-        
+
         if not contacts:
             return f"Error: Contact '{contact_name}' not found in Xero."
-        
+
         contact_id = contacts[0]["ContactID"]
-        
+
         invoice_data = {
             "Type": "ACCREC",
             "Contact": {"ContactID": contact_id},
@@ -1560,10 +1713,10 @@ async def xero_create_invoice(
             ],
             "Status": status.upper()
         }
-        
+
         if reference:
             invoice_data["Reference"] = reference
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 "https://api.xero.com/api.xro/2.0/Invoices",
@@ -1575,7 +1728,9 @@ async def xero_create_invoice(
                     "Content-Type": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             created = response.json().get("Invoices", [{}])[0]
         
         return f"✅ Invoice created: **{created.get('InvoiceNumber', 'N/A')}** for ${created.get('Total', 0):,.2f}"
@@ -1625,7 +1780,9 @@ async def xero_update_invoice(
                     "Content-Type": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             updated = response.json().get("Invoices", [{}])[0]
 
         return f"✅ Invoice **{updated.get('InvoiceNumber', invoice_id)}** updated."
@@ -1642,10 +1799,10 @@ async def xero_get_contacts(
     """List Xero contacts/customers."""
     if not xero_config.is_configured:
         return "Error: Xero not configured."
-    
+
     try:
         token = await xero_config.get_access_token()
-        
+
         params = {"order": "Name"}
         where_parts = []
         if search:
@@ -1654,7 +1811,7 @@ async def xero_get_contacts(
             where_parts.append("IsCustomer==true")
         if where_parts:
             params["where"] = " AND ".join(where_parts)
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 "https://api.xero.com/api.xro/2.0/Contacts",
@@ -1665,7 +1822,9 @@ async def xero_get_contacts(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             contacts = response.json().get("Contacts", [])[:limit]
         
         if not contacts:
@@ -1704,12 +1863,14 @@ async def xero_aged_receivables(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             report = response.json().get("Reports", [{}])[0]
-        
+
         rows = report.get("Rows", [])
         results = []
-        
+
         for section in rows:
             if section.get("RowType") == "Section":
                 for row in section.get("Rows", []):
@@ -1718,22 +1879,22 @@ async def xero_aged_receivables(
                         if len(cells) >= 6:
                             name = cells[0].get("Value", "")
                             total = float(cells[5].get("Value", 0) or 0)
-                            
+
                             if contact_name and contact_name.lower() not in name.lower():
                                 continue
                             if total < min_amount:
                                 continue
-                            
+
                             current = float(cells[1].get("Value", 0) or 0)
                             days_30 = float(cells[2].get("Value", 0) or 0)
                             days_60 = float(cells[3].get("Value", 0) or 0)
                             days_90 = float(cells[4].get("Value", 0) or 0)
-                            
+
                             results.append(f"**{name}**\n  Current: ${current:,.2f} | 30d: ${days_30:,.2f} | 60d: ${days_60:,.2f} | 90d+: ${days_90:,.2f} | **Total: ${total:,.2f}**")
-        
+
         if not results:
             return "No outstanding receivables found."
-        
+
         return "## Aged Receivables\n\n" + "\n\n".join(results)
     except Exception as e:
         return f"Error: {str(e)}"
@@ -1794,33 +1955,35 @@ async def xero_auth_complete(
                 },
                 headers={"Content-Type": "application/x-www-form-urlencoded"}
             )
-            response.raise_for_status()
+            if response.status_code >= 400:
+                return f"Xero API Error: {response.status_code} - {response.text}"
             tokens = response.json()
-            
+
             access_token = tokens["access_token"]
             refresh_token = tokens["refresh_token"]
-            
+
             tenant_response = await client.get(
                 "https://api.xero.com/connections",
                 headers={"Authorization": f"Bearer {access_token}"}
             )
-            tenant_response.raise_for_status()
+            if tenant_response.status_code >= 400:
+                return f"Xero API Error: {tenant_response.status_code} - {tenant_response.text}"
             connections = tenant_response.json()
-            
+
             if not connections:
                 return "Error: No Xero organizations found."
-            
+
             tenant_id = connections[0]["tenantId"]
             org_name = connections[0].get("tenantName", "Unknown")
-        
+
         xero_config._access_token = access_token
         xero_config._refresh_token = refresh_token
         xero_config.tenant_id = tenant_id
         xero_config._token_expiry = datetime.now() + timedelta(seconds=1740)
-        
+
         saved_refresh = update_secret_sync("XERO_REFRESH_TOKEN", refresh_token)
         saved_tenant = update_secret_sync("XERO_TENANT_ID", tenant_id)
-        
+
         if saved_refresh and saved_tenant:
             return f"""✅ Xero connected successfully!
 
@@ -1839,8 +2002,6 @@ echo -n "{refresh_token}" | gcloud secrets versions add XERO_REFRESH_TOKEN --dat
 echo -n "{tenant_id}" | gcloud secrets versions add XERO_TENANT_ID --data-file=- --project=crowdmcp
 ```"""
 
-    except httpx.HTTPStatusError as e:
-        return f"Error: {e.response.text}"
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -1890,7 +2051,9 @@ async def xero_update_invoice_lines(
                     "Content-Type": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             updated = response.json().get("Invoices", [{}])[0]
 
         return f"✅ Invoice **{updated.get('InvoiceNumber', invoice_id)}** line items updated. New total: ${updated.get('Total', 0):,.2f}"
@@ -1933,7 +2096,9 @@ async def xero_get_bills(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             bills = response.json().get("Invoices", [])
 
         if contact_name:
@@ -1986,7 +2151,9 @@ async def xero_create_bill(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             contacts = response.json().get("Contacts", [])
 
         if not contacts:
@@ -2023,7 +2190,9 @@ async def xero_create_bill(
                     "Content-Type": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             created = response.json().get("Invoices", [{}])[0]
 
         return f"✅ Bill created: **{created.get('InvoiceNumber', 'N/A')}** for ${created.get('Total', 0):,.2f}"
@@ -2062,7 +2231,9 @@ async def xero_get_payments(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             payments = response.json().get("Payments", [])
 
         if invoice_id:
@@ -2116,7 +2287,9 @@ async def xero_create_payment(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             accounts = response.json().get("Accounts", [])
 
         if not accounts:
@@ -2143,7 +2316,9 @@ async def xero_create_payment(
                     "Content-Type": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             created = response.json().get("Payments", [{}])[0]
 
         return f"✅ Payment of ${amount:,.2f} recorded against invoice."
@@ -2178,7 +2353,9 @@ async def xero_get_credit_notes(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             credit_notes = response.json().get("CreditNotes", [])
 
         if contact_name:
@@ -2232,7 +2409,9 @@ async def xero_create_credit_note(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             contacts = response.json().get("Contacts", [])
 
         if not contacts:
@@ -2268,7 +2447,9 @@ async def xero_create_credit_note(
                     "Content-Type": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             created = response.json().get("CreditNotes", [{}])[0]
 
         return f"✅ Credit note created: **{created.get('CreditNoteNumber', 'N/A')}** for ${created.get('Total', 0):,.2f}"
@@ -2303,7 +2484,9 @@ async def xero_void_invoice(
                     "Content-Type": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             updated = response.json().get("Invoices", [{}])[0]
 
         return f"✅ Invoice **{updated.get('InvoiceNumber', invoice_id)}** has been voided."
@@ -2334,7 +2517,9 @@ async def xero_email_invoice(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
 
         return f"✅ Invoice {invoice_id} emailed successfully."
     except Exception as e:
@@ -2380,7 +2565,9 @@ async def xero_get_quotes(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             quotes = response.json().get("Quotes", [])
 
         if contact_name:
@@ -2434,7 +2621,9 @@ async def xero_create_quote(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             contacts = response.json().get("Contacts", [])
 
         if not contacts:
@@ -2472,7 +2661,9 @@ async def xero_create_quote(
                     "Content-Type": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             created = response.json().get("Quotes", [{}])[0]
 
         return f"✅ Quote created: **{created.get('QuoteNumber', 'N/A')}** for ${created.get('Total', 0):,.2f}"
@@ -2517,7 +2708,9 @@ async def xero_get_purchase_orders(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             pos = response.json().get("PurchaseOrders", [])
 
         if contact_name:
@@ -2569,7 +2762,9 @@ async def xero_create_purchase_order(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             contacts = response.json().get("Contacts", [])
 
         if not contacts:
@@ -2606,7 +2801,9 @@ async def xero_create_purchase_order(
                     "Content-Type": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             created = response.json().get("PurchaseOrders", [{}])[0]
 
         return f"✅ Purchase Order created: **{created.get('PurchaseOrderNumber', 'N/A')}** for ${created.get('Total', 0):,.2f}"
@@ -2651,7 +2848,9 @@ async def xero_get_bank_transactions(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             transactions = response.json().get("BankTransactions", [])
 
         if bank_account_code:
@@ -2721,7 +2920,9 @@ async def xero_create_contact(
                     "Content-Type": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             created = response.json().get("Contacts", [{}])[0]
 
         return f"✅ Contact created: **{created.get('Name', name)}** (ID: {created.get('ContactID', 'N/A')})"
@@ -2772,7 +2973,9 @@ async def xero_update_contact(
                     "Content-Type": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             updated = response.json().get("Contacts", [{}])[0]
 
         return f"✅ Contact **{updated.get('Name', contact_id)}** updated."
@@ -2812,7 +3015,9 @@ async def xero_profit_loss(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             report = response.json().get("Reports", [{}])[0]
 
         lines = [f"# Profit & Loss Report", f"**Period:** {report.get('ReportDate', 'N/A')}\n"]
@@ -2878,7 +3083,9 @@ async def xero_balance_sheet(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             report = response.json().get("Reports", [{}])[0]
 
         lines = [f"# Balance Sheet", f"**As at:** {report.get('ReportDate', 'N/A')}\n"]
@@ -2942,7 +3149,9 @@ async def xero_trial_balance(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             report = response.json().get("Reports", [{}])[0]
 
         lines = [f"# Trial Balance", f"**As at:** {report.get('ReportDate', 'N/A')}\n"]
@@ -2983,7 +3192,9 @@ async def xero_bank_summary() -> str:
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             report = response.json().get("Reports", [{}])[0]
 
         lines = [f"# Bank Summary", f"**As at:** {report.get('ReportDate', 'N/A')}\n"]
@@ -3028,7 +3239,9 @@ async def xero_aged_payables(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             report = response.json().get("Reports", [{}])[0]
 
         rows = report.get("Rows", [])
@@ -3094,7 +3307,9 @@ async def xero_get_accounts(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             accounts = response.json().get("Accounts", [])
 
         if not accounts:
@@ -3143,7 +3358,9 @@ async def xero_get_items(
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             items = response.json().get("Items", [])
 
         if search:
@@ -3188,7 +3405,9 @@ async def xero_get_tax_rates() -> str:
                     "Accept": "application/json"
                 }
             )
-            response.raise_for_status()
+            error = _check_xero_response(response)
+            if error:
+                return error
             tax_rates = response.json().get("TaxRates", [])
 
         if not tax_rates:
