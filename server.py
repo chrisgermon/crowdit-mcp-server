@@ -4686,6 +4686,44 @@ class Pax8Config:
 pax8_config = Pax8Config()
 
 
+# ============================================================================
+# BigQuery Integration (Karisma RIS Data Warehouse)
+# ============================================================================
+
+class BigQueryConfig:
+    """BigQuery configuration from environment variables."""
+    def __init__(self):
+        self.project_id = os.getenv("BIGQUERY_PROJECT_ID", "")
+        self.credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", "")
+        self._client = None
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.project_id)
+
+    def get_client(self):
+        """Get or create BigQuery client with proper credentials."""
+        if self._client is None:
+            try:
+                from google.cloud import bigquery
+
+                if self.credentials_json:
+                    # Parse credentials from environment variable (for Cloud Run)
+                    from google.oauth2 import service_account
+                    credentials_info = json.loads(self.credentials_json)
+                    credentials = service_account.Credentials.from_service_account_info(credentials_info)
+                    self._client = bigquery.Client(project=self.project_id, credentials=credentials)
+                else:
+                    # Use Application Default Credentials
+                    self._client = bigquery.Client(project=self.project_id)
+            except ImportError:
+                raise ImportError("google-cloud-bigquery package not installed")
+
+        return self._client
+
+bigquery_config = BigQueryConfig()
+
+
 @mcp.tool(annotations={"readOnlyHint": True})
 async def pax8_list_subscriptions(
     company_id: Optional[str] = Field(None, description="Filter by Pax8 company ID"),
@@ -4935,6 +4973,241 @@ async def pax8_list_products(
 
 
 # ============================================================================
+# BigQuery Tools - Karisma RIS Data Warehouse
+# ============================================================================
+
+@mcp.tool()
+async def bigquery_query(
+    sql: str = Field(..., description="SQL query to execute against BigQuery"),
+    max_results: int = Field(100, description="Maximum rows to return (1-1000)")
+) -> str:
+    """
+    Execute a SQL query against BigQuery and return results as markdown table.
+    Use this for querying RIS data from Karisma radiology databases.
+
+    Common datasets in crowdmcp project:
+    - karisma_warehouse: Radiology data synced from Karisma RIS systems
+
+    Karisma RIS Data - Key Tables and Views:
+
+    Pre-built Views (recommended):
+    - vw_Sonographer_Services: Sonographer activity with worksite, service, patient details
+    - vw_WorkSite_Revenue: Invoice-level revenue by worksite and date
+    - vw_Radiologist_Revenue: Invoice item-level revenue by radiologist and worksite
+    - vw_Referrer_Activity: Referring doctor activity with patient counts
+    - vw_Study_Types: Study breakdown by modality, department, worksite
+
+    Core Tables:
+    - Data_Request: Patient visits/requests
+    - Data_RequestService: Services within a request
+    - Data_WorkSite: Site/location information
+    - Data_Practitioner: Radiologists/doctors (reporting providers)
+    - Data_ResourceInstance: Sonographers/technicians
+    - Data_Report: Radiology reports
+    - Data_Invoice: Billing records
+
+    Example queries:
+    - SELECT * FROM `crowdmcp.karisma_warehouse.vw_Sonographer_Services` WHERE SonographerName = 'Name' LIMIT 10
+    - SELECT WorkSiteName, COUNT(*) as Studies FROM `crowdmcp.karisma_warehouse.vw_Study_Types` GROUP BY WorkSiteName
+    - SELECT RadiologistName, SUM(ItemCharged) as Revenue FROM `crowdmcp.karisma_warehouse.vw_Radiologist_Revenue` GROUP BY RadiologistName
+    """
+    if not bigquery_config.is_configured:
+        return "Error: BigQuery is not configured. Set BIGQUERY_PROJECT_ID environment variable."
+
+    try:
+        client = bigquery_config.get_client()
+
+        # Execute query with timeout
+        query_job = client.query(sql)
+        results = query_job.result(timeout=120)  # 2 minute timeout
+
+        # Format results
+        rows = list(results)[:min(max_results, 1000)]
+
+        if not rows:
+            return "Query executed successfully. No results returned."
+
+        # Get column names from schema
+        columns = [field.name for field in results.schema]
+
+        # Format as markdown table
+        output = ["| " + " | ".join(columns) + " |"]
+        output.append("| " + " | ".join(["---"] * len(columns)) + " |")
+
+        for row in rows:
+            values = []
+            for col in columns:
+                val = row[col]
+                if val is None:
+                    values.append("NULL")
+                else:
+                    str_val = str(val)
+                    # Truncate long values for readability
+                    values.append(str_val[:60] + "..." if len(str_val) > 60 else str_val)
+            output.append("| " + " | ".join(values) + " |")
+
+        # Include query stats
+        bytes_processed = query_job.total_bytes_processed or 0
+        mb_processed = bytes_processed / 1024 / 1024
+
+        return f"Query returned {len(rows)} row(s) (processed {mb_processed:.2f} MB):\n\n" + "\n".join(output)
+
+    except ImportError:
+        return "Error: google-cloud-bigquery package not installed. Add to pyproject.toml dependencies."
+    except Exception as e:
+        logger.error(f"BigQuery query error: {e}")
+        return f"BigQuery error: {str(e)}"
+
+
+@mcp.tool()
+async def bigquery_list_datasets() -> str:
+    """
+    List all datasets in the BigQuery project.
+    Use this to discover available data sources.
+    """
+    if not bigquery_config.is_configured:
+        return "Error: BigQuery is not configured. Set BIGQUERY_PROJECT_ID environment variable."
+
+    try:
+        client = bigquery_config.get_client()
+        datasets = list(client.list_datasets())
+
+        if not datasets:
+            return f"No datasets found in project '{bigquery_config.project_id}'."
+
+        output = [f"# Datasets in {bigquery_config.project_id}\n"]
+        for dataset in datasets:
+            output.append(f"- **{dataset.dataset_id}**")
+
+        output.append(f"\nTotal: {len(datasets)} dataset(s)")
+        return "\n".join(output)
+
+    except ImportError:
+        return "Error: google-cloud-bigquery package not installed."
+    except Exception as e:
+        logger.error(f"BigQuery list datasets error: {e}")
+        return f"BigQuery error: {str(e)}"
+
+
+@mcp.tool()
+async def bigquery_list_tables(
+    dataset: str = Field(..., description="Dataset name to list tables from (e.g., 'karisma_warehouse')")
+) -> str:
+    """
+    List all tables in a BigQuery dataset with row counts and sizes.
+    """
+    if not bigquery_config.is_configured:
+        return "Error: BigQuery is not configured. Set BIGQUERY_PROJECT_ID environment variable."
+
+    try:
+        client = bigquery_config.get_client()
+
+        dataset_ref = f"{bigquery_config.project_id}.{dataset}"
+        tables = list(client.list_tables(dataset_ref))
+
+        if not tables:
+            return f"No tables found in dataset '{dataset}'."
+
+        output = [
+            f"# Tables in {dataset}\n",
+            "| Table | Type | Rows | Size |",
+            "| --- | --- | --- | --- |"
+        ]
+
+        for table in tables:
+            # Get full table info for row count and size
+            try:
+                full_table = client.get_table(table)
+                rows = f"{full_table.num_rows:,}" if full_table.num_rows else "?"
+                size = f"{full_table.num_bytes / 1024 / 1024:.1f} MB" if full_table.num_bytes else "?"
+            except:
+                rows = "?"
+                size = "?"
+
+            output.append(f"| {table.table_id} | {table.table_type} | {rows} | {size} |")
+
+        output.append(f"\nTotal: {len(tables)} table(s)")
+        return "\n".join(output)
+
+    except ImportError:
+        return "Error: google-cloud-bigquery package not installed."
+    except Exception as e:
+        logger.error(f"BigQuery list tables error: {e}")
+        return f"BigQuery error: {str(e)}"
+
+
+@mcp.tool()
+async def bigquery_describe_table(
+    dataset: str = Field(..., description="Dataset name"),
+    table: str = Field(..., description="Table name to describe")
+) -> str:
+    """
+    Get detailed schema and metadata for a BigQuery table.
+    Shows all columns with their types, modes, and descriptions.
+    """
+    if not bigquery_config.is_configured:
+        return "Error: BigQuery is not configured. Set BIGQUERY_PROJECT_ID environment variable."
+
+    try:
+        client = bigquery_config.get_client()
+
+        table_ref = f"{bigquery_config.project_id}.{dataset}.{table}"
+        table_obj = client.get_table(table_ref)
+
+        output = [
+            f"# {dataset}.{table}\n",
+            f"**Type:** {table_obj.table_type}",
+        ]
+
+        if table_obj.num_rows is not None:
+            output.append(f"**Rows:** {table_obj.num_rows:,}")
+        if table_obj.num_bytes is not None:
+            output.append(f"**Size:** {table_obj.num_bytes / 1024 / 1024:.2f} MB")
+        if table_obj.created:
+            output.append(f"**Created:** {table_obj.created.strftime('%Y-%m-%d %H:%M')}")
+        if table_obj.modified:
+            output.append(f"**Modified:** {table_obj.modified.strftime('%Y-%m-%d %H:%M')}")
+
+        output.extend([
+            "\n## Schema\n",
+            "| Column | Type | Mode | Description |",
+            "| --- | --- | --- | --- |"
+        ])
+
+        for field in table_obj.schema:
+            desc = (field.description or "")[:60]
+            output.append(f"| {field.name} | {field.field_type} | {field.mode} | {desc} |")
+
+        output.append(f"\nTotal: {len(table_obj.schema)} column(s)")
+        return "\n".join(output)
+
+    except ImportError:
+        return "Error: google-cloud-bigquery package not installed."
+    except Exception as e:
+        logger.error(f"BigQuery describe table error: {e}")
+        return f"BigQuery error: {str(e)}"
+
+
+@mcp.tool()
+async def bigquery_sample_data(
+    dataset: str = Field(..., description="Dataset name"),
+    table: str = Field(..., description="Table name"),
+    limit: int = Field(5, description="Number of sample rows (1-20)")
+) -> str:
+    """
+    Get sample data from a BigQuery table.
+    Quick way to preview table contents without writing SQL.
+    """
+    if not bigquery_config.is_configured:
+        return "Error: BigQuery is not configured."
+
+    limit = min(max(1, limit), 20)
+    sql = f"SELECT * FROM `{bigquery_config.project_id}.{dataset}.{table}` LIMIT {limit}"
+
+    return await bigquery_query(sql=sql, max_results=limit)
+
+
+# ============================================================================
 # Server Status
 # ============================================================================
 
@@ -5005,6 +5278,21 @@ async def server_status() -> str:
         if not os.getenv("PAX8_CLIENT_ID"): missing.append("CLIENT_ID")
         if not os.getenv("PAX8_CLIENT_SECRET"): missing.append("CLIENT_SECRET")
         lines.append(f"⚠️ **Pax8:** Missing: {', '.join(missing)}")
+
+    # BigQuery status
+    if bigquery_config.is_configured:
+        try:
+            client = bigquery_config.get_client()
+            # Quick connectivity test
+            list(client.list_datasets(max_results=1))
+            lines.append(f"✅ **BigQuery:** Connected (project: {bigquery_config.project_id})")
+        except Exception as e:
+            lines.append(f"❌ **BigQuery:** Error - {str(e)[:50]}")
+    else:
+        missing = []
+        if not os.getenv("BIGQUERY_PROJECT_ID"):
+            missing.append("BIGQUERY_PROJECT_ID")
+        lines.append(f"⚠️ **BigQuery:** Missing: {', '.join(missing)}")
 
     lines.append(f"\n**Cloud Run URL:** {CLOUD_RUN_URL}")
     return "\n".join(lines)

@@ -10,6 +10,8 @@ dependencies = [
     "uvicorn>=0.30.0",
     "starlette>=0.38.0",
     "google-cloud-secret-manager>=2.20.0",
+    "google-cloud-bigquery>=3.25.0",
+    "google-auth>=2.29.0",
 ]
 
 [build-system]
