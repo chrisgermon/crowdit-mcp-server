@@ -1349,6 +1349,54 @@ class XeroConfig:
 xero_config = XeroConfig()
 
 
+async def _resolve_invoice_id(invoice_id: str, access_token: str, tenant_id: str) -> str:
+    """
+    Resolve an invoice number (e.g., 'INV-6633') to its GUID.
+    If already a GUID, returns it unchanged.
+
+    Args:
+        invoice_id: Either an invoice number (INV-XXXX) or GUID
+        access_token: Xero OAuth access token
+        tenant_id: Xero tenant ID
+
+    Returns:
+        The invoice GUID
+
+    Raises:
+        Exception if invoice not found
+    """
+    import re
+
+    # Check if it's already a GUID (UUID format)
+    guid_pattern = re.compile(
+        r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    )
+
+    if guid_pattern.match(invoice_id):
+        return invoice_id
+
+    # It's an invoice number, look it up
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Xero-Tenant-Id": tenant_id,
+        "Accept": "application/json",
+    }
+
+    # Search by invoice number
+    url = f"https://api.xero.com/api.xro/2.0/Invoices?where=InvoiceNumber==\"{invoice_id}\""
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+    invoices = data.get("Invoices", [])
+    if not invoices:
+        raise Exception(f"Invoice '{invoice_id}' not found")
+
+    return invoices[0]["InvoiceID"]
+
+
 @mcp.tool(annotations={"readOnlyHint": True})
 async def xero_get_invoices(
     status: Optional[str] = Field(None, description="Filter: 'DRAFT', 'SUBMITTED', 'AUTHORISED', 'PAID', 'VOIDED'"),
@@ -1547,22 +1595,25 @@ async def xero_update_invoice(
     """Update an existing Xero invoice (reference, status, or due date)."""
     if not xero_config.is_configured:
         return "Error: Xero not configured."
-    
+
     try:
         token = await xero_config.get_access_token()
-        
-        update_data = {"InvoiceID": invoice_id}
-        
+
+        # Resolve invoice number to GUID if needed
+        invoice_guid = await _resolve_invoice_id(invoice_id, token, xero_config.tenant_id)
+
+        update_data = {"InvoiceID": invoice_guid}
+
         if reference is not None:
             update_data["Reference"] = reference
         if status:
             update_data["Status"] = status.upper()
         if due_date:
             update_data["DueDate"] = due_date
-        
+
         if len(update_data) == 1:
             return "Error: No updates specified. Provide reference, status, or due_date."
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 "https://api.xero.com/api.xro/2.0/Invoices",
@@ -1576,7 +1627,7 @@ async def xero_update_invoice(
             )
             response.raise_for_status()
             updated = response.json().get("Invoices", [{}])[0]
-        
+
         return f"✅ Invoice **{updated.get('InvoiceNumber', invoice_id)}** updated."
     except Exception as e:
         return f"Error: {str(e)}"
@@ -1800,7 +1851,7 @@ echo -n "{tenant_id}" | gcloud secrets versions add XERO_TENANT_ID --data-file=-
 
 @mcp.tool(annotations={"readOnlyHint": False})
 async def xero_update_invoice_lines(
-    invoice_id: str = Field(..., description="Invoice ID (GUID) - must be DRAFT status"),
+    invoice_id: str = Field(..., description="Invoice ID (GUID) or Invoice Number (e.g., INV-6476) - must be DRAFT status"),
     line_items: str = Field(..., description='JSON array of line items: [{"description": "...", "quantity": 1, "unit_amount": 100.00, "account_code": "200"}]')
 ) -> str:
     """Replace all line items on a DRAFT invoice. Only works on DRAFT invoices."""
@@ -1809,10 +1860,14 @@ async def xero_update_invoice_lines(
 
     try:
         token = await xero_config.get_access_token()
+
+        # Resolve invoice number to GUID if needed
+        invoice_guid = await _resolve_invoice_id(invoice_id, token, xero_config.tenant_id)
+
         items = json.loads(line_items)
 
         update_data = {
-            "InvoiceID": invoice_id,
+            "InvoiceID": invoice_guid,
             "LineItems": [
                 {
                     "Description": item.get("description", ""),
@@ -2225,7 +2280,7 @@ async def xero_create_credit_note(
 
 @mcp.tool(annotations={"readOnlyHint": False})
 async def xero_void_invoice(
-    invoice_id: str = Field(..., description="Invoice ID (GUID) to void")
+    invoice_id: str = Field(..., description="Invoice ID (GUID) or Invoice Number (e.g., INV-6476) to void")
 ) -> str:
     """Void an invoice. Only works on AUTHORISED invoices with no payments."""
     if not xero_config.is_configured:
@@ -2234,10 +2289,13 @@ async def xero_void_invoice(
     try:
         token = await xero_config.get_access_token()
 
+        # Resolve invoice number to GUID if needed
+        invoice_guid = await _resolve_invoice_id(invoice_id, token, xero_config.tenant_id)
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 "https://api.xero.com/api.xro/2.0/Invoices",
-                json={"Invoices": [{"InvoiceID": invoice_id, "Status": "VOIDED"}]},
+                json={"Invoices": [{"InvoiceID": invoice_guid, "Status": "VOIDED"}]},
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Xero-Tenant-Id": xero_config.tenant_id,
@@ -2255,7 +2313,7 @@ async def xero_void_invoice(
 
 @mcp.tool(annotations={"readOnlyHint": False})
 async def xero_email_invoice(
-    invoice_id: str = Field(..., description="Invoice ID (GUID) to email")
+    invoice_id: str = Field(..., description="Invoice ID (GUID) or Invoice Number (e.g., INV-6476) to email")
 ) -> str:
     """Email an invoice to the contact. Invoice must be AUTHORISED."""
     if not xero_config.is_configured:
@@ -2264,9 +2322,12 @@ async def xero_email_invoice(
     try:
         token = await xero_config.get_access_token()
 
+        # Resolve invoice number to GUID if needed
+        invoice_guid = await _resolve_invoice_id(invoice_id, token, xero_config.tenant_id)
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"https://api.xero.com/api.xro/2.0/Invoices/{invoice_id}/Email",
+                f"https://api.xero.com/api.xro/2.0/Invoices/{invoice_guid}/Email",
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Xero-Tenant-Id": xero_config.tenant_id,
@@ -2275,7 +2336,7 @@ async def xero_email_invoice(
             )
             response.raise_for_status()
 
-        return f"✅ Invoice emailed successfully."
+        return f"✅ Invoice {invoice_id} emailed successfully."
     except Exception as e:
         return f"Error: {str(e)}"
 
