@@ -1,6 +1,6 @@
 """
 Crowd IT Unified MCP Server
-Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, and Maxotel VoIP integration.
+Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, and Ubuntu Server (SSH) integration.
 """
 
 import os
@@ -21,7 +21,7 @@ CLOUD_RUN_URL = os.getenv("CLOUD_RUN_URL", "https://crowdit-mcp-server-lypf4vkh4
 
 mcp = FastMCP(
     name="crowdit-mcp-server",
-    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, and Maxotel VoIP integration for MSP operations.",
+    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, and Ubuntu Server (SSH) integration for MSP operations.",
     stateless_http=True  # Required for Cloud Run - enables stateless sessions
 )
 
@@ -6470,6 +6470,611 @@ Note: This URL is single-use and expires after {key_valid} seconds."""
 
 
 # ============================================================================
+# Ubuntu Server Integration (SSH)
+# ============================================================================
+
+class UbuntuConfig:
+    """Ubuntu server SSH configuration for remote command execution."""
+    def __init__(self):
+        self.hostname = os.getenv("UBUNTU_HOSTNAME", "")
+        self.port = int(os.getenv("UBUNTU_PORT", "22"))
+        self.username = os.getenv("UBUNTU_USERNAME", "")
+        self.password = os.getenv("UBUNTU_PASSWORD", "")
+        # SSH private key (base64 encoded or direct key content)
+        self._private_key = os.getenv("UBUNTU_PRIVATE_KEY", "")
+        # Optional: path to private key file in Secret Manager
+        self._private_key_secret = os.getenv("UBUNTU_PRIVATE_KEY_SECRET", "")
+        # Known hosts verification (disable for self-signed/unknown hosts)
+        self.verify_host = os.getenv("UBUNTU_VERIFY_HOST", "false").lower() == "true"
+        # Connection timeout
+        self.timeout = int(os.getenv("UBUNTU_TIMEOUT", "30"))
+        # Friendly name for this server
+        self.server_name = os.getenv("UBUNTU_SERVER_NAME", "Ubuntu Server")
+
+    @property
+    def is_configured(self) -> bool:
+        """Check if minimum SSH configuration is available."""
+        has_auth = bool(self.password) or bool(self._private_key) or bool(self._private_key_secret)
+        return bool(self.hostname) and bool(self.username) and has_auth
+
+    def get_private_key(self) -> Optional[str]:
+        """Get the SSH private key, loading from Secret Manager if needed."""
+        if self._private_key:
+            # Check if base64 encoded
+            import base64
+            try:
+                decoded = base64.b64decode(self._private_key).decode('utf-8')
+                if decoded.startswith('-----BEGIN'):
+                    return decoded
+            except Exception:
+                pass
+            # Return as-is if not base64 or already plain text
+            if self._private_key.startswith('-----BEGIN'):
+                return self._private_key
+            return None
+
+        if self._private_key_secret:
+            secret_value = get_secret_sync(self._private_key_secret)
+            if secret_value:
+                return secret_value
+
+        return None
+
+ubuntu_config = UbuntuConfig()
+
+
+async def _get_ssh_connection():
+    """Create an SSH connection to the Ubuntu server."""
+    import asyncssh
+
+    connect_kwargs = {
+        "host": ubuntu_config.hostname,
+        "port": ubuntu_config.port,
+        "username": ubuntu_config.username,
+        "connect_timeout": ubuntu_config.timeout,
+    }
+
+    # Add authentication
+    private_key = ubuntu_config.get_private_key()
+    if private_key:
+        connect_kwargs["client_keys"] = [asyncssh.import_private_key(private_key)]
+    elif ubuntu_config.password:
+        connect_kwargs["password"] = ubuntu_config.password
+
+    # Host key verification
+    if not ubuntu_config.verify_host:
+        connect_kwargs["known_hosts"] = None
+
+    return await asyncssh.connect(**connect_kwargs)
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
+async def ubuntu_execute_command(
+    command: str = Field(..., description="The shell command to execute on the Ubuntu server"),
+    timeout: int = Field(60, description="Command timeout in seconds (max 300)"),
+    working_directory: Optional[str] = Field(None, description="Directory to run the command in")
+) -> str:
+    """
+    Execute a shell command on the remote Ubuntu server via SSH.
+
+    Security: This tool has full shell access. Use with caution.
+    Commands are executed as the configured SSH user.
+    """
+    if not ubuntu_config.is_configured:
+        return "Error: Ubuntu server not configured. Set UBUNTU_HOSTNAME, UBUNTU_USERNAME, and UBUNTU_PASSWORD or UBUNTU_PRIVATE_KEY."
+
+    try:
+        import asyncssh
+
+        timeout = min(max(1, timeout), 300)  # Clamp between 1-300 seconds
+
+        # Prepend cd if working directory specified
+        if working_directory:
+            command = f"cd {working_directory} && {command}"
+
+        async with await _get_ssh_connection() as conn:
+            result = await asyncio.wait_for(
+                conn.run(command, check=False),
+                timeout=timeout
+            )
+
+            output_parts = []
+
+            if result.stdout:
+                output_parts.append(f"**STDOUT:**\n```\n{result.stdout.strip()}\n```")
+
+            if result.stderr:
+                output_parts.append(f"**STDERR:**\n```\n{result.stderr.strip()}\n```")
+
+            exit_status = f"**Exit Code:** {result.exit_status}"
+
+            if not output_parts:
+                output_parts.append("*(No output)*")
+
+            return f"# Command Executed on {ubuntu_config.server_name}\n\n**Command:** `{command}`\n\n{exit_status}\n\n" + "\n\n".join(output_parts)
+
+    except asyncio.TimeoutError:
+        return f"Error: Command timed out after {timeout} seconds."
+    except asyncssh.Error as e:
+        logger.error(f"SSH error: {e}")
+        return f"SSH Error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Ubuntu execute command error: {e}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def ubuntu_read_file(
+    file_path: str = Field(..., description="Absolute path to the file to read"),
+    max_lines: int = Field(500, description="Maximum number of lines to return (default 500, max 2000)"),
+    encoding: str = Field("utf-8", description="File encoding (default utf-8)")
+) -> str:
+    """
+    Read the contents of a file from the Ubuntu server.
+    Large files are truncated to max_lines.
+    """
+    if not ubuntu_config.is_configured:
+        return "Error: Ubuntu server not configured."
+
+    try:
+        import asyncssh
+
+        max_lines = min(max(1, max_lines), 2000)
+
+        async with await _get_ssh_connection() as conn:
+            # Check if file exists and get info
+            result = await conn.run(f"stat -c '%s %F' {file_path} 2>/dev/null", check=False)
+
+            if result.exit_status != 0:
+                return f"Error: File not found or not accessible: {file_path}"
+
+            file_info = result.stdout.strip().split(' ', 1)
+            file_size = int(file_info[0]) if file_info else 0
+            file_type = file_info[1] if len(file_info) > 1 else "unknown"
+
+            if "directory" in file_type.lower():
+                return f"Error: {file_path} is a directory. Use ubuntu_list_directory instead."
+
+            # Read the file with line limit
+            result = await conn.run(f"head -n {max_lines} {file_path}", check=False)
+
+            if result.exit_status != 0:
+                return f"Error reading file: {result.stderr.strip()}"
+
+            content = result.stdout
+
+            # Check if file was truncated
+            total_lines_result = await conn.run(f"wc -l < {file_path}", check=False)
+            total_lines = int(total_lines_result.stdout.strip()) if total_lines_result.exit_status == 0 else 0
+
+            truncated_msg = ""
+            if total_lines > max_lines:
+                truncated_msg = f"\n\n*File truncated: showing {max_lines} of {total_lines} lines*"
+
+            return f"# File: {file_path}\n\n**Size:** {file_size:,} bytes | **Lines:** {total_lines}\n\n```\n{content}\n```{truncated_msg}"
+
+    except asyncssh.Error as e:
+        logger.error(f"SSH error: {e}")
+        return f"SSH Error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Ubuntu read file error: {e}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True})
+async def ubuntu_write_file(
+    file_path: str = Field(..., description="Absolute path to the file to write"),
+    content: str = Field(..., description="Content to write to the file"),
+    append: bool = Field(False, description="Append to file instead of overwriting"),
+    create_dirs: bool = Field(False, description="Create parent directories if they don't exist"),
+    mode: Optional[str] = Field(None, description="File permissions (e.g., '644', '755')")
+) -> str:
+    """
+    Write content to a file on the Ubuntu server.
+
+    Warning: This will overwrite existing files unless append=True.
+    """
+    if not ubuntu_config.is_configured:
+        return "Error: Ubuntu server not configured."
+
+    try:
+        import asyncssh
+
+        async with await _get_ssh_connection() as conn:
+            # Create parent directories if requested
+            if create_dirs:
+                parent_dir = '/'.join(file_path.rsplit('/', 1)[:-1])
+                if parent_dir:
+                    await conn.run(f"mkdir -p {parent_dir}", check=False)
+
+            # Use a heredoc to write content safely
+            operator = ">>" if append else ">"
+            # Escape content for shell
+            escaped_content = content.replace("'", "'\\''")
+
+            write_cmd = f"cat << 'EOFMARKER' {operator} {file_path}\n{content}\nEOFMARKER"
+            result = await conn.run(write_cmd, check=False)
+
+            if result.exit_status != 0:
+                return f"Error writing file: {result.stderr.strip()}"
+
+            # Set permissions if specified
+            if mode:
+                await conn.run(f"chmod {mode} {file_path}", check=False)
+
+            # Get final file info
+            stat_result = await conn.run(f"stat -c '%s bytes, %A' {file_path}", check=False)
+            file_info = stat_result.stdout.strip() if stat_result.exit_status == 0 else "unknown"
+
+            action = "appended to" if append else "written to"
+            return f"# File {action.title()}\n\n**Path:** {file_path}\n**Info:** {file_info}\n**Bytes written:** {len(content.encode('utf-8')):,}"
+
+    except asyncssh.Error as e:
+        logger.error(f"SSH error: {e}")
+        return f"SSH Error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Ubuntu write file error: {e}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def ubuntu_list_directory(
+    path: str = Field("/", description="Directory path to list"),
+    show_hidden: bool = Field(False, description="Include hidden files (starting with .)"),
+    long_format: bool = Field(True, description="Show detailed file information"),
+    recursive: bool = Field(False, description="List subdirectories recursively (use with caution)")
+) -> str:
+    """
+    List contents of a directory on the Ubuntu server.
+    """
+    if not ubuntu_config.is_configured:
+        return "Error: Ubuntu server not configured."
+
+    try:
+        import asyncssh
+
+        ls_flags = "-l" if long_format else ""
+        if show_hidden:
+            ls_flags += "a"
+        if recursive:
+            ls_flags += "R"
+
+        ls_flags = f"-{ls_flags}" if ls_flags else ""
+
+        async with await _get_ssh_connection() as conn:
+            result = await conn.run(f"ls {ls_flags} {path} 2>&1", check=False)
+
+            if result.exit_status != 0:
+                return f"Error listing directory: {result.stdout.strip()}"
+
+            output = result.stdout.strip()
+
+            # Count items
+            if long_format:
+                lines = [l for l in output.split('\n') if l and not l.startswith('total')]
+                item_count = len(lines)
+            else:
+                item_count = len(output.split())
+
+            return f"# Directory: {path}\n\n**Items:** {item_count}\n\n```\n{output}\n```"
+
+    except asyncssh.Error as e:
+        logger.error(f"SSH error: {e}")
+        return f"SSH Error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Ubuntu list directory error: {e}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def ubuntu_system_info() -> str:
+    """
+    Get system information from the Ubuntu server including OS, memory, disk, and uptime.
+    """
+    if not ubuntu_config.is_configured:
+        return "Error: Ubuntu server not configured."
+
+    try:
+        import asyncssh
+
+        async with await _get_ssh_connection() as conn:
+            commands = {
+                "hostname": "hostname -f 2>/dev/null || hostname",
+                "os": "lsb_release -d 2>/dev/null | cut -f2 || cat /etc/os-release | grep PRETTY_NAME | cut -d'\"' -f2",
+                "kernel": "uname -r",
+                "uptime": "uptime -p 2>/dev/null || uptime",
+                "memory": "free -h | grep Mem | awk '{print $2 \" total, \" $3 \" used, \" $4 \" free\"}'",
+                "disk": "df -h / | tail -1 | awk '{print $2 \" total, \" $3 \" used, \" $4 \" free (\" $5 \" used)\"}'",
+                "cpu": "nproc",
+                "load": "cat /proc/loadavg | cut -d' ' -f1-3",
+                "ip": "hostname -I 2>/dev/null | awk '{print $1}' || ip route get 1 | awk '{print $7}'",
+            }
+
+            results = {}
+            for name, cmd in commands.items():
+                result = await conn.run(cmd, check=False)
+                results[name] = result.stdout.strip() if result.exit_status == 0 else "N/A"
+
+            return f"""# System Information: {ubuntu_config.server_name}
+
+**Hostname:** {results['hostname']}
+**IP Address:** {results['ip']}
+**OS:** {results['os']}
+**Kernel:** {results['kernel']}
+**Uptime:** {results['uptime']}
+
+## Resources
+**CPU Cores:** {results['cpu']}
+**Load Average:** {results['load']}
+**Memory:** {results['memory']}
+**Disk (/):** {results['disk']}"""
+
+    except asyncssh.Error as e:
+        logger.error(f"SSH error: {e}")
+        return f"SSH Error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Ubuntu system info error: {e}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def ubuntu_service_status(
+    service_name: Optional[str] = Field(None, description="Specific service name to check (e.g., 'nginx', 'docker'). If not provided, lists all active services.")
+) -> str:
+    """
+    Check the status of system services on the Ubuntu server.
+    Uses systemctl to query service states.
+    """
+    if not ubuntu_config.is_configured:
+        return "Error: Ubuntu server not configured."
+
+    try:
+        import asyncssh
+
+        async with await _get_ssh_connection() as conn:
+            if service_name:
+                # Check specific service
+                result = await conn.run(f"systemctl status {service_name} 2>&1", check=False)
+
+                # Also get enabled/disabled state
+                enabled_result = await conn.run(f"systemctl is-enabled {service_name} 2>&1", check=False)
+                enabled_state = enabled_result.stdout.strip()
+
+                return f"# Service: {service_name}\n\n**Enabled:** {enabled_state}\n\n```\n{result.stdout.strip()}\n```"
+            else:
+                # List all active services
+                result = await conn.run("systemctl list-units --type=service --state=running --no-pager --no-legend | head -30", check=False)
+
+                if result.exit_status != 0:
+                    return f"Error getting service list: {result.stderr.strip()}"
+
+                services = result.stdout.strip()
+                lines = services.split('\n')
+
+                return f"# Active Services on {ubuntu_config.server_name}\n\n**Running Services:** {len(lines)}\n\n```\n{services}\n```\n\n*Showing first 30 services. Use service_name parameter for specific service details.*"
+
+    except asyncssh.Error as e:
+        logger.error(f"SSH error: {e}")
+        return f"SSH Error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Ubuntu service status error: {e}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True})
+async def ubuntu_manage_service(
+    service_name: str = Field(..., description="Name of the service to manage"),
+    action: str = Field(..., description="Action to perform: 'start', 'stop', 'restart', 'reload', 'enable', 'disable'")
+) -> str:
+    """
+    Manage (start/stop/restart) a system service on the Ubuntu server.
+
+    Requires the SSH user to have sudo privileges for systemctl commands.
+    """
+    if not ubuntu_config.is_configured:
+        return "Error: Ubuntu server not configured."
+
+    valid_actions = ['start', 'stop', 'restart', 'reload', 'enable', 'disable']
+    if action.lower() not in valid_actions:
+        return f"Error: Invalid action '{action}'. Valid actions: {', '.join(valid_actions)}"
+
+    try:
+        import asyncssh
+
+        async with await _get_ssh_connection() as conn:
+            # Try with sudo first, fall back to direct command
+            cmd = f"sudo systemctl {action.lower()} {service_name} 2>&1"
+            result = await conn.run(cmd, check=False)
+
+            if result.exit_status != 0:
+                # Try without sudo
+                cmd = f"systemctl {action.lower()} {service_name} 2>&1"
+                result = await conn.run(cmd, check=False)
+
+            if result.exit_status != 0:
+                return f"Error: Failed to {action} {service_name}\n\n```\n{result.stdout.strip()}\n```"
+
+            # Get new status
+            status_result = await conn.run(f"systemctl is-active {service_name} 2>&1", check=False)
+            current_state = status_result.stdout.strip()
+
+            return f"# Service Action Completed\n\n**Service:** {service_name}\n**Action:** {action}\n**Current State:** {current_state}\n\n{result.stdout.strip() if result.stdout.strip() else 'Action completed successfully.'}"
+
+    except asyncssh.Error as e:
+        logger.error(f"SSH error: {e}")
+        return f"SSH Error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Ubuntu manage service error: {e}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def ubuntu_process_list(
+    filter_user: Optional[str] = Field(None, description="Filter by username"),
+    filter_name: Optional[str] = Field(None, description="Filter by process name (grep pattern)"),
+    sort_by: str = Field("cpu", description="Sort by: 'cpu', 'mem', 'pid', 'time'"),
+    limit: int = Field(20, description="Maximum number of processes to show")
+) -> str:
+    """
+    List running processes on the Ubuntu server.
+    Similar to 'top' or 'ps aux' but formatted for readability.
+    """
+    if not ubuntu_config.is_configured:
+        return "Error: Ubuntu server not configured."
+
+    try:
+        import asyncssh
+
+        limit = min(max(1, limit), 100)
+
+        sort_map = {
+            "cpu": "-pcpu",
+            "mem": "-pmem",
+            "pid": "-pid",
+            "time": "-time"
+        }
+        sort_flag = sort_map.get(sort_by.lower(), "-pcpu")
+
+        async with await _get_ssh_connection() as conn:
+            cmd = f"ps aux --sort={sort_flag}"
+
+            if filter_user:
+                cmd = f"ps -u {filter_user} aux --sort={sort_flag}"
+
+            if filter_name:
+                cmd = f"{cmd} | grep -i '{filter_name}' | grep -v grep"
+
+            cmd = f"{cmd} | head -n {limit + 1}"  # +1 for header
+
+            result = await conn.run(cmd, check=False)
+
+            if result.exit_status != 0 and not result.stdout.strip():
+                return f"Error getting process list: {result.stderr.strip()}"
+
+            output = result.stdout.strip()
+            lines = output.split('\n')
+            process_count = len(lines) - 1 if lines else 0
+
+            filter_info = ""
+            if filter_user:
+                filter_info += f" | User: {filter_user}"
+            if filter_name:
+                filter_info += f" | Filter: '{filter_name}'"
+
+            return f"# Process List on {ubuntu_config.server_name}\n\n**Showing:** {process_count} processes (sorted by {sort_by}){filter_info}\n\n```\n{output}\n```"
+
+    except asyncssh.Error as e:
+        logger.error(f"SSH error: {e}")
+        return f"SSH Error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Ubuntu process list error: {e}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def ubuntu_docker_status(
+    container_name: Optional[str] = Field(None, description="Specific container name/ID to inspect"),
+    show_logs: bool = Field(False, description="Show recent logs for the container (requires container_name)"),
+    log_lines: int = Field(50, description="Number of log lines to show (if show_logs=True)")
+) -> str:
+    """
+    Get Docker container status and information from the Ubuntu server.
+    Requires Docker to be installed and accessible by the SSH user.
+    """
+    if not ubuntu_config.is_configured:
+        return "Error: Ubuntu server not configured."
+
+    try:
+        import asyncssh
+
+        async with await _get_ssh_connection() as conn:
+            # Check if docker is available
+            docker_check = await conn.run("which docker 2>/dev/null", check=False)
+            if docker_check.exit_status != 0:
+                return "Error: Docker is not installed or not in PATH on this server."
+
+            if container_name:
+                # Get specific container info
+                inspect_result = await conn.run(f"docker inspect {container_name} --format '{{{{.State.Status}}}} | {{{{.State.StartedAt}}}} | {{{{.Config.Image}}}}' 2>&1", check=False)
+
+                if inspect_result.exit_status != 0:
+                    return f"Error: Container '{container_name}' not found or not accessible.\n\n```\n{inspect_result.stdout.strip()}\n```"
+
+                container_info = inspect_result.stdout.strip()
+
+                output = f"# Container: {container_name}\n\n**Status:** {container_info}\n"
+
+                if show_logs:
+                    log_lines = min(max(1, log_lines), 500)
+                    logs_result = await conn.run(f"docker logs --tail {log_lines} {container_name} 2>&1", check=False)
+                    output += f"\n## Recent Logs ({log_lines} lines)\n\n```\n{logs_result.stdout.strip()}\n```"
+
+                return output
+            else:
+                # List all containers
+                result = await conn.run("docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Ports}}' 2>&1", check=False)
+
+                if result.exit_status != 0:
+                    return f"Error getting Docker status: {result.stdout.strip()}"
+
+                output = result.stdout.strip()
+                lines = output.split('\n')
+                container_count = len(lines) - 1 if lines else 0
+
+                # Get running count
+                running_result = await conn.run("docker ps -q | wc -l", check=False)
+                running_count = running_result.stdout.strip() if running_result.exit_status == 0 else "?"
+
+                return f"# Docker Containers on {ubuntu_config.server_name}\n\n**Total:** {container_count} | **Running:** {running_count}\n\n```\n{output}\n```"
+
+    except asyncssh.Error as e:
+        logger.error(f"SSH error: {e}")
+        return f"SSH Error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Ubuntu docker status error: {e}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True})
+async def ubuntu_docker_manage(
+    container_name: str = Field(..., description="Container name or ID"),
+    action: str = Field(..., description="Action: 'start', 'stop', 'restart', 'pause', 'unpause', 'kill'")
+) -> str:
+    """
+    Manage Docker containers on the Ubuntu server.
+    Start, stop, restart, or kill containers.
+    """
+    if not ubuntu_config.is_configured:
+        return "Error: Ubuntu server not configured."
+
+    valid_actions = ['start', 'stop', 'restart', 'pause', 'unpause', 'kill']
+    if action.lower() not in valid_actions:
+        return f"Error: Invalid action '{action}'. Valid actions: {', '.join(valid_actions)}"
+
+    try:
+        import asyncssh
+
+        async with await _get_ssh_connection() as conn:
+            result = await conn.run(f"docker {action.lower()} {container_name} 2>&1", check=False)
+
+            if result.exit_status != 0:
+                return f"Error: Failed to {action} container '{container_name}'\n\n```\n{result.stdout.strip()}\n```"
+
+            # Get new status
+            status_result = await conn.run(f"docker inspect {container_name} --format '{{{{.State.Status}}}}' 2>&1", check=False)
+            current_state = status_result.stdout.strip() if status_result.exit_status == 0 else "unknown"
+
+            return f"# Docker Container Action\n\n**Container:** {container_name}\n**Action:** {action}\n**Current State:** {current_state}"
+
+    except asyncssh.Error as e:
+        logger.error(f"SSH error: {e}")
+        return f"SSH Error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Ubuntu docker manage error: {e}")
+        return f"Error: {str(e)}"
+
+
+# ============================================================================
 # Server Status
 # ============================================================================
 
@@ -6566,6 +7171,26 @@ async def server_status() -> str:
         if not os.getenv("MAXOTEL_API_KEY"):
             missing.append("API_KEY")
         lines.append(f"⚠️ **Maxotel:** Missing: {', '.join(missing)}")
+
+    # Ubuntu Server (SSH) status
+    if ubuntu_config.is_configured:
+        try:
+            import asyncssh
+            async with await _get_ssh_connection() as conn:
+                result = await conn.run("hostname", check=False)
+                hostname = result.stdout.strip() if result.exit_status == 0 else "unknown"
+            lines.append(f"✅ **Ubuntu ({ubuntu_config.server_name}):** Connected to {hostname}")
+        except Exception as e:
+            lines.append(f"❌ **Ubuntu ({ubuntu_config.server_name}):** SSH failed - {str(e)[:50]}")
+    else:
+        missing = []
+        if not os.getenv("UBUNTU_HOSTNAME"):
+            missing.append("HOSTNAME")
+        if not os.getenv("UBUNTU_USERNAME"):
+            missing.append("USERNAME")
+        if not os.getenv("UBUNTU_PASSWORD") and not os.getenv("UBUNTU_PRIVATE_KEY"):
+            missing.append("PASSWORD or PRIVATE_KEY")
+        lines.append(f"⚠️ **Ubuntu Server:** Missing: {', '.join(missing)}")
 
     lines.append(f"\n**Cloud Run URL:** {CLOUD_RUN_URL}")
     return "\n".join(lines)
