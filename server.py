@@ -29,6 +29,21 @@ mcp = FastMCP(
 # Secret Manager Helper
 # ============================================================================
 
+def get_secret_sync(secret_id: str) -> Optional[str]:
+    """Read the latest version of a secret from Google Secret Manager."""
+    try:
+        from google.cloud import secretmanager
+        client = secretmanager.SecretManagerServiceClient()
+        project_id = os.getenv("GOOGLE_CLOUD_PROJECT", os.getenv("BIGQUERY_PROJECT_ID", "crowdmcp"))
+        name = f"projects/{project_id}/secrets/{secret_id}/versions/latest"
+
+        response = client.access_secret_version(request={"name": name})
+        return response.payload.data.decode("UTF-8")
+    except Exception as e:
+        logger.warning(f"Failed to read secret {secret_id} from Secret Manager: {e}")
+        return None
+
+
 def update_secret_sync(secret_id: str, value: str) -> bool:
     """Update a secret in Google Secret Manager (sync version)."""
     try:
@@ -36,7 +51,7 @@ def update_secret_sync(secret_id: str, value: str) -> bool:
         client = secretmanager.SecretManagerServiceClient()
         project_id = os.getenv("GOOGLE_CLOUD_PROJECT", os.getenv("BIGQUERY_PROJECT_ID", "crowdmcp"))
         parent = f"projects/{project_id}/secrets/{secret_id}"
-        
+
         client.add_secret_version(
             request={
                 "parent": parent,
@@ -1468,19 +1483,58 @@ class XeroConfig:
     def __init__(self):
         self.client_id = os.getenv("XERO_CLIENT_ID", "")
         self.client_secret = os.getenv("XERO_CLIENT_SECRET", "")
-        self.tenant_id = os.getenv("XERO_TENANT_ID", "")
-        self._refresh_token = os.getenv("XERO_REFRESH_TOKEN", "")
+        self._tenant_id: Optional[str] = None  # Loaded on-demand from Secret Manager
+        self._refresh_token: Optional[str] = None  # Loaded on-demand from Secret Manager
         self._access_token: Optional[str] = None
         self._token_expiry: Optional[datetime] = None
-    
+
+    @property
+    def tenant_id(self) -> str:
+        """Get tenant ID from Secret Manager (with env var fallback)."""
+        if self._tenant_id:
+            return self._tenant_id
+        # Try Secret Manager first
+        tid = get_secret_sync("XERO_TENANT_ID")
+        if tid:
+            self._tenant_id = tid
+            return tid
+        # Fallback to environment variable
+        self._tenant_id = os.getenv("XERO_TENANT_ID", "")
+        return self._tenant_id
+
+    @tenant_id.setter
+    def tenant_id(self, value: str):
+        self._tenant_id = value
+
+    def _get_refresh_token(self) -> str:
+        """Get refresh token from Secret Manager (with env var fallback)."""
+        if self._refresh_token:
+            return self._refresh_token
+        # Try Secret Manager first for the latest token
+        token = get_secret_sync("XERO_REFRESH_TOKEN")
+        if token:
+            self._refresh_token = token
+            logger.info("Loaded Xero refresh token from Secret Manager")
+            return token
+        # Fallback to environment variable
+        token = os.getenv("XERO_REFRESH_TOKEN", "")
+        if token:
+            self._refresh_token = token
+            logger.info("Loaded Xero refresh token from environment variable")
+        return token
+
     @property
     def is_configured(self) -> bool:
-        return all([self.client_id, self.client_secret, self.tenant_id, self._refresh_token])
+        return all([self.client_id, self.client_secret, self.tenant_id, self._get_refresh_token()])
     
     async def get_access_token(self) -> str:
         """Get valid access token, refreshing if needed."""
         if self._access_token and self._token_expiry and datetime.now() < self._token_expiry:
             return self._access_token
+
+        current_refresh_token = self._get_refresh_token()
+        if not current_refresh_token:
+            raise Exception("No Xero refresh token available. Run xero_auth_start to connect.")
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -1489,7 +1543,7 @@ class XeroConfig:
                     "grant_type": "refresh_token",
                     "client_id": self.client_id,
                     "client_secret": self.client_secret,
-                    "refresh_token": self._refresh_token
+                    "refresh_token": current_refresh_token
                 },
                 headers={"Content-Type": "application/x-www-form-urlencoded"}
             )
@@ -1501,15 +1555,15 @@ class XeroConfig:
                 else:
                     raise Exception(f"Xero token refresh failed: {response.status_code} - {response.text}")
             data = response.json()
-            
+
             self._access_token = data["access_token"]
             if "refresh_token" in data:
                 new_refresh = data["refresh_token"]
-                if new_refresh != self._refresh_token:
+                if new_refresh != current_refresh_token:
                     self._refresh_token = new_refresh
                     update_secret_sync("XERO_REFRESH_TOKEN", new_refresh)
                     logger.info("Xero refresh token rotated and saved to Secret Manager")
-            
+
             expires_in = data.get("expires_in", 1800)
             self._token_expiry = datetime.now() + timedelta(seconds=expires_in - 60)
             return self._access_token

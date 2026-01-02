@@ -1,12 +1,35 @@
+# Cloud Build configuration for automatic deployment
+#
+# To enable auto-deploy on merge to main, create a trigger in GCP Console:
+#   1. Go to Cloud Build > Triggers
+#   2. Click "Create Trigger"
+#   3. Name: "deploy-on-main-merge"
+#   4. Event: "Push to a branch"
+#   5. Source: Select your repository
+#   6. Branch: ^main$ (regex)
+#   7. Configuration: Cloud Build configuration file (this file)
+#   8. Click "Create"
+#
+# Or use gcloud CLI:
+#   gcloud builds triggers create github \
+#     --repo-name=crowdit-mcp-server \
+#     --repo-owner=chrisgermon \
+#     --branch-pattern="^main$" \
+#     --build-config=cloudbuild.yaml \
+#     --name="deploy-on-main-merge"
+
 steps:
   # Build the container image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/crowdit-mcp-server:$COMMIT_SHA', '.']
-  
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/crowdit-mcp-server:$COMMIT_SHA', '-t', 'gcr.io/$PROJECT_ID/crowdit-mcp-server:latest', '.']
+
   # Push the container image to Container Registry
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', 'gcr.io/$PROJECT_ID/crowdit-mcp-server:$COMMIT_SHA']
-  
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/crowdit-mcp-server:latest']
+
   # Deploy to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
@@ -24,6 +47,7 @@ steps:
 
 images:
   - 'gcr.io/$PROJECT_ID/crowdit-mcp-server:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/crowdit-mcp-server:latest'
 
 options:
   logging: CLOUD_LOGGING_ONLY
