@@ -1,6 +1,6 @@
 """
 Crowd IT Unified MCP Server
-Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, and Maxotel VoIP integration.
+Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, Quoter, Pax8, BigQuery, and Maxotel VoIP integration.
 """
 
 import os
@@ -21,7 +21,7 @@ CLOUD_RUN_URL = os.getenv("CLOUD_RUN_URL", "https://crowdit-mcp-server-lypf4vkh4
 
 mcp = FastMCP(
     name="crowdit-mcp-server",
-    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, and Maxotel VoIP integration for MSP operations.",
+    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, Quoter, Pax8, BigQuery, and Maxotel VoIP integration for MSP operations.",
     stateless_http=True  # Required for Cloud Run - enables stateless sessions
 )
 
@@ -112,6 +112,28 @@ class HaloPSAConfig:
             return self._access_token
 
 halopsa_config = HaloPSAConfig()
+
+
+async def halopsa_request(method: str, endpoint: str, params: dict = None, json: list | dict = None):
+    """Helper function to make HaloPSA API requests."""
+    if not halopsa_config.is_configured:
+        raise Exception("HaloPSA not configured")
+
+    token = await halopsa_config.get_access_token()
+    url = f"{halopsa_config.resource_server}{endpoint}"
+
+    async with httpx.AsyncClient() as client:
+        response = await client.request(
+            method=method,
+            url=url,
+            params=params,
+            json=json,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            timeout=30.0
+        )
+        response.raise_for_status()
+        return response.json()
+
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
 async def halopsa_search_tickets(
@@ -1473,6 +1495,359 @@ async def halopsa_update_recurring_invoice(
                 return f"✅ Recurring Invoice **{recurring_invoice_id}** updated. Name: {updated.get('invoicename', 'N/A')}"
 
             return f"✅ Recurring Invoice **{recurring_invoice_id}** updated."
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+# ============================================================================
+# HaloPSA Item/Product API
+# ============================================================================
+
+@mcp.tool(
+    name="halopsa_get_items",
+    annotations={
+        "title": "List HaloPSA Items",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False
+    }
+)
+async def halopsa_get_items(
+    search: str | None = None,
+    limit: int = 50,
+    item_type: str | None = None,
+    category_id: int | None = None,
+    active_only: bool = True
+) -> str:
+    """List items/products from HaloPSA catalog.
+
+    Args:
+        search: Search by name or code
+        limit: Max results (1-200)
+        item_type: Filter by type ('Hardware', 'Software', 'Service')
+        category_id: Filter by category ID
+        active_only: Only show active items
+
+    Returns:
+        str: Formatted list of items with ID, name, code, type, and price
+    """
+    params = {
+        "count": limit,
+        "includeinactive": not active_only
+    }
+
+    if search:
+        params["search"] = search
+    if item_type:
+        params["type"] = item_type
+    if category_id:
+        params["category_id"] = category_id
+
+    try:
+        data = await halopsa_request("GET", "/Item", params=params)
+        items = data.get("items", data) if isinstance(data, dict) else data
+
+        if not items:
+            return "No items found matching the criteria."
+
+        lines = ["## HaloPSA Items", ""]
+        for item in items[:limit]:
+            item_id = item.get("id", "?")
+            name = item.get("name", "Unknown")
+            code = item.get("code") or item.get("itemcode", "-")
+            item_type_val = item.get("type") or item.get("itemtype", "-")
+            unit_price = item.get("baseprice") or item.get("unitprice", 0)
+            active = "Active" if item.get("inactive", False) == False else "Inactive"
+
+            lines.append(f"- **{name}** (ID: {item_id})")
+            lines.append(f"  Code: {code} | Type: {item_type_val} | Price: ${unit_price:.2f} | {active}")
+
+        lines.append(f"\n*Showing {len(items)} item(s)*")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="halopsa_get_item",
+    annotations={
+        "title": "Get HaloPSA Item Details",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False
+    }
+)
+async def halopsa_get_item(item_id: int) -> str:
+    """Get detailed information about a specific HaloPSA item.
+
+    Args:
+        item_id: The ID of the item to retrieve
+
+    Returns:
+        str: Detailed item information including pricing, category, and stock details
+    """
+    try:
+        data = await halopsa_request("GET", f"/Item/{item_id}")
+
+        if not data:
+            return f"Item {item_id} not found."
+
+        # Handle if response is a list
+        item = data[0] if isinstance(data, list) else data
+
+        lines = [f"## Item: {item.get('name', 'Unknown')}", ""]
+
+        lines.append(f"**ID:** {item.get('id')}")
+        lines.append(f"**Code:** {item.get('code') or item.get('itemcode', '-')}")
+        lines.append(f"**Type:** {item.get('type') or item.get('itemtype', '-')}")
+        lines.append(f"**Description:** {item.get('description', '-')}")
+        lines.append("")
+
+        lines.append("### Pricing")
+        lines.append(f"- Unit Price: ${item.get('baseprice', 0):.2f}")
+        lines.append(f"- Cost Price: ${item.get('costprice', 0):.2f}")
+        lines.append(f"- Tax Code: {item.get('taxcode', '-')}")
+        lines.append("")
+
+        if item.get('category_name') or item.get('category_id'):
+            lines.append("### Category")
+            lines.append(f"- Category: {item.get('category_name', '-')} (ID: {item.get('category_id', '-')})")
+            lines.append("")
+
+        lines.append("### Status")
+        lines.append(f"- Active: {'Yes' if not item.get('inactive', False) else 'No'}")
+        lines.append(f"- Hidden: {'Yes' if item.get('hidden', False) else 'No'}")
+
+        # Stock info if available
+        if item.get('stockenabled'):
+            lines.append("")
+            lines.append("### Stock")
+            lines.append(f"- Stock Enabled: Yes")
+            lines.append(f"- Quantity on Hand: {item.get('qtyonhand', 0)}")
+            lines.append(f"- Reorder Level: {item.get('reorderlevel', 0)}")
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="halopsa_create_item",
+    annotations={
+        "title": "Create HaloPSA Item",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": False
+    }
+)
+async def halopsa_create_item(
+    name: str,
+    code: str | None = None,
+    description: str | None = None,
+    item_type: str = "Service",
+    category_id: int | None = None,
+    unit_price: float | None = None,
+    cost_price: float | None = None,
+    tax_code: str = "GST",
+    is_active: bool = True
+) -> str:
+    """Create a new item/product in HaloPSA.
+
+    Args:
+        name: Item name (required)
+        code: Item code/SKU
+        description: Item description
+        item_type: Type ('Hardware', 'Software', 'Service')
+        category_id: Category ID
+        unit_price: Unit price (ex tax)
+        cost_price: Cost price
+        tax_code: Tax code (default: GST)
+        is_active: Whether item is active
+
+    Returns:
+        str: Confirmation with new item ID
+    """
+    payload = {
+        "name": name,
+        "type": item_type,
+        "taxcode": tax_code,
+        "inactive": not is_active
+    }
+
+    if code:
+        payload["code"] = code
+    if description:
+        payload["description"] = description
+    if category_id:
+        payload["category_id"] = category_id
+    if unit_price is not None:
+        payload["baseprice"] = unit_price
+    if cost_price is not None:
+        payload["costprice"] = cost_price
+
+    try:
+        # HaloPSA expects an array for POST
+        data = await halopsa_request("POST", "/Item", json=[payload])
+
+        if data and isinstance(data, list) and len(data) > 0:
+            new_item = data[0]
+            return f"Item created: **{new_item.get('name')}** (ID: {new_item.get('id')})"
+
+        return f"Item created: **{name}**"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="halopsa_update_item",
+    annotations={
+        "title": "Update HaloPSA Item",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False
+    }
+)
+async def halopsa_update_item(
+    item_id: int,
+    name: str | None = None,
+    code: str | None = None,
+    description: str | None = None,
+    unit_price: float | None = None,
+    cost_price: float | None = None,
+    is_active: bool | None = None
+) -> str:
+    """Update an existing item in HaloPSA.
+
+    Args:
+        item_id: Item ID to update (required)
+        name: New item name
+        code: New item code/SKU
+        description: New description
+        unit_price: New unit price (ex tax)
+        cost_price: New cost price
+        is_active: New active status
+
+    Returns:
+        str: Confirmation of update
+    """
+    # Build payload with only provided fields
+    payload = {"id": item_id}
+
+    if name is not None:
+        payload["name"] = name
+    if code is not None:
+        payload["code"] = code
+    if description is not None:
+        payload["description"] = description
+    if unit_price is not None:
+        payload["baseprice"] = unit_price
+    if cost_price is not None:
+        payload["costprice"] = cost_price
+    if is_active is not None:
+        payload["inactive"] = not is_active
+
+    try:
+        # HaloPSA expects an array for POST (upsert behavior)
+        data = await halopsa_request("POST", "/Item", json=[payload])
+
+        if data and isinstance(data, list) and len(data) > 0:
+            updated = data[0]
+            return f"Item updated: **{updated.get('name', 'Unknown')}** (ID: {item_id})"
+
+        return f"Item {item_id} updated"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="halopsa_get_item_categories",
+    annotations={
+        "title": "List HaloPSA Item Categories",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False
+    }
+)
+async def halopsa_get_item_categories(limit: int = 100) -> str:
+    """List item categories from HaloPSA.
+
+    Args:
+        limit: Max results (default 100)
+
+    Returns:
+        str: List of categories with ID and name
+    """
+    params = {"count": limit}
+
+    try:
+        data = await halopsa_request("GET", "/ItemCategory", params=params)
+        categories = data.get("items", data) if isinstance(data, dict) else data
+
+        if not categories:
+            return "No item categories found."
+
+        lines = ["## Item Categories", ""]
+        for cat in categories:
+            cat_id = cat.get("id", "?")
+            name = cat.get("name", "Unknown")
+            parent = cat.get("parent_name", "-")
+            lines.append(f"- **{name}** (ID: {cat_id}) - Parent: {parent}")
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="halopsa_search_items",
+    annotations={
+        "title": "Search HaloPSA Items",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False
+    }
+)
+async def halopsa_search_items(
+    query: str,
+    limit: int = 20
+) -> str:
+    """Quick search for items by name or code.
+
+    Args:
+        query: Search term
+        limit: Max results (default 20)
+
+    Returns:
+        str: Matching items with ID, name, code and price
+    """
+    params = {
+        "search": query,
+        "count": limit
+    }
+
+    try:
+        data = await halopsa_request("GET", "/Item", params=params)
+        items = data.get("items", data) if isinstance(data, dict) else data
+
+        if not items:
+            return f"No items found matching '{query}'."
+
+        lines = [f"## Search Results for '{query}'", ""]
+        for item in items[:limit]:
+            item_id = item.get("id", "?")
+            name = item.get("name", "Unknown")
+            code = item.get("code") or item.get("itemcode", "-")
+            price = item.get("baseprice") or item.get("unitprice", 0)
+
+            lines.append(f"- **{name}** (ID: {item_id}) - Code: {code} - ${price:.2f}")
+
+        return "\n".join(lines)
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -3670,549 +4045,6 @@ async def front_list_tags() -> str:
 
 
 # ============================================================================
-# SharePoint Integration (Microsoft Graph API)
-# ============================================================================
-
-class SharePointConfig:
-    def __init__(self):
-        self.client_id = os.getenv("SHAREPOINT_CLIENT_ID", "")
-        self.client_secret = os.getenv("SHAREPOINT_CLIENT_SECRET", "")
-        self.tenant_id = os.getenv("SHAREPOINT_TENANT_ID", "")
-        self._refresh_token = os.getenv("SHAREPOINT_REFRESH_TOKEN", "")
-        self._access_token: Optional[str] = None
-        self._token_expiry: Optional[datetime] = None
-    
-    @property
-    def is_configured(self) -> bool:
-        return all([self.client_id, self.client_secret, self.tenant_id, self._refresh_token])
-    
-    async def get_access_token(self) -> str:
-        """Get valid access token, refreshing if needed."""
-        if self._access_token and self._token_expiry and datetime.now() < self._token_expiry:
-            return self._access_token
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"https://login.microsoftonline.com/{self.tenant_id}/oauth2/v2.0/token",
-                data={
-                    "grant_type": "refresh_token",
-                    "client_id": self.client_id,
-                    "client_secret": self.client_secret,
-                    "refresh_token": self._refresh_token,
-                    "scope": "https://graph.microsoft.com/.default offline_access"
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"}
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            self._access_token = data["access_token"]
-            if "refresh_token" in data:
-                new_refresh = data["refresh_token"]
-                if new_refresh != self._refresh_token:
-                    self._refresh_token = new_refresh
-                    update_secret_sync("SHAREPOINT_REFRESH_TOKEN", new_refresh)
-                    logger.info("SharePoint refresh token rotated and saved to Secret Manager")
-            
-            expires_in = data.get("expires_in", 3600)
-            self._token_expiry = datetime.now() + timedelta(seconds=expires_in - 60)
-            return self._access_token
-
-sharepoint_config = SharePointConfig()
-
-
-@mcp.tool(annotations={"readOnlyHint": True})
-async def sharepoint_auth_start() -> str:
-    """Get authorization URL to connect SharePoint. Use this if SharePoint is not connected."""
-    client_id = os.getenv("SHAREPOINT_CLIENT_ID", "")
-    tenant_id = os.getenv("SHAREPOINT_TENANT_ID", "")
-    
-    if not client_id:
-        return "Error: SHAREPOINT_CLIENT_ID not configured in secrets."
-    if not tenant_id:
-        return "Error: SHAREPOINT_TENANT_ID not configured in secrets."
-    
-    redirect_uri = f"{CLOUD_RUN_URL}/sharepoint-callback"
-    scopes = "offline_access Sites.ReadWrite.All Files.ReadWrite.All"
-    
-    auth_url = (
-        f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize"
-        f"?client_id={client_id}"
-        f"&response_type=code"
-        f"&redirect_uri={redirect_uri}"
-        f"&scope={scopes}"
-        f"&response_mode=query"
-        f"&state=sharepoint"
-    )
-    
-    return f"""## SharePoint Authorization Required
-
-**Click this link to authorize:**
-{auth_url}
-
-After authorizing, you'll be redirected back automatically and SharePoint will be connected.
-
-**Redirect URI for Azure AD App:** `{redirect_uri}`
-
-Make sure your Azure AD app has the following API permissions:
-- Microsoft Graph > Sites.ReadWrite.All
-- Microsoft Graph > Files.ReadWrite.All"""
-
-
-@mcp.tool(annotations={"readOnlyHint": False})
-async def sharepoint_auth_complete(
-    auth_code: str = Field(..., description="Authorization code from callback URL")
-) -> str:
-    """Complete SharePoint authorization with the code from callback URL."""
-    client_id = os.getenv("SHAREPOINT_CLIENT_ID", "")
-    client_secret = os.getenv("SHAREPOINT_CLIENT_SECRET", "")
-    tenant_id = os.getenv("SHAREPOINT_TENANT_ID", "")
-    
-    if not all([client_id, client_secret, tenant_id]):
-        return "Error: SharePoint credentials not configured."
-    
-    redirect_uri = f"{CLOUD_RUN_URL}/sharepoint-callback"
-    
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
-                data={
-                    "grant_type": "authorization_code",
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "code": auth_code,
-                    "redirect_uri": redirect_uri,
-                    "scope": "https://graph.microsoft.com/.default offline_access"
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"}
-            )
-            response.raise_for_status()
-            tokens = response.json()
-            
-            access_token = tokens["access_token"]
-            refresh_token = tokens.get("refresh_token", "")
-        
-        sharepoint_config._access_token = access_token
-        sharepoint_config._refresh_token = refresh_token
-        sharepoint_config._token_expiry = datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600) - 60)
-        
-        saved_refresh = update_secret_sync("SHAREPOINT_REFRESH_TOKEN", refresh_token) if refresh_token else False
-        
-        if saved_refresh:
-            return f"""✅ SharePoint connected successfully!
-
-**Tenant ID:** {tenant_id}
-
-Refresh token has been automatically saved to Secret Manager."""
-        else:
-            return f"""✅ SharePoint connected for this session!
-
-**Tenant ID:** {tenant_id}
-
-⚠️ To persist, run:
-```bash
-echo -n "{refresh_token}" | gcloud secrets versions add SHAREPOINT_REFRESH_TOKEN --data-file=- --project=crowdmcp
-```"""
-
-    except httpx.HTTPStatusError as e:
-        return f"Error: {e.response.text}"
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
-@mcp.tool(annotations={"readOnlyHint": True})
-async def sharepoint_list_sites(
-    search: Optional[str] = Field(None, description="Search sites by name"),
-    limit: int = Field(20, description="Max results")
-) -> str:
-    """List SharePoint sites."""
-    if not sharepoint_config.is_configured:
-        return "Error: SharePoint not configured. Run sharepoint_auth_start to connect."
-    
-    try:
-        token = await sharepoint_config.get_access_token()
-        
-        if search:
-            url = f"https://graph.microsoft.com/v1.0/sites?search={search}&$top={limit}"
-        else:
-            url = f"https://graph.microsoft.com/v1.0/sites?$top={limit}"
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers={"Authorization": f"Bearer {token}"})
-            response.raise_for_status()
-            sites = response.json().get("value", [])
-        
-        if not sites:
-            return "No sites found."
-        
-        results = []
-        for site in sites[:limit]:
-            name = site.get("displayName", site.get("name", "Unknown"))
-            web_url = site.get("webUrl", "N/A")
-            site_id = site.get("id", "N/A")
-            results.append(f"**{name}**\n  URL: {web_url}\n  ID: `{site_id}`")
-        
-        return f"## SharePoint Sites\n\nFound {len(results)} site(s):\n\n" + "\n\n".join(results)
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 401:
-            return "Error: SharePoint authentication expired. Run sharepoint_auth_start to reconnect."
-        return f"Error: {str(e)}"
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
-@mcp.tool(annotations={"readOnlyHint": True})
-async def sharepoint_get_site(
-    site_identifier: str = Field(..., description="Site hostname (e.g., 'crowdit.sharepoint.com') or site ID")
-) -> str:
-    """Get details of a specific SharePoint site."""
-    if not sharepoint_config.is_configured:
-        return "Error: SharePoint not configured."
-    
-    try:
-        token = await sharepoint_config.get_access_token()
-        
-        # Handle different identifier formats
-        if ".sharepoint.com" in site_identifier:
-            # It's a URL/hostname - need to construct the site path
-            if "/" in site_identifier.split(".sharepoint.com")[-1]:
-                # Has a site path like crowdit.sharepoint.com:/sites/IT
-                parts = site_identifier.split(".sharepoint.com")
-                hostname = parts[0] + ".sharepoint.com"
-                path = parts[1].lstrip(":")
-                url = f"https://graph.microsoft.com/v1.0/sites/{hostname}:{path}"
-            else:
-                # Just the root site
-                url = f"https://graph.microsoft.com/v1.0/sites/{site_identifier}"
-        else:
-            # Assume it's a site ID
-            url = f"https://graph.microsoft.com/v1.0/sites/{site_identifier}"
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers={"Authorization": f"Bearer {token}"})
-            response.raise_for_status()
-            site = response.json()
-        
-        return f"""# SharePoint Site: {site.get('displayName', 'Unknown')}
-
-**Name:** {site.get('name', 'N/A')}
-**URL:** {site.get('webUrl', 'N/A')}
-**Site ID:** `{site.get('id', 'N/A')}`
-**Description:** {site.get('description', 'No description')}
-**Created:** {site.get('createdDateTime', 'N/A')[:10] if site.get('createdDateTime') else 'N/A'}"""
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
-@mcp.tool(annotations={"readOnlyHint": True})
-async def sharepoint_list_drives(
-    site_id: str = Field(..., description="SharePoint site ID")
-) -> str:
-    """List document libraries (drives) in a SharePoint site."""
-    if not sharepoint_config.is_configured:
-        return "Error: SharePoint not configured."
-    
-    try:
-        token = await sharepoint_config.get_access_token()
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives",
-                headers={"Authorization": f"Bearer {token}"}
-            )
-            response.raise_for_status()
-            drives = response.json().get("value", [])
-        
-        if not drives:
-            return "No document libraries found."
-        
-        results = []
-        for drive in drives:
-            name = drive.get("name", "Unknown")
-            drive_id = drive.get("id", "N/A")
-            drive_type = drive.get("driveType", "N/A")
-            web_url = drive.get("webUrl", "N/A")
-            quota = drive.get("quota", {})
-            used = quota.get("used", 0) / (1024*1024*1024) if quota.get("used") else 0
-            
-            results.append(f"**{name}**\n  Type: {drive_type} | Used: {used:.2f} GB\n  URL: {web_url}\n  Drive ID: `{drive_id}`")
-        
-        return f"## Document Libraries\n\nFound {len(results)} drive(s):\n\n" + "\n\n".join(results)
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
-@mcp.tool(annotations={"readOnlyHint": True})
-async def sharepoint_list_items(
-    drive_id: str = Field(..., description="Drive ID"),
-    folder_path: str = Field("", description="Folder path (e.g., 'Documents/Projects' or empty for root)"),
-    limit: int = Field(50, description="Max results")
-) -> str:
-    """List files and folders in a SharePoint document library."""
-    if not sharepoint_config.is_configured:
-        return "Error: SharePoint not configured."
-    
-    try:
-        token = await sharepoint_config.get_access_token()
-        
-        if folder_path:
-            url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{folder_path}:/children?$top={limit}"
-        else:
-            url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root/children?$top={limit}"
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers={"Authorization": f"Bearer {token}"})
-            response.raise_for_status()
-            items = response.json().get("value", [])
-        
-        if not items:
-            return f"No items found in {'/' + folder_path if folder_path else 'root'}."
-        
-        results = []
-        for item in items[:limit]:
-            name = item.get("name", "Unknown")
-            item_id = item.get("id", "N/A")
-            is_folder = "folder" in item
-            size = item.get("size", 0)
-            modified = item.get("lastModifiedDateTime", "")[:10] if item.get("lastModifiedDateTime") else "N/A"
-            
-            if is_folder:
-                child_count = item.get("folder", {}).get("childCount", 0)
-                results.append(f"📁 **{name}/** ({child_count} items)\n   ID: `{item_id}`")
-            else:
-                size_kb = size / 1024
-                results.append(f"📄 **{name}** ({size_kb:.1f} KB) - Modified: {modified}\n   ID: `{item_id}`")
-        
-        path_display = '/' + folder_path if folder_path else 'root'
-        return f"## Contents of {path_display}\n\nFound {len(results)} item(s):\n\n" + "\n\n".join(results)
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
-@mcp.tool(annotations={"readOnlyHint": False})
-async def sharepoint_create_folder(
-    drive_id: str = Field(..., description="Drive ID"),
-    folder_name: str = Field(..., description="Name of the new folder"),
-    parent_path: str = Field("", description="Parent folder path (empty for root)")
-) -> str:
-    """Create a new folder in SharePoint."""
-    if not sharepoint_config.is_configured:
-        return "Error: SharePoint not configured."
-    
-    try:
-        token = await sharepoint_config.get_access_token()
-        
-        if parent_path:
-            url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{parent_path}:/children"
-        else:
-            url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root/children"
-        
-        payload = {
-            "name": folder_name,
-            "folder": {},
-            "@microsoft.graph.conflictBehavior": "fail"
-        }
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                url,
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json"
-                }
-            )
-            response.raise_for_status()
-            folder = response.json()
-        
-        full_path = f"{parent_path}/{folder_name}" if parent_path else folder_name
-        return f"✅ Folder created: **{folder_name}**\n\nPath: /{full_path}\nID: `{folder.get('id', 'N/A')}`"
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 409:
-            return f"Error: Folder '{folder_name}' already exists."
-        return f"Error: {e.response.text}"
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
-@mcp.tool(annotations={"readOnlyHint": False})
-async def sharepoint_create_folder_structure(
-    drive_id: str = Field(..., description="Drive ID"),
-    structure: str = Field(..., description='JSON structure: {"root_folder": ["subfolder1", "subfolder2", {"subfolder3": ["nested1", "nested2"]}]}'),
-    parent_path: str = Field("", description="Parent folder path (empty for root)")
-) -> str:
-    """Create a complete folder structure in SharePoint from a JSON definition."""
-    if not sharepoint_config.is_configured:
-        return "Error: SharePoint not configured."
-    
-    try:
-        folder_structure = json.loads(structure)
-    except json.JSONDecodeError:
-        return "Error: Invalid JSON structure. Example: {\"Projects\": [\"2024\", \"2025\", {\"Templates\": [\"Word\", \"Excel\"]}]}"
-    
-    created_folders = []
-    errors = []
-    
-    async def create_folder_recursive(drive_id: str, parent: str, structure_item):
-        token = await sharepoint_config.get_access_token()
-        
-        if isinstance(structure_item, str):
-            # Simple folder name
-            folder_name = structure_item
-            try:
-                if parent:
-                    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{parent}:/children"
-                else:
-                    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root/children"
-                
-                async with httpx.AsyncClient() as client:
-                    response = await client.post(
-                        url,
-                        json={"name": folder_name, "folder": {}, "@microsoft.graph.conflictBehavior": "fail"},
-                        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-                    )
-                    if response.status_code == 201:
-                        full_path = f"{parent}/{folder_name}" if parent else folder_name
-                        created_folders.append(full_path)
-                    elif response.status_code == 409:
-                        full_path = f"{parent}/{folder_name}" if parent else folder_name
-                        errors.append(f"Already exists: {full_path}")
-                    else:
-                        response.raise_for_status()
-            except Exception as e:
-                errors.append(f"Failed to create {folder_name}: {str(e)}")
-        
-        elif isinstance(structure_item, dict):
-            # Folder with children
-            for folder_name, children in structure_item.items():
-                full_path = f"{parent}/{folder_name}" if parent else folder_name
-                
-                # Create the parent folder first
-                try:
-                    if parent:
-                        url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{parent}:/children"
-                    else:
-                        url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root/children"
-                    
-                    async with httpx.AsyncClient() as client:
-                        response = await client.post(
-                            url,
-                            json={"name": folder_name, "folder": {}, "@microsoft.graph.conflictBehavior": "fail"},
-                            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-                        )
-                        if response.status_code == 201:
-                            created_folders.append(full_path)
-                        elif response.status_code != 409:  # Ignore already exists
-                            response.raise_for_status()
-                except Exception as e:
-                    errors.append(f"Failed to create {folder_name}: {str(e)}")
-                
-                # Recursively create children
-                if isinstance(children, list):
-                    for child in children:
-                        await create_folder_recursive(drive_id, full_path, child)
-    
-    # Process the top-level structure
-    for key, value in folder_structure.items():
-        await create_folder_recursive(drive_id, parent_path, {key: value})
-    
-    result = f"## Folder Structure Created\n\n"
-    if created_folders:
-        result += f"✅ Created {len(created_folders)} folder(s):\n"
-        for f in created_folders:
-            result += f"  - /{f}\n"
-    
-    if errors:
-        result += f"\n⚠️ {len(errors)} issue(s):\n"
-        for e in errors:
-            result += f"  - {e}\n"
-    
-    if not created_folders and not errors:
-        result += "No folders were created."
-    
-    return result
-
-
-@mcp.tool(annotations={"readOnlyHint": True})
-async def sharepoint_search(
-    query: str = Field(..., description="Search query"),
-    site_id: Optional[str] = Field(None, description="Limit search to specific site ID"),
-    limit: int = Field(20, description="Max results")
-) -> str:
-    """Search for files and folders across SharePoint."""
-    if not sharepoint_config.is_configured:
-        return "Error: SharePoint not configured."
-    
-    try:
-        token = await sharepoint_config.get_access_token()
-        
-        if site_id:
-            url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drive/root/search(q='{query}')?$top={limit}"
-        else:
-            url = f"https://graph.microsoft.com/v1.0/me/drive/root/search(q='{query}')?$top={limit}"
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers={"Authorization": f"Bearer {token}"})
-            response.raise_for_status()
-            items = response.json().get("value", [])
-        
-        if not items:
-            return f"No results found for '{query}'."
-        
-        results = []
-        for item in items[:limit]:
-            name = item.get("name", "Unknown")
-            is_folder = "folder" in item
-            web_url = item.get("webUrl", "N/A")
-            parent_path = item.get("parentReference", {}).get("path", "").split("root:")[-1]
-            
-            icon = "📁" if is_folder else "📄"
-            results.append(f"{icon} **{name}**\n  Path: {parent_path}\n  URL: {web_url}")
-        
-        return f"## Search Results for '{query}'\n\nFound {len(results)} item(s):\n\n" + "\n\n".join(results)
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
-@mcp.tool(annotations={"readOnlyHint": False})
-async def sharepoint_upload_file(
-    drive_id: str = Field(..., description="Drive ID"),
-    file_name: str = Field(..., description="Name for the file"),
-    content: str = Field(..., description="File content (text)"),
-    folder_path: str = Field("", description="Folder path (empty for root)")
-) -> str:
-    """Upload a text file to SharePoint."""
-    if not sharepoint_config.is_configured:
-        return "Error: SharePoint not configured."
-    
-    try:
-        token = await sharepoint_config.get_access_token()
-        
-        if folder_path:
-            url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{folder_path}/{file_name}:/content"
-        else:
-            url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{file_name}:/content"
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.put(
-                url,
-                content=content.encode('utf-8'),
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "text/plain"
-                }
-            )
-            response.raise_for_status()
-            file_info = response.json()
-        
-        full_path = f"{folder_path}/{file_name}" if folder_path else file_name
-        return f"✅ File uploaded: **{file_name}**\n\nPath: /{full_path}\nSize: {file_info.get('size', 0)} bytes\nURL: {file_info.get('webUrl', 'N/A')}"
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
-# ============================================================================
 # Quoter Integration (ScalePad Quoter - MSP Quoting Software)
 # ============================================================================
 
@@ -6072,21 +5904,7 @@ async def server_status() -> str:
         if not os.getenv("XERO_TENANT_ID"): missing.append("TENANT_ID")
         if not os.getenv("XERO_REFRESH_TOKEN"): missing.append("REFRESH_TOKEN")
         lines.append(f"⚠️ **Xero:** Missing: {', '.join(missing)}")
-    
-    if sharepoint_config.is_configured:
-        try:
-            await sharepoint_config.get_access_token()
-            lines.append("✅ **SharePoint:** Connected")
-        except Exception as e:
-            lines.append(f"❌ **SharePoint:** Auth failed - {str(e)[:50]}")
-    else:
-        missing = []
-        if not os.getenv("SHAREPOINT_CLIENT_ID"): missing.append("CLIENT_ID")
-        if not os.getenv("SHAREPOINT_CLIENT_SECRET"): missing.append("CLIENT_SECRET")
-        if not os.getenv("SHAREPOINT_TENANT_ID"): missing.append("TENANT_ID")
-        if not os.getenv("SHAREPOINT_REFRESH_TOKEN"): missing.append("REFRESH_TOKEN")
-        lines.append(f"⚠️ **SharePoint:** Missing: {', '.join(missing)}")
-    
+
     if front_config.is_configured:
         lines.append("✅ **Front:** Connected")
     else:
@@ -6220,66 +6038,13 @@ if __name__ == "__main__":
 </body></html>""")
         except Exception as e:
             return HTMLResponse(f"<html><body><h1>Error</h1><p>{str(e)}</p></body></html>", status_code=500)
-    
-    async def sharepoint_callback_route(request):
-        code = request.query_params.get("code")
-        error = request.query_params.get("error")
-        error_description = request.query_params.get("error_description", "")
-        
-        if error:
-            return HTMLResponse(f"<html><body><h1>❌ SharePoint Authorization Failed</h1><p>{error}: {error_description}</p></body></html>", status_code=400)
-        
-        if not code:
-            return HTMLResponse("<html><body><h1>No Authorization Code</h1></body></html>", status_code=400)
-        
-        client_id = os.getenv("SHAREPOINT_CLIENT_ID", "")
-        client_secret = os.getenv("SHAREPOINT_CLIENT_SECRET", "")
-        tenant_id = os.getenv("SHAREPOINT_TENANT_ID", "")
-        redirect_uri = f"{CLOUD_RUN_URL}/sharepoint-callback"
-        
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
-                    data={
-                        "grant_type": "authorization_code",
-                        "client_id": client_id,
-                        "client_secret": client_secret,
-                        "code": code,
-                        "redirect_uri": redirect_uri,
-                        "scope": "https://graph.microsoft.com/.default offline_access"
-                    },
-                    headers={"Content-Type": "application/x-www-form-urlencoded"}
-                )
-                response.raise_for_status()
-                tokens = response.json()
-                access_token = tokens["access_token"]
-                refresh_token = tokens.get("refresh_token", "")
-            
-            sharepoint_config._access_token = access_token
-            sharepoint_config._refresh_token = refresh_token
-            sharepoint_config._token_expiry = datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600) - 60)
-            
-            saved_refresh = update_secret_sync("SHAREPOINT_REFRESH_TOKEN", refresh_token) if refresh_token else False
-            status_msg = "Tokens saved ✅" if saved_refresh else "⚠️ Manual save needed"
-            
-            return HTMLResponse(f"""<html><head><title>SharePoint Connected!</title></head>
-<body style="font-family:Arial,sans-serif;max-width:600px;margin:50px auto;padding:20px;">
-<h1 style="color:#27ae60;">✅ SharePoint Connected!</h1>
-<p><b>Tenant ID:</b> {tenant_id}</p>
-<p>{status_msg}</p>
-<p>You can close this window.</p>
-</body></html>""")
-        except Exception as e:
-            return HTMLResponse(f"<html><body><h1>Error</h1><p>{str(e)}</p></body></html>", status_code=500)
-    
+
     # Run FastMCP directly - it handles its own routing
     # Add custom routes via Starlette mounting
     app = Starlette(
         routes=[
             Route("/health", health_route),
             Route("/callback", callback_route),
-            Route("/sharepoint-callback", sharepoint_callback_route),
         ],
         lifespan=mcp_app.lifespan,
     )
