@@ -5229,9 +5229,22 @@ pax8_config = Pax8Config()
 # ============================================================================
 
 class BigQueryConfig:
-    """BigQuery configuration from environment variables."""
+    """BigQuery configuration from environment variables.
+
+    Environment variables:
+    - BIGQUERY_PROJECT_ID: Default project for data/table references (e.g., 'crowdmcp')
+    - BIGQUERY_JOB_PROJECT_ID: Project where query jobs run and are billed (optional, defaults to BIGQUERY_PROJECT_ID)
+    - GOOGLE_APPLICATION_CREDENTIALS_JSON: Service account JSON for Cloud Run (optional, uses ADC if not set)
+
+    Required IAM permissions:
+    - The service account needs 'roles/bigquery.jobUser' (bigquery.jobs.create) on the JOB project
+    - The service account needs 'roles/bigquery.dataViewer' on any projects containing data to query
+    """
     def __init__(self):
         self.project_id = os.getenv("BIGQUERY_PROJECT_ID", "")
+        # Job project is where queries run and billing happens - defaults to project_id
+        # The service account MUST have bigquery.jobs.create permission on this project
+        self.job_project_id = os.getenv("BIGQUERY_JOB_PROJECT_ID", "") or self.project_id
         self.credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", "")
         self._client = None
 
@@ -5240,7 +5253,11 @@ class BigQueryConfig:
         return bool(self.project_id)
 
     def get_client(self):
-        """Get or create BigQuery client with proper credentials."""
+        """Get or create BigQuery client with proper credentials.
+
+        The client is initialized with job_project_id to ensure queries run
+        in a project where the service account has bigquery.jobs.create permission.
+        """
         if self._client is None:
             try:
                 from google.cloud import bigquery
@@ -5250,10 +5267,11 @@ class BigQueryConfig:
                     from google.oauth2 import service_account
                     credentials_info = json.loads(self.credentials_json)
                     credentials = service_account.Credentials.from_service_account_info(credentials_info)
-                    self._client = bigquery.Client(project=self.project_id, credentials=credentials)
+                    # Use job_project_id for client - this is where jobs are created/billed
+                    self._client = bigquery.Client(project=self.job_project_id, credentials=credentials)
                 else:
                     # Use Application Default Credentials
-                    self._client = bigquery.Client(project=self.project_id)
+                    self._client = bigquery.Client(project=self.job_project_id)
             except ImportError:
                 raise ImportError("google-cloud-bigquery package not installed")
 
@@ -5522,6 +5540,11 @@ async def bigquery_query(
     """
     Execute a SQL query against BigQuery and return results as markdown table.
     Use this for querying RIS data from Karisma radiology databases.
+
+    Cross-Project Queries:
+    - Jobs run in BIGQUERY_JOB_PROJECT_ID (requires bigquery.jobs.create permission)
+    - Data can be queried from any project using fully qualified table names: `project.dataset.table`
+    - Use fully qualified names when querying other projects (e.g., `vision-radiology.dataset.table`)
 
     Common datasets in crowdmcp project:
     - karisma_warehouse: Radiology data synced from Karisma RIS systems
@@ -7152,7 +7175,8 @@ async def server_status() -> str:
             client = bigquery_config.get_client()
             # Quick connectivity test
             list(client.list_datasets(max_results=1))
-            lines.append(f"✅ **BigQuery:** Connected (project: {bigquery_config.project_id})")
+            job_info = f", jobs: {bigquery_config.job_project_id}" if bigquery_config.job_project_id != bigquery_config.project_id else ""
+            lines.append(f"✅ **BigQuery:** Connected (data: {bigquery_config.project_id}{job_info})")
         except Exception as e:
             lines.append(f"❌ **BigQuery:** Error - {str(e)[:50]}")
     else:
@@ -7325,12 +7349,355 @@ if __name__ == "__main__":
 </body></html>""")
         except Exception as e:
             return HTMLResponse(f"<html><body><h1>Error</h1><p>{str(e)}</p></body></html>", status_code=500)
-    
+
+    async def status_page_route(request):
+        """Web-based status page showing all service integrations."""
+        from datetime import datetime
+
+        check_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        # Build status checks for each service
+        services = []
+
+        # HaloPSA
+        if halopsa_config.is_configured:
+            try:
+                await halopsa_config.get_access_token()
+                services.append(("HaloPSA", "ok", "Connected", "Ticketing & PSA"))
+            except Exception as e:
+                services.append(("HaloPSA", "error", f"Auth failed: {str(e)[:40]}", "Ticketing & PSA"))
+        else:
+            services.append(("HaloPSA", "warning", "Not configured", "Ticketing & PSA"))
+
+        # Xero
+        if xero_config.is_configured:
+            try:
+                await xero_config.get_access_token()
+                services.append(("Xero", "ok", "Connected", "Accounting"))
+            except Exception as e:
+                services.append(("Xero", "error", f"Auth failed: {str(e)[:40]}", "Accounting"))
+        else:
+            missing = []
+            if not os.getenv("XERO_CLIENT_ID"): missing.append("CLIENT_ID")
+            if not os.getenv("XERO_CLIENT_SECRET"): missing.append("CLIENT_SECRET")
+            if not os.getenv("XERO_TENANT_ID"): missing.append("TENANT_ID")
+            if not os.getenv("XERO_REFRESH_TOKEN"): missing.append("REFRESH_TOKEN")
+            services.append(("Xero", "warning", f"Missing: {', '.join(missing)}" if missing else "Not configured", "Accounting"))
+
+        # SharePoint
+        if sharepoint_config.is_configured:
+            try:
+                await sharepoint_config.get_access_token()
+                services.append(("SharePoint", "ok", "Connected", "Document Management"))
+            except Exception as e:
+                services.append(("SharePoint", "error", f"Auth failed: {str(e)[:40]}", "Document Management"))
+        else:
+            missing = []
+            if not os.getenv("SHAREPOINT_CLIENT_ID"): missing.append("CLIENT_ID")
+            if not os.getenv("SHAREPOINT_CLIENT_SECRET"): missing.append("CLIENT_SECRET")
+            if not os.getenv("SHAREPOINT_TENANT_ID"): missing.append("TENANT_ID")
+            if not os.getenv("SHAREPOINT_REFRESH_TOKEN"): missing.append("REFRESH_TOKEN")
+            services.append(("SharePoint", "warning", f"Missing: {', '.join(missing)}" if missing else "Not configured", "Document Management"))
+
+        # Front
+        if front_config.is_configured:
+            services.append(("Front", "ok", "Configured", "Email & Communications"))
+        else:
+            services.append(("Front", "warning", "Not configured", "Email & Communications"))
+
+        # Quoter
+        if quoter_config.is_configured:
+            try:
+                await quoter_config.get_access_token()
+                services.append(("Quoter", "ok", "Connected", "Quoting"))
+            except Exception as e:
+                services.append(("Quoter", "error", f"Auth failed: {str(e)[:40]}", "Quoting"))
+        else:
+            services.append(("Quoter", "warning", "Not configured", "Quoting"))
+
+        # Pax8
+        if pax8_config.is_configured:
+            try:
+                await pax8_config.get_access_token()
+                services.append(("Pax8", "ok", "Connected", "Cloud Marketplace"))
+            except Exception as e:
+                services.append(("Pax8", "error", f"Auth failed: {str(e)[:40]}", "Cloud Marketplace"))
+        else:
+            missing = []
+            if not os.getenv("PAX8_CLIENT_ID"): missing.append("CLIENT_ID")
+            if not os.getenv("PAX8_CLIENT_SECRET"): missing.append("CLIENT_SECRET")
+            services.append(("Pax8", "warning", f"Missing: {', '.join(missing)}" if missing else "Not configured", "Cloud Marketplace"))
+
+        # BigQuery
+        if bigquery_config.is_configured:
+            try:
+                client = bigquery_config.get_client()
+                list(client.list_datasets(max_results=1))
+                job_info = f" (jobs: {bigquery_config.job_project_id})" if bigquery_config.job_project_id != bigquery_config.project_id else ""
+                services.append(("BigQuery", "ok", f"Connected to {bigquery_config.project_id}{job_info}", "Data Warehouse"))
+            except Exception as e:
+                services.append(("BigQuery", "error", f"Error: {str(e)[:40]}", "Data Warehouse"))
+        else:
+            services.append(("BigQuery", "warning", "Missing: BIGQUERY_PROJECT_ID", "Data Warehouse"))
+
+        # Maxotel
+        if maxotel_config.is_configured:
+            services.append(("Maxotel", "ok", "Configured", "VoIP"))
+        else:
+            missing = []
+            if not os.getenv("MAXOTEL_USERNAME"): missing.append("USERNAME")
+            if not os.getenv("MAXOTEL_API_KEY"): missing.append("API_KEY")
+            services.append(("Maxotel", "warning", f"Missing: {', '.join(missing)}" if missing else "Not configured", "VoIP"))
+
+        # Ubuntu Server
+        if ubuntu_config.is_configured:
+            try:
+                import asyncssh
+                async with await _get_ssh_connection() as conn:
+                    result = await conn.run("hostname", check=False)
+                    hostname = result.stdout.strip() if result.exit_status == 0 else "unknown"
+                services.append((f"Ubuntu ({ubuntu_config.server_name})", "ok", f"Connected to {hostname}", "Remote Server"))
+            except Exception as e:
+                services.append((f"Ubuntu ({ubuntu_config.server_name})", "error", f"SSH failed: {str(e)[:40]}", "Remote Server"))
+        else:
+            missing = []
+            if not os.getenv("UBUNTU_HOSTNAME"): missing.append("HOSTNAME")
+            if not os.getenv("UBUNTU_USERNAME"): missing.append("USERNAME")
+            if not os.getenv("UBUNTU_PASSWORD") and not os.getenv("UBUNTU_PRIVATE_KEY"): missing.append("AUTH")
+            services.append(("Ubuntu Server", "warning", f"Missing: {', '.join(missing)}" if missing else "Not configured", "Remote Server"))
+
+        # Count statuses
+        ok_count = sum(1 for s in services if s[1] == "ok")
+        error_count = sum(1 for s in services if s[1] == "error")
+        warning_count = sum(1 for s in services if s[1] == "warning")
+
+        # Overall status
+        if error_count > 0:
+            overall_status = "error"
+            overall_text = "Issues Detected"
+        elif warning_count > 0:
+            overall_status = "warning"
+            overall_text = "Partially Configured"
+        else:
+            overall_status = "ok"
+            overall_text = "All Systems Operational"
+
+        # Build service rows HTML
+        service_rows = ""
+        for name, status, message, category in services:
+            if status == "ok":
+                icon = "✅"
+                badge_class = "badge-ok"
+            elif status == "error":
+                icon = "❌"
+                badge_class = "badge-error"
+            else:
+                icon = "⚠️"
+                badge_class = "badge-warning"
+
+            service_rows += f"""
+            <tr>
+                <td><span class="status-icon">{icon}</span> {name}</td>
+                <td><span class="badge {badge_class}">{status.upper()}</span></td>
+                <td class="message">{message}</td>
+                <td class="category">{category}</td>
+            </tr>"""
+
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="refresh" content="60">
+    <title>Crowd IT MCP Server - Status</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #e0e0e0;
+            padding: 20px;
+        }}
+        .container {{
+            max-width: 900px;
+            margin: 0 auto;
+        }}
+        header {{
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 30px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 16px;
+            backdrop-filter: blur(10px);
+        }}
+        h1 {{
+            font-size: 2rem;
+            margin-bottom: 10px;
+            color: #fff;
+        }}
+        .subtitle {{
+            color: #888;
+            font-size: 0.9rem;
+        }}
+        .overall-status {{
+            display: inline-block;
+            padding: 12px 24px;
+            border-radius: 30px;
+            font-weight: 600;
+            font-size: 1.1rem;
+            margin: 20px 0;
+        }}
+        .overall-ok {{ background: rgba(39, 174, 96, 0.2); color: #27ae60; border: 2px solid #27ae60; }}
+        .overall-warning {{ background: rgba(241, 196, 15, 0.2); color: #f1c40f; border: 2px solid #f1c40f; }}
+        .overall-error {{ background: rgba(231, 76, 60, 0.2); color: #e74c3c; border: 2px solid #e74c3c; }}
+        .stats {{
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin-top: 15px;
+        }}
+        .stat {{
+            text-align: center;
+        }}
+        .stat-value {{
+            font-size: 1.5rem;
+            font-weight: bold;
+        }}
+        .stat-label {{
+            font-size: 0.8rem;
+            color: #888;
+        }}
+        .stat-ok .stat-value {{ color: #27ae60; }}
+        .stat-warning .stat-value {{ color: #f1c40f; }}
+        .stat-error .stat-value {{ color: #e74c3c; }}
+        .services-card {{
+            background: rgba(255,255,255,0.05);
+            border-radius: 16px;
+            padding: 25px;
+            backdrop-filter: blur(10px);
+        }}
+        .services-card h2 {{
+            margin-bottom: 20px;
+            font-size: 1.2rem;
+            color: #fff;
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+        }}
+        th, td {{
+            padding: 14px 12px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }}
+        th {{
+            color: #888;
+            font-weight: 500;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+        tr:last-child td {{
+            border-bottom: none;
+        }}
+        tr:hover {{
+            background: rgba(255,255,255,0.03);
+        }}
+        .status-icon {{
+            margin-right: 8px;
+        }}
+        .badge {{
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }}
+        .badge-ok {{ background: rgba(39, 174, 96, 0.2); color: #27ae60; }}
+        .badge-warning {{ background: rgba(241, 196, 15, 0.2); color: #f1c40f; }}
+        .badge-error {{ background: rgba(231, 76, 60, 0.2); color: #e74c3c; }}
+        .message {{
+            color: #aaa;
+            font-size: 0.9rem;
+        }}
+        .category {{
+            color: #666;
+            font-size: 0.85rem;
+        }}
+        footer {{
+            text-align: center;
+            margin-top: 30px;
+            color: #666;
+            font-size: 0.85rem;
+        }}
+        .refresh-info {{
+            margin-top: 10px;
+            font-size: 0.8rem;
+        }}
+        @media (max-width: 600px) {{
+            .stats {{ flex-wrap: wrap; gap: 15px; }}
+            th, td {{ padding: 10px 8px; font-size: 0.85rem; }}
+            .category {{ display: none; }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Crowd IT MCP Server</h1>
+            <p class="subtitle">Model Context Protocol - Service Status Dashboard</p>
+            <div class="overall-status overall-{overall_status}">{overall_text}</div>
+            <div class="stats">
+                <div class="stat stat-ok">
+                    <div class="stat-value">{ok_count}</div>
+                    <div class="stat-label">Operational</div>
+                </div>
+                <div class="stat stat-warning">
+                    <div class="stat-value">{warning_count}</div>
+                    <div class="stat-label">Not Configured</div>
+                </div>
+                <div class="stat stat-error">
+                    <div class="stat-value">{error_count}</div>
+                    <div class="stat-label">Issues</div>
+                </div>
+            </div>
+        </header>
+
+        <div class="services-card">
+            <h2>Service Integrations</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Service</th>
+                        <th>Status</th>
+                        <th>Details</th>
+                        <th>Category</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {service_rows}
+                </tbody>
+            </table>
+        </div>
+
+        <footer>
+            <p>Last checked: {check_time}</p>
+            <p class="refresh-info">Auto-refreshes every 60 seconds</p>
+            <p style="margin-top: 10px;">MCP Endpoint: <code>{CLOUD_RUN_URL}/mcp</code></p>
+        </footer>
+    </div>
+</body>
+</html>"""
+
+        return HTMLResponse(html)
+
     # Run FastMCP directly - it handles its own routing
     # Add custom routes via Starlette mounting
     app = Starlette(
         routes=[
             Route("/health", health_route),
+            Route("/status", status_page_route),
             Route("/callback", callback_route),
             Route("/sharepoint-callback", sharepoint_callback_route),
         ],
