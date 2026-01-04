@@ -21,11 +21,11 @@
 steps:
   # Build the container image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:$COMMIT_SHA', '-t', 'australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:latest', '.']
+    args: ['build', '-t', 'australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:$BUILD_ID', '-t', 'australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:latest', '.']
 
   # Push the container image to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:$COMMIT_SHA']
+    args: ['push', 'australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:$BUILD_ID']
 
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', 'australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:latest']
@@ -38,7 +38,7 @@ steps:
       - 'deploy'
       - 'crowdit-mcp-server'
       - '--image'
-      - 'australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:$COMMIT_SHA'
+      - 'australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:$BUILD_ID'
       - '--region'
       - 'australia-southeast1'
       - '--platform'
@@ -70,7 +70,7 @@ steps:
       - '--set-secrets=FORTICLOUD_CLIENT_ID=FORTICLOUD_CLIENT_ID:latest'
 
 images:
-  - 'australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:$COMMIT_SHA'
+  - 'australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:$BUILD_ID'
   - 'australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:latest'
 
 options:
