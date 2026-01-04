@@ -7764,6 +7764,47 @@ if __name__ == "__main__":
     from starlette.applications import Starlette
     from starlette.routing import Route, Mount
     from starlette.responses import PlainTextResponse, HTMLResponse
+    from starlette.middleware import Middleware
+    from starlette.middleware.base import BaseHTTPMiddleware
+    
+    # API Key validation middleware
+    class APIKeyMiddleware(BaseHTTPMiddleware):
+        """Middleware to validate API key for MCP endpoints."""
+        
+        # Paths that don't require API key authentication
+        PUBLIC_PATHS = {"/health", "/status", "/callback", "/sharepoint-callback", "/"}
+        
+        def __init__(self, app, api_key: str = None):
+            super().__init__(app)
+            self.api_key = api_key or os.getenv("MCP_API_KEY") or get_secret_sync("MCP_API_KEY")
+            if self.api_key:
+                logger.info("🔐 API Key authentication enabled for MCP endpoints")
+            else:
+                logger.warning("⚠️ No MCP_API_KEY configured - endpoints are unprotected!")
+        
+        async def dispatch(self, request, call_next):
+            path = request.url.path
+            
+            # Allow public paths without authentication
+            if path in self.PUBLIC_PATHS:
+                return await call_next(request)
+            
+            # If no API key is configured, allow all requests (backwards compatible)
+            if not self.api_key:
+                return await call_next(request)
+            
+            # Check for API key in query params or headers
+            provided_key = (
+                request.query_params.get("api_key") or 
+                request.headers.get("X-API-Key") or
+                request.headers.get("Authorization", "").replace("Bearer ", "")
+            )
+            
+            if provided_key != self.api_key:
+                logger.warning(f"🚫 Unauthorized request to {path} from {request.client.host if request.client else 'unknown'}")
+                return PlainTextResponse("Unauthorized - Invalid or missing API key", status_code=401)
+            
+            return await call_next(request)
     
     port = int(os.getenv("PORT", 8080))
     logger.info(f"🚀 Starting Crowd IT MCP Server on port {port}")
@@ -8237,6 +8278,9 @@ if __name__ == "__main__":
 
         return HTMLResponse(html)
 
+    # Get API key for middleware
+    api_key = os.getenv("MCP_API_KEY") or get_secret_sync("MCP_API_KEY")
+    
     # Run FastMCP directly - it handles its own routing
     # Add custom routes via Starlette mounting
     app = Starlette(
@@ -8248,6 +8292,9 @@ if __name__ == "__main__":
         ],
         lifespan=mcp_app.lifespan,
     )
+    
+    # Add API Key middleware for MCP endpoint protection
+    app.add_middleware(APIKeyMiddleware, api_key=api_key)
     
     # Mount MCP app to handle all other paths (including /mcp, /sse)
     app.mount("/", mcp_app)
