@@ -81,11 +81,17 @@ create_secret_if_not_exists "SHAREPOINT_REFRESH_TOKEN" "PLACEHOLDER_UPDATE_ME"
 # Quoter secrets
 create_secret_if_not_exists "QUOTER_API_KEY" "PLACEHOLDER_UPDATE_ME"
 
+# FortiCloud secrets
+create_secret_if_not_exists "FORTICLOUD_API_KEY" "PLACEHOLDER_UPDATE_ME"
+create_secret_if_not_exists "FORTICLOUD_API_SECRET" "PLACEHOLDER_UPDATE_ME"
+create_secret_if_not_exists "FORTICLOUD_CLIENT_ID" "fortigatecloud"
+
 echo ""
 echo "⚠️  NOTE: You need to update secrets after deployment:"
 echo "   - HaloPSA: HALOPSA_CLIENT_ID, HALOPSA_CLIENT_SECRET"
 echo "   - Xero: XERO_CLIENT_SECRET (then auth via Claude to get TENANT_ID and REFRESH_TOKEN)"
 echo "   - SharePoint: All credentials (CLIENT_ID, CLIENT_SECRET, TENANT_ID from Azure AD)"
+echo "   - FortiCloud: FORTICLOUD_API_KEY, FORTICLOUD_API_SECRET (from FortiCloud IAM)"
 echo ""
 
 # Build and deploy to Cloud Run
@@ -120,7 +126,10 @@ gcloud run deploy $SERVICE_NAME \
     --set-secrets="SHAREPOINT_CLIENT_SECRET=SHAREPOINT_CLIENT_SECRET:latest" \
     --set-secrets="SHAREPOINT_TENANT_ID=SHAREPOINT_TENANT_ID:latest" \
     --set-secrets="SHAREPOINT_REFRESH_TOKEN=SHAREPOINT_REFRESH_TOKEN:latest" \
-    --set-secrets="QUOTER_API_KEY=QUOTER_API_KEY:latest"
+    --set-secrets="QUOTER_API_KEY=QUOTER_API_KEY:latest" \
+    --set-secrets="FORTICLOUD_API_KEY=FORTICLOUD_API_KEY:latest" \
+    --set-secrets="FORTICLOUD_API_SECRET=FORTICLOUD_API_SECRET:latest" \
+    --set-secrets="FORTICLOUD_CLIENT_ID=FORTICLOUD_CLIENT_ID:latest"
 
 # Get service URL
 SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=$REGION --format='value(status.url)')

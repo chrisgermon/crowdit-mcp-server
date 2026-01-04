@@ -5769,6 +5769,523 @@ async def bigquery_sample_data(
 
 
 # ============================================================================
+# FortiCloud Integration (FortiGate Cloud, FortiManager, FortiAnalyzer, etc.)
+# ============================================================================
+
+class FortiCloudConfig:
+    """FortiCloud API configuration using OAuth2 authentication.
+
+    Environment variables:
+    - FORTICLOUD_API_KEY: API Key (username) from FortiCloud IAM
+    - FORTICLOUD_API_SECRET: API Secret (password) from FortiCloud IAM
+    - FORTICLOUD_CLIENT_ID: Client ID for the specific service (default: fortigatecloud)
+
+    Available client IDs:
+    - fortigatecloud: FortiGate Cloud
+    - FortiManager: FortiManager Cloud
+    - FortiAnalyzer: FortiAnalyzer Cloud
+    - FortiSASE: FortiSASE Cloud
+    - fortipresence: FortiPresence Cloud
+    - fortiztp: FortiZTP Cloud
+    - forticameracloud: FortiCamera Cloud
+    - assetmanagement: Asset Management Cloud
+    - iam: IAM Cloud
+
+    Required IAM permissions:
+    - The API user needs appropriate permissions for the services being accessed
+    """
+    def __init__(self):
+        self.api_key = os.getenv("FORTICLOUD_API_KEY", "")
+        self.api_secret = os.getenv("FORTICLOUD_API_SECRET", "")
+        self.client_id = os.getenv("FORTICLOUD_CLIENT_ID", "fortigatecloud")
+        self.auth_url = "https://customerapiauth.fortinet.com/api/v1/oauth/token/"
+        self.fortigate_cloud_url = "https://www.forticloud.com/forticloudapi/v1"
+        self._access_token = None
+        self._token_expiry = None
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.api_key) and bool(self.api_secret)
+
+    async def get_access_token(self) -> str:
+        """Get or refresh FortiCloud access token."""
+        if self._access_token and self._token_expiry and datetime.now() < self._token_expiry:
+            return self._access_token
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                self.auth_url,
+                json={
+                    "username": self.api_key,
+                    "password": self.api_secret,
+                    "client_id": self.client_id,
+                    "grant_type": "password"
+                },
+                headers={"Content-Type": "application/json"}
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            self._access_token = data["access_token"]
+            # Token expires in ~4 hours (14400 seconds), refresh 5 mins early
+            expires_in = data.get("expires_in", 14400)
+            self._token_expiry = datetime.now() + timedelta(seconds=expires_in - 300)
+
+            return self._access_token
+
+    async def api_request(self, method: str, endpoint: str, params: dict = None, json_data: dict = None) -> dict:
+        """Make authenticated request to FortiCloud API."""
+        token = await self.get_access_token()
+
+        async with httpx.AsyncClient() as client:
+            url = f"{self.fortigate_cloud_url}/{endpoint.lstrip('/')}"
+            response = await client.request(
+                method=method,
+                url=url,
+                params=params,
+                json=json_data,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                },
+                timeout=30.0
+            )
+            response.raise_for_status()
+            return response.json()
+
+
+forticloud_config = FortiCloudConfig()
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def forticloud_list_devices(
+    status: str = Field("all", description="Filter by status: all, online, offline")
+) -> str:
+    """
+    List all FortiGate devices registered in FortiGate Cloud.
+    Shows device name, serial number, firmware version, and online status.
+    """
+    if not forticloud_config.is_configured:
+        return "Error: FortiCloud is not configured. Set FORTICLOUD_API_KEY and FORTICLOUD_API_SECRET."
+
+    try:
+        data = await forticloud_config.api_request("GET", "/devices")
+
+        devices = data.get("result", data.get("devices", []))
+        if not devices:
+            return "No FortiGate devices found in FortiCloud."
+
+        # Filter by status if specified
+        if status == "online":
+            devices = [d for d in devices if d.get("online", False)]
+        elif status == "offline":
+            devices = [d for d in devices if not d.get("online", False)]
+
+        output = ["# FortiGate Cloud Devices\n"]
+        output.append("| Device Name | Serial Number | Model | Firmware | Status |")
+        output.append("| --- | --- | --- | --- | --- |")
+
+        for device in devices:
+            name = device.get("name", device.get("hostname", "Unknown"))
+            sn = device.get("sn", device.get("serial", "N/A"))
+            model = device.get("model", device.get("platform", "N/A"))
+            firmware = device.get("firmware", device.get("os_version", "N/A"))
+            online = "Online" if device.get("online", False) else "Offline"
+
+            output.append(f"| {name} | {sn} | {model} | {firmware} | {online} |")
+
+        output.append(f"\nTotal: {len(devices)} device(s)")
+        return "\n".join(output)
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"FortiCloud API error: {e}")
+        return f"FortiCloud API error: {e.response.status_code} - {e.response.text[:100]}"
+    except Exception as e:
+        logger.error(f"FortiCloud error: {e}")
+        return f"FortiCloud error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def forticloud_device_details(
+    serial_number: str = Field(..., description="FortiGate device serial number")
+) -> str:
+    """
+    Get detailed information about a specific FortiGate device.
+    Includes system info, interfaces, licenses, and configuration status.
+    """
+    if not forticloud_config.is_configured:
+        return "Error: FortiCloud is not configured."
+
+    try:
+        data = await forticloud_config.api_request("GET", f"/devices/{serial_number}")
+
+        device = data.get("result", data)
+        if not device:
+            return f"Device {serial_number} not found."
+
+        output = [f"# FortiGate Device: {device.get('name', serial_number)}\n"]
+
+        # Basic info
+        output.append("## System Information")
+        output.append(f"- **Serial Number:** {device.get('sn', serial_number)}")
+        output.append(f"- **Model:** {device.get('model', 'N/A')}")
+        output.append(f"- **Firmware:** {device.get('firmware', 'N/A')}")
+        output.append(f"- **Status:** {'Online' if device.get('online') else 'Offline'}")
+
+        if device.get('last_seen'):
+            output.append(f"- **Last Seen:** {device.get('last_seen')}")
+
+        # Network info
+        if device.get('mgmt_ip'):
+            output.append(f"- **Management IP:** {device.get('mgmt_ip')}")
+        if device.get('public_ip'):
+            output.append(f"- **Public IP:** {device.get('public_ip')}")
+
+        # License info
+        if device.get('license'):
+            output.append("\n## License Status")
+            license_info = device.get('license', {})
+            output.append(f"- **Type:** {license_info.get('type', 'N/A')}")
+            output.append(f"- **Expiry:** {license_info.get('expiry', 'N/A')}")
+
+        # Features/services
+        if device.get('features') or device.get('services'):
+            output.append("\n## Enabled Services")
+            for feature in device.get('features', device.get('services', [])):
+                if isinstance(feature, dict):
+                    output.append(f"- {feature.get('name', feature)}: {feature.get('status', 'N/A')}")
+                else:
+                    output.append(f"- {feature}")
+
+        return "\n".join(output)
+
+    except httpx.HTTPStatusError as e:
+        return f"FortiCloud API error: {e.response.status_code}"
+    except Exception as e:
+        return f"FortiCloud error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def forticloud_device_alerts(
+    serial_number: str = Field(None, description="Filter by device serial (optional, shows all if not specified)"),
+    severity: str = Field("all", description="Filter by severity: all, critical, warning, info"),
+    limit: int = Field(50, description="Maximum alerts to return (1-200)")
+) -> str:
+    """
+    Get alerts and notifications from FortiGate Cloud.
+    Shows security events, system alerts, and configuration changes.
+    """
+    if not forticloud_config.is_configured:
+        return "Error: FortiCloud is not configured."
+
+    try:
+        params = {"limit": min(max(1, limit), 200)}
+        if serial_number:
+            params["sn"] = serial_number
+
+        data = await forticloud_config.api_request("GET", "/alerts", params=params)
+
+        alerts = data.get("result", data.get("alerts", []))
+        if not alerts:
+            return "No alerts found."
+
+        # Filter by severity if specified
+        if severity != "all":
+            alerts = [a for a in alerts if a.get("severity", "").lower() == severity.lower()]
+
+        output = ["# FortiCloud Alerts\n"]
+        output.append("| Time | Device | Severity | Message |")
+        output.append("| --- | --- | --- | --- |")
+
+        for alert in alerts[:limit]:
+            time = alert.get("time", alert.get("timestamp", "N/A"))
+            device = alert.get("device_name", alert.get("sn", "N/A"))
+            sev = alert.get("severity", "info").upper()
+            msg = alert.get("message", alert.get("description", "N/A"))[:60]
+
+            output.append(f"| {time} | {device} | {sev} | {msg} |")
+
+        output.append(f"\nShowing {min(len(alerts), limit)} of {len(alerts)} alert(s)")
+        return "\n".join(output)
+
+    except httpx.HTTPStatusError as e:
+        return f"FortiCloud API error: {e.response.status_code}"
+    except Exception as e:
+        return f"FortiCloud error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def forticloud_device_logs(
+    serial_number: str = Field(..., description="FortiGate device serial number"),
+    log_type: str = Field("traffic", description="Log type: traffic, event, utm, vpn"),
+    limit: int = Field(50, description="Maximum logs to return (1-500)")
+) -> str:
+    """
+    Get logs from a specific FortiGate device via FortiCloud.
+    Supports traffic logs, event logs, UTM logs, and VPN logs.
+    """
+    if not forticloud_config.is_configured:
+        return "Error: FortiCloud is not configured."
+
+    try:
+        params = {
+            "type": log_type,
+            "limit": min(max(1, limit), 500)
+        }
+
+        data = await forticloud_config.api_request("GET", f"/devices/{serial_number}/logs", params=params)
+
+        logs = data.get("result", data.get("logs", []))
+        if not logs:
+            return f"No {log_type} logs found for device {serial_number}."
+
+        output = [f"# {log_type.title()} Logs - {serial_number}\n"]
+
+        # Format based on log type
+        if log_type == "traffic":
+            output.append("| Time | Src IP | Dst IP | Action | Bytes |")
+            output.append("| --- | --- | --- | --- | --- |")
+            for log in logs[:limit]:
+                time = log.get("date", "") + " " + log.get("time", "")
+                src = log.get("srcip", "N/A")
+                dst = log.get("dstip", "N/A")
+                action = log.get("action", "N/A")
+                bytes_sent = log.get("sentbyte", 0)
+                output.append(f"| {time} | {src} | {dst} | {action} | {bytes_sent} |")
+        else:
+            output.append("| Time | Type | Level | Message |")
+            output.append("| --- | --- | --- | --- |")
+            for log in logs[:limit]:
+                time = log.get("date", "") + " " + log.get("time", "")
+                log_type_val = log.get("type", log.get("subtype", "N/A"))
+                level = log.get("level", "N/A")
+                msg = log.get("msg", log.get("message", "N/A"))[:50]
+                output.append(f"| {time} | {log_type_val} | {level} | {msg} |")
+
+        output.append(f"\nShowing {min(len(logs), limit)} of {len(logs)} log(s)")
+        return "\n".join(output)
+
+    except httpx.HTTPStatusError as e:
+        return f"FortiCloud API error: {e.response.status_code}"
+    except Exception as e:
+        return f"FortiCloud error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def forticloud_device_config(
+    serial_number: str = Field(..., description="FortiGate device serial number"),
+    path: str = Field("system/global", description="Config path (e.g., 'system/global', 'firewall/policy', 'vpn/ipsec/phase1-interface')")
+) -> str:
+    """
+    Get configuration from a FortiGate device via FortiCloud proxy.
+    This proxies requests to the FortiOS REST API through FortiCloud.
+
+    Common config paths:
+    - system/global: Global system settings
+    - system/interface: Network interfaces
+    - firewall/policy: Firewall policies
+    - firewall/address: Address objects
+    - vpn/ipsec/phase1-interface: VPN phase1 tunnels
+    - router/static: Static routes
+    """
+    if not forticloud_config.is_configured:
+        return "Error: FortiCloud is not configured."
+
+    try:
+        # FortiCloud proxies FortiOS API calls via /fgt/<SN>/api/v2/cmdb/<path>
+        endpoint = f"/fgt/{serial_number}/api/v2/cmdb/{path}"
+        data = await forticloud_config.api_request("GET", endpoint)
+
+        results = data.get("results", data.get("result", []))
+        if not results:
+            return f"No configuration found at path: {path}"
+
+        output = [f"# FortiGate Config: {path}\n"]
+        output.append(f"**Device:** {serial_number}\n")
+
+        # Format as JSON-like output
+        if isinstance(results, list):
+            for i, item in enumerate(results[:20], 1):  # Limit to 20 items
+                output.append(f"## Entry {i}")
+                if isinstance(item, dict):
+                    for key, value in item.items():
+                        if isinstance(value, (dict, list)):
+                            output.append(f"- **{key}:** (complex object)")
+                        else:
+                            output.append(f"- **{key}:** {value}")
+                else:
+                    output.append(f"- {item}")
+                output.append("")
+        elif isinstance(results, dict):
+            for key, value in results.items():
+                if isinstance(value, (dict, list)):
+                    output.append(f"- **{key}:** (complex object)")
+                else:
+                    output.append(f"- **{key}:** {value}")
+
+        return "\n".join(output)
+
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return f"Config path not found: {path}"
+        return f"FortiCloud API error: {e.response.status_code}"
+    except Exception as e:
+        return f"FortiCloud error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def forticloud_vpn_status(
+    serial_number: str = Field(..., description="FortiGate device serial number")
+) -> str:
+    """
+    Get VPN tunnel status from a FortiGate device.
+    Shows IPsec and SSL VPN connections.
+    """
+    if not forticloud_config.is_configured:
+        return "Error: FortiCloud is not configured."
+
+    try:
+        output = [f"# VPN Status - {serial_number}\n"]
+
+        # Try to get IPsec tunnel status
+        try:
+            ipsec_data = await forticloud_config.api_request(
+                "GET",
+                f"/fgt/{serial_number}/api/v2/monitor/vpn/ipsec"
+            )
+            ipsec_tunnels = ipsec_data.get("results", [])
+
+            output.append("## IPsec Tunnels\n")
+            if ipsec_tunnels:
+                output.append("| Name | Status | Remote GW | Incoming | Outgoing |")
+                output.append("| --- | --- | --- | --- | --- |")
+                for tunnel in ipsec_tunnels:
+                    name = tunnel.get("name", "N/A")
+                    status = "Up" if tunnel.get("status") == "up" else "Down"
+                    remote = tunnel.get("rgwy", tunnel.get("remote_gateway", "N/A"))
+                    incoming = tunnel.get("incoming_bytes", 0)
+                    outgoing = tunnel.get("outgoing_bytes", 0)
+                    output.append(f"| {name} | {status} | {remote} | {incoming} | {outgoing} |")
+            else:
+                output.append("No IPsec tunnels configured.")
+
+        except Exception as e:
+            output.append(f"Could not retrieve IPsec status: {str(e)[:50]}")
+
+        # Try to get SSL VPN status
+        try:
+            ssl_data = await forticloud_config.api_request(
+                "GET",
+                f"/fgt/{serial_number}/api/v2/monitor/vpn/ssl"
+            )
+            ssl_tunnels = ssl_data.get("results", [])
+
+            output.append("\n## SSL VPN Connections\n")
+            if ssl_tunnels:
+                output.append("| User | Source IP | Duration | Bytes In | Bytes Out |")
+                output.append("| --- | --- | --- | --- | --- |")
+                for conn in ssl_tunnels:
+                    user = conn.get("user_name", conn.get("user", "N/A"))
+                    src_ip = conn.get("remote_host", "N/A")
+                    duration = conn.get("duration", "N/A")
+                    bytes_in = conn.get("bytes_in", 0)
+                    bytes_out = conn.get("bytes_out", 0)
+                    output.append(f"| {user} | {src_ip} | {duration} | {bytes_in} | {bytes_out} |")
+            else:
+                output.append("No active SSL VPN connections.")
+
+        except Exception as e:
+            output.append(f"Could not retrieve SSL VPN status: {str(e)[:50]}")
+
+        return "\n".join(output)
+
+    except Exception as e:
+        return f"FortiCloud error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def forticloud_system_status(
+    serial_number: str = Field(..., description="FortiGate device serial number")
+) -> str:
+    """
+    Get system resource status from a FortiGate device.
+    Shows CPU, memory, disk usage, uptime, and session counts.
+    """
+    if not forticloud_config.is_configured:
+        return "Error: FortiCloud is not configured."
+
+    try:
+        output = [f"# System Status - {serial_number}\n"]
+
+        # Get system status
+        try:
+            status_data = await forticloud_config.api_request(
+                "GET",
+                f"/fgt/{serial_number}/api/v2/monitor/system/status"
+            )
+            status = status_data.get("results", status_data)
+
+            output.append("## System Information")
+            output.append(f"- **Hostname:** {status.get('hostname', 'N/A')}")
+            output.append(f"- **Serial:** {status.get('serial', serial_number)}")
+            output.append(f"- **Model:** {status.get('model', 'N/A')}")
+            output.append(f"- **Firmware:** {status.get('version', 'N/A')}")
+            output.append(f"- **Uptime:** {status.get('uptime', 'N/A')}")
+
+        except Exception as e:
+            output.append(f"Could not retrieve system status: {str(e)[:50]}")
+
+        # Get resource usage
+        try:
+            perf_data = await forticloud_config.api_request(
+                "GET",
+                f"/fgt/{serial_number}/api/v2/monitor/system/resource/usage"
+            )
+            perf = perf_data.get("results", {})
+
+            output.append("\n## Resource Usage")
+            cpu = perf.get("cpu", [{}])
+            if cpu:
+                cpu_usage = cpu[0].get("current", cpu if isinstance(cpu, (int, float)) else "N/A")
+                output.append(f"- **CPU:** {cpu_usage}%")
+
+            mem = perf.get("mem", {})
+            if mem:
+                mem_used = mem.get("used", "N/A")
+                mem_total = mem.get("total", "N/A")
+                output.append(f"- **Memory:** {mem_used} / {mem_total}")
+
+            disk = perf.get("disk", {})
+            if disk:
+                disk_used = disk.get("used", "N/A")
+                disk_total = disk.get("total", "N/A")
+                output.append(f"- **Disk:** {disk_used} / {disk_total}")
+
+        except Exception as e:
+            output.append(f"Could not retrieve resource usage: {str(e)[:50]}")
+
+        # Get session info
+        try:
+            session_data = await forticloud_config.api_request(
+                "GET",
+                f"/fgt/{serial_number}/api/v2/monitor/system/session/info"
+            )
+            sessions = session_data.get("results", {})
+
+            output.append("\n## Session Statistics")
+            output.append(f"- **Active Sessions:** {sessions.get('session_count', 'N/A')}")
+            output.append(f"- **Session Limit:** {sessions.get('session_limit', 'N/A')}")
+
+        except Exception as e:
+            pass  # Session info not critical
+
+        return "\n".join(output)
+
+    except Exception as e:
+        return f"FortiCloud error: {str(e)}"
+
+
+# ============================================================================
 # Maxotel VoIP Integration
 # ============================================================================
 
@@ -7185,6 +7702,21 @@ async def server_status() -> str:
             missing.append("BIGQUERY_PROJECT_ID")
         lines.append(f"⚠️ **BigQuery:** Missing: {', '.join(missing)}")
 
+    # FortiCloud status
+    if forticloud_config.is_configured:
+        try:
+            await forticloud_config.get_access_token()
+            lines.append(f"✅ **FortiCloud:** Connected ({forticloud_config.client_id})")
+        except Exception as e:
+            lines.append(f"❌ **FortiCloud:** Auth failed - {str(e)[:50]}")
+    else:
+        missing = []
+        if not os.getenv("FORTICLOUD_API_KEY"):
+            missing.append("API_KEY")
+        if not os.getenv("FORTICLOUD_API_SECRET"):
+            missing.append("API_SECRET")
+        lines.append(f"⚠️ **FortiCloud:** Missing: {', '.join(missing)}")
+
     # Maxotel status
     if maxotel_config.is_configured:
         lines.append("✅ **Maxotel:** Configured")
@@ -7439,6 +7971,19 @@ if __name__ == "__main__":
                 services.append(("BigQuery", "error", f"Error: {str(e)[:40]}", "Data Warehouse"))
         else:
             services.append(("BigQuery", "warning", "Missing: BIGQUERY_PROJECT_ID", "Data Warehouse"))
+
+        # FortiCloud
+        if forticloud_config.is_configured:
+            try:
+                await forticloud_config.get_access_token()
+                services.append(("FortiCloud", "ok", f"Connected ({forticloud_config.client_id})", "Network Security"))
+            except Exception as e:
+                services.append(("FortiCloud", "error", f"Auth failed: {str(e)[:40]}", "Network Security"))
+        else:
+            missing = []
+            if not os.getenv("FORTICLOUD_API_KEY"): missing.append("API_KEY")
+            if not os.getenv("FORTICLOUD_API_SECRET"): missing.append("API_SECRET")
+            services.append(("FortiCloud", "warning", f"Missing: {', '.join(missing)}" if missing else "Not configured", "Network Security"))
 
         # Maxotel
         if maxotel_config.is_configured:
