@@ -8695,6 +8695,83 @@ if __name__ == "__main__":
             return HTMLResponse(f"<html><body><h1>Error</h1><p>{str(e)}</p></body></html>", status_code=500)
 
     # ============================================================================
+    # BIGQUERY SYNC STATUS HELPER
+    # ============================================================================
+
+    async def get_bigquery_sync_status() -> dict:
+        """
+        Get sync status for all BigQuery datasets including last sync time and record counts.
+        Returns a dict with dataset info or None if BigQuery is not configured/accessible.
+        """
+        if not bigquery_config.is_configured:
+            return None
+
+        try:
+            client = bigquery_config.get_client()
+            datasets = list(client.list_datasets())
+
+            if not datasets:
+                return {"datasets": [], "total_records": 0, "error": None}
+
+            dataset_info = []
+            total_records = 0
+
+            for dataset in datasets:
+                dataset_id = dataset.dataset_id
+                tables_info = []
+                dataset_records = 0
+                latest_modified = None
+
+                try:
+                    tables = list(client.list_tables(f"{bigquery_config.project_id}.{dataset_id}"))
+
+                    for table in tables:
+                        try:
+                            full_table = client.get_table(table)
+                            rows = full_table.num_rows or 0
+                            modified = full_table.modified
+
+                            dataset_records += rows
+
+                            # Track latest modification time for the dataset
+                            if modified and (latest_modified is None or modified > latest_modified):
+                                latest_modified = modified
+
+                            tables_info.append({
+                                "name": table.table_id,
+                                "type": table.table_type,
+                                "rows": rows,
+                                "modified": modified
+                            })
+                        except Exception:
+                            tables_info.append({
+                                "name": table.table_id,
+                                "type": table.table_type,
+                                "rows": 0,
+                                "modified": None
+                            })
+
+                except Exception as e:
+                    logger.error(f"Error listing tables in {dataset_id}: {e}")
+
+                total_records += dataset_records
+                dataset_info.append({
+                    "name": dataset_id,
+                    "tables": tables_info,
+                    "total_rows": dataset_records,
+                    "last_modified": latest_modified
+                })
+
+            return {
+                "datasets": dataset_info,
+                "total_records": total_records,
+                "error": None
+            }
+
+        except Exception as e:
+            logger.error(f"BigQuery sync status error: {e}")
+            return {"datasets": [], "total_records": 0, "error": str(e)}
+
     # PLATFORM REGISTRY - Add new platforms here for automatic status page updates
     # ============================================================================
     # Each entry: (name, config_obj, category, check_type, env_vars_for_missing)
@@ -8907,6 +8984,85 @@ if __name__ == "__main__":
                 <td class="category">{category}</td>
             </tr>"""
 
+        # Get BigQuery sync status
+        bq_sync_status = await get_bigquery_sync_status()
+
+        # Build BigQuery sync section HTML
+        bq_sync_html = ""
+        if bq_sync_status and bq_sync_status.get("datasets"):
+            dataset_rows = ""
+            for ds in bq_sync_status["datasets"]:
+                ds_name = ds["name"]
+                ds_rows = ds["total_rows"]
+                ds_modified = ds["last_modified"]
+
+                if ds_modified:
+                    modified_str = ds_modified.strftime("%Y-%m-%d %H:%M:%S UTC")
+                    # Calculate relative time
+                    from datetime import datetime, timezone
+                    now = datetime.now(timezone.utc)
+                    if ds_modified.tzinfo is None:
+                        ds_modified = ds_modified.replace(tzinfo=timezone.utc)
+                    time_diff = now - ds_modified
+                    if time_diff.days > 0:
+                        relative = f"{time_diff.days}d ago"
+                    elif time_diff.seconds >= 3600:
+                        relative = f"{time_diff.seconds // 3600}h ago"
+                    elif time_diff.seconds >= 60:
+                        relative = f"{time_diff.seconds // 60}m ago"
+                    else:
+                        relative = "just now"
+                    modified_display = f'<span title="{modified_str}">{relative}</span>'
+                else:
+                    modified_display = '<span class="text-muted">Unknown</span>'
+
+                # Format row count with commas
+                rows_display = f"{ds_rows:,}" if ds_rows else "0"
+
+                dataset_rows += f"""
+                <tr>
+                    <td><strong>{ds_name}</strong></td>
+                    <td class="text-right">{rows_display}</td>
+                    <td>{modified_display}</td>
+                    <td>{len(ds.get('tables', []))} tables</td>
+                </tr>"""
+
+            total_records = bq_sync_status.get("total_records", 0)
+
+            bq_sync_html = f"""
+        <div class="services-card bq-sync-card">
+            <h2>📊 BigQuery Sync Status</h2>
+            <div class="bq-summary">
+                <div class="bq-stat">
+                    <span class="bq-stat-value">{len(bq_sync_status['datasets'])}</span>
+                    <span class="bq-stat-label">Datasets</span>
+                </div>
+                <div class="bq-stat">
+                    <span class="bq-stat-value">{total_records:,}</span>
+                    <span class="bq-stat-label">Total Records</span>
+                </div>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Dataset</th>
+                        <th class="text-right">Records</th>
+                        <th>Last Synced</th>
+                        <th>Tables</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {dataset_rows}
+                </tbody>
+            </table>
+        </div>"""
+        elif bq_sync_status and bq_sync_status.get("error"):
+            bq_sync_html = f"""
+        <div class="services-card bq-sync-card">
+            <h2>📊 BigQuery Sync Status</h2>
+            <p class="error-message">Error: {bq_sync_status['error']}</p>
+        </div>"""
+
         html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -9044,6 +9200,47 @@ if __name__ == "__main__":
             th, td {{ padding: 10px 8px; font-size: 0.85rem; }}
             .category {{ display: none; }}
         }}
+        /* BigQuery Sync Status Styles */
+        .bq-sync-card {{
+            margin-top: 20px;
+            border: 1px solid rgba(52, 152, 219, 0.3);
+        }}
+        .bq-sync-card h2 {{
+            color: #3498db;
+        }}
+        .bq-summary {{
+            display: flex;
+            gap: 40px;
+            margin-bottom: 20px;
+            padding: 15px;
+            background: rgba(52, 152, 219, 0.1);
+            border-radius: 8px;
+        }}
+        .bq-stat {{
+            display: flex;
+            flex-direction: column;
+        }}
+        .bq-stat-value {{
+            font-size: 1.8rem;
+            font-weight: bold;
+            color: #3498db;
+        }}
+        .bq-stat-label {{
+            font-size: 0.85rem;
+            color: #888;
+        }}
+        .text-right {{
+            text-align: right;
+        }}
+        .text-muted {{
+            color: #666;
+        }}
+        .error-message {{
+            color: #e74c3c;
+            padding: 15px;
+            background: rgba(231, 76, 60, 0.1);
+            border-radius: 8px;
+        }}
     </style>
 </head>
 <body>
@@ -9084,6 +9281,8 @@ if __name__ == "__main__":
                 </tbody>
             </table>
         </div>
+
+        {bq_sync_html}
 
         <footer>
             <p>Last checked: {check_time}</p>
