@@ -5528,6 +5528,111 @@ async def pax8_list_products(
         return f"Error: {str(e)}"
 
 
+@mcp.tool(annotations={"readOnlyHint": True})
+async def pax8_get_product(
+    product_id: str = Field(..., description="Pax8 product ID (UUID)")
+) -> str:
+    """
+    Get detailed product information from Pax8 including pricing.
+    
+    Returns product details including name, vendor, pricing tiers, and provisioning info.
+    Use this to check partner pricing for Microsoft 365, Exchange Online, and other products.
+    """
+    if not pax8_config.is_configured:
+        return "Error: Pax8 not configured."
+
+    try:
+        token = await pax8_config.get_access_token()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        async with httpx.AsyncClient() as client:
+            # Get product details
+            response = await client.get(
+                f"{pax8_config.base_url}/products/{product_id}",
+                headers=headers
+            )
+            response.raise_for_status()
+            product = response.json()
+
+            # Get product pricing
+            pricing = []
+            try:
+                pricing_response = await client.get(
+                    f"{pax8_config.base_url}/products/{product_id}/pricing",
+                    headers=headers
+                )
+                if pricing_response.status_code == 200:
+                    pricing_data = pricing_response.json()
+                    pricing = pricing_data.get("content", []) if isinstance(pricing_data, dict) else pricing_data
+            except Exception:
+                pass  # Pricing endpoint may not be available for all products
+
+            # Get provisioning details
+            provisioning = {}
+            try:
+                prov_response = await client.get(
+                    f"{pax8_config.base_url}/products/{product_id}/provisioning-details",
+                    headers=headers
+                )
+                if prov_response.status_code == 200:
+                    provisioning = prov_response.json()
+            except Exception:
+                pass
+
+        # Format output
+        lines = [
+            f"## {product.get('name', 'Unknown Product')}",
+            f"",
+            f"**Product ID:** `{product_id}`",
+            f"**Vendor:** {product.get('vendorName', 'Unknown')}",
+            f"**SKU:** {product.get('sku', 'N/A')}",
+        ]
+
+        if product.get('shortDescription'):
+            lines.append(f"**Description:** {product.get('shortDescription')}")
+
+        # Billing info
+        lines.append(f"")
+        lines.append(f"### Billing")
+        lines.append(f"- **Term:** {product.get('billingTerm', 'N/A')}")
+        lines.append(f"- **Unit of Measurement:** {product.get('unitOfMeasurement', 'N/A')}")
+
+        # Pricing
+        if pricing:
+            lines.append(f"")
+            lines.append(f"### Pricing")
+            for price in pricing[:5]:  # Limit to first 5 pricing tiers
+                if isinstance(price, dict):
+                    partner_buy = price.get('partnerBuyPrice', price.get('price', 'N/A'))
+                    msrp = price.get('suggestedRetailPrice', price.get('msrp', 'N/A'))
+                    currency = price.get('currencyCode', 'USD')
+                    commitment = price.get('commitmentTermQuantity', '')
+                    commitment_unit = price.get('commitmentTermUnit', '')
+                    billing_term = price.get('billingTerm', '')
+
+                    if commitment and commitment_unit:
+                        lines.append(f"- **{commitment} {commitment_unit} ({billing_term}):** Partner: ${partner_buy} {currency} | MSRP: ${msrp} {currency}")
+                    else:
+                        lines.append(f"- **Partner Price:** ${partner_buy} {currency} | **MSRP:** ${msrp} {currency}")
+
+        # Provisioning
+        if provisioning:
+            lines.append(f"")
+            lines.append(f"### Provisioning")
+            if provisioning.get('provisioningType'):
+                lines.append(f"- **Type:** {provisioning.get('provisioningType')}")
+            if provisioning.get('minQuantity'):
+                lines.append(f"- **Min Quantity:** {provisioning.get('minQuantity')}")
+            if provisioning.get('maxQuantity'):
+                lines.append(f"- **Max Quantity:** {provisioning.get('maxQuantity')}")
+
+        return "\n".join(lines)
+    except httpx.HTTPStatusError as e:
+        return f"Error: HTTP {e.response.status_code} - {e.response.text}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
 # ============================================================================
 # BigQuery Tools - Karisma RIS Data Warehouse
 # ============================================================================
