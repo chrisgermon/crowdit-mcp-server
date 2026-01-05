@@ -8666,7 +8666,7 @@ if __name__ == "__main__":
             "category": "Remote Server",
             "check_type": "ssh_ubuntu",
             "env_vars": ["UBUNTU_HOSTNAME", "UBUNTU_USERNAME"],
-            "auth_env_vars": ["UBUNTU_PASSWORD", "UBUNTU_PRIVATE_KEY"]
+            "auth_env_vars": ["UBUNTU_PASSWORD", "UBUNTU_PRIVATE_KEY", "UBUNTU_PRIVATE_KEY_SECRET"]
         },
         {
             "name": "Vision Radiology",
@@ -8674,7 +8674,7 @@ if __name__ == "__main__":
             "category": "Remote Server",
             "check_type": "ssh_visionrad",
             "env_vars": ["VISIONRAD_HOSTNAME", "VISIONRAD_USERNAME"],
-            "auth_env_vars": ["VISIONRAD_PASSWORD", "VISIONRAD_PRIVATE_KEY"]
+            "auth_env_vars": ["VISIONRAD_PASSWORD", "VISIONRAD_PRIVATE_KEY", "VISIONRAD_PRIVATE_KEY_SECRET"]
         },
     ]
 
