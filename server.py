@@ -5773,72 +5773,110 @@ async def bigquery_sample_data(
 # ============================================================================
 
 class FortiCloudConfig:
-    """FortiCloud API configuration using OAuth2 authentication.
+    """FortiCloud API configuration with regional support.
 
     Environment variables:
-    - FORTICLOUD_API_KEY: API Key (username) from FortiCloud IAM
-    - FORTICLOUD_API_SECRET: API Secret (password) from FortiCloud IAM
-    - FORTICLOUD_CLIENT_ID: Client ID for the specific service (default: fortigatecloud)
-
-    Available client IDs:
-    - fortigatecloud: FortiGate Cloud
-    - FortiManager: FortiManager Cloud
-    - FortiAnalyzer: FortiAnalyzer Cloud
-    - FortiSASE: FortiSASE Cloud
-    - fortipresence: FortiPresence Cloud
-    - fortiztp: FortiZTP Cloud
-    - forticameracloud: FortiCamera Cloud
-    - assetmanagement: Asset Management Cloud
-    - iam: IAM Cloud
-
-    Required IAM permissions:
-    - The API user needs appropriate permissions for the services being accessed
+    - FORTICLOUD_USERNAME: FortiCloud account email/username
+    - FORTICLOUD_PASSWORD: FortiCloud account password
+    - FORTICLOUD_ACCOUNT_ID: FortiCloud account ID (optional, improves auth)
+    - FORTICLOUD_REGION: Region code (default: global)
+    
+    Supported regions:
+    - global (or us): www.forticloud.com (US/Global)
+    - ca: ca.fortigate.forticloud.com (Canada)
+    - eu: eu.fortigate.forticloud.com (Europe)
+    - jp: jp.fortigate.forticloud.com (Japan)
+    - au: au.fortigate.forticloud.com (Australia) - if available
+    
+    Authentication uses legacy /auth endpoint which works with regional deployments.
     """
+    
+    # Regional API endpoints
+    REGION_ENDPOINTS = {
+        "global": "https://www.forticloud.com/forticloudapi/v1",
+        "us": "https://www.forticloud.com/forticloudapi/v1",
+        "ca": "https://ca.fortigate.forticloud.com/forticloudapi/v1",
+        "eu": "https://eu.fortigate.forticloud.com/forticloudapi/v1",
+        "jp": "https://jp.fortigate.forticloud.com/forticloudapi/v1",
+        "au": "https://au.fortigate.forticloud.com/forticloudapi/v1",
+    }
+    
     def __init__(self):
-        self.api_key = os.getenv("FORTICLOUD_API_KEY", "")
-        self.api_secret = os.getenv("FORTICLOUD_API_SECRET", "")
-        self.client_id = os.getenv("FORTICLOUD_CLIENT_ID", "fortigatecloud")
-        self.auth_url = "https://customerapiauth.fortinet.com/api/v1/oauth/token/"
-        self.fortigate_cloud_url = "https://www.forticloud.com/forticloudapi/v1"
+        self.username = os.getenv("FORTICLOUD_USERNAME", "")
+        self.password = os.getenv("FORTICLOUD_PASSWORD", "")
+        self.account_id = os.getenv("FORTICLOUD_ACCOUNT_ID", "")
+        self.region = os.getenv("FORTICLOUD_REGION", "global").lower()
         self._access_token = None
         self._token_expiry = None
+        
+    @property
+    def api_url(self) -> str:
+        """Get the API URL for the configured region."""
+        return self.REGION_ENDPOINTS.get(self.region, self.REGION_ENDPOINTS["global"])
+    
+    @property
+    def auth_url(self) -> str:
+        """Get the auth URL (same base as API URL)."""
+        return f"{self.api_url}/auth"
 
     @property
     def is_configured(self) -> bool:
-        return bool(self.api_key) and bool(self.api_secret)
+        return bool(self.username) and bool(self.password)
 
     async def get_access_token(self) -> str:
-        """Get or refresh FortiCloud access token."""
+        """Get or refresh FortiCloud access token using legacy auth."""
         if self._access_token and self._token_expiry and datetime.now() < self._token_expiry:
             return self._access_token
 
         async with httpx.AsyncClient() as client:
+            auth_payload = {
+                "userName": self.username,
+                "password": self.password,
+            }
+            # Add account ID if provided (can help with auth)
+            if self.account_id:
+                auth_payload["accountId"] = self.account_id
+                
+            logger.info(f"FortiCloud: Authenticating to {self.auth_url} (region: {self.region})")
+            
             response = await client.post(
                 self.auth_url,
-                json={
-                    "username": self.api_key,
-                    "password": self.api_secret,
-                    "client_id": self.client_id,
-                    "grant_type": "password"
-                },
-                headers={"Content-Type": "application/json"}
+                json=auth_payload,
+                headers={"Content-Type": "application/json"},
+                timeout=30.0
             )
-            response.raise_for_status()
+            
+            if response.status_code != 200:
+                error_text = response.text[:500]
+                logger.error(f"FortiCloud auth failed: {response.status_code} - {error_text}")
+                raise Exception(f"FortiCloud authentication failed: {response.status_code} - {error_text}")
+            
             data = response.json()
+            
+            if data.get("status") != "success":
+                raise Exception(f"FortiCloud auth failed: {data.get('message', 'Unknown error')}")
 
             self._access_token = data["access_token"]
             # Token expires in ~4 hours (14400 seconds), refresh 5 mins early
             expires_in = data.get("expires_in", 14400)
             self._token_expiry = datetime.now() + timedelta(seconds=expires_in - 300)
+            
+            logger.info(f"FortiCloud: Auth successful, token expires in {expires_in}s")
 
             return self._access_token
 
     async def api_request(self, method: str, endpoint: str, params: dict = None, json_data: dict = None) -> dict:
         """Make authenticated request to FortiCloud API."""
-        token = await self.get_access_token()
+        try:
+            token = await self.get_access_token()
+            logger.info(f"FortiCloud: Got token (first 20 chars): {token[:20]}...")
+        except Exception as e:
+            logger.error(f"FortiCloud auth failed: {e}")
+            raise Exception(f"FortiCloud authentication failed: {e}")
 
         async with httpx.AsyncClient() as client:
-            url = f"{self.fortigate_cloud_url}/{endpoint.lstrip('/')}"
+            url = f"{self.api_url}/{endpoint.lstrip('/')}"
+            logger.info(f"FortiCloud: Requesting {method} {url}")
             response = await client.request(
                 method=method,
                 url=url,
@@ -5850,11 +5888,70 @@ class FortiCloudConfig:
                 },
                 timeout=30.0
             )
+            logger.info(f"FortiCloud: Response status {response.status_code}")
+            if response.status_code != 200:
+                logger.error(f"FortiCloud: Response body: {response.text[:500]}")
             response.raise_for_status()
             return response.json()
 
 
 forticloud_config = FortiCloudConfig()
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def forticloud_debug_auth() -> str:
+    """
+    Debug FortiCloud authentication - test the token retrieval and API access.
+    Use this to diagnose connection issues.
+    """
+    if not forticloud_config.is_configured:
+        return "Error: FortiCloud is not configured. Set FORTICLOUD_USERNAME and FORTICLOUD_PASSWORD environment variables."
+    
+    output = ["# FortiCloud Debug\n"]
+    output.append(f"**Username:** {forticloud_config.username}")
+    output.append(f"**Account ID:** {forticloud_config.account_id or 'Not set'}")
+    output.append(f"**Region:** {forticloud_config.region}")
+    output.append(f"**Auth URL:** {forticloud_config.auth_url}")
+    output.append(f"**API URL:** {forticloud_config.api_url}")
+    output.append("")
+    
+    # Test authentication
+    try:
+        output.append("**Testing legacy authentication...**")
+        token = await forticloud_config.get_access_token()
+        output.append(f"✅ Token received (length: {len(token)})")
+        output.append(f"Token prefix: {token[:30]}...")
+        output.append("")
+        
+        # Test API call
+        output.append("**Testing /devices endpoint...**")
+        async with httpx.AsyncClient() as client:
+            api_url = f"{forticloud_config.api_url}/devices"
+            api_response = await client.get(
+                api_url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                },
+                timeout=30.0
+            )
+            output.append(f"API response status: {api_response.status_code}")
+            
+            if api_response.status_code == 200:
+                output.append(f"✅ API call successful!")
+                data = api_response.json()
+                if isinstance(data, list):
+                    output.append(f"Found {len(data)} devices")
+                else:
+                    output.append(f"Response preview: {str(data)[:500]}")
+            else:
+                output.append(f"❌ API call failed")
+                output.append(f"Response: {api_response.text[:1000]}")
+                
+    except Exception as e:
+        output.append(f"❌ Error: {str(e)}")
+    
+    return "\n".join(output)
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
@@ -7706,15 +7803,15 @@ async def server_status() -> str:
     if forticloud_config.is_configured:
         try:
             await forticloud_config.get_access_token()
-            lines.append(f"✅ **FortiCloud:** Connected ({forticloud_config.client_id})")
+            lines.append(f"✅ **FortiCloud:** Connected (region: {forticloud_config.region})")
         except Exception as e:
             lines.append(f"❌ **FortiCloud:** Auth failed - {str(e)[:50]}")
     else:
         missing = []
-        if not os.getenv("FORTICLOUD_API_KEY"):
-            missing.append("API_KEY")
-        if not os.getenv("FORTICLOUD_API_SECRET"):
-            missing.append("API_SECRET")
+        if not os.getenv("FORTICLOUD_USERNAME"):
+            missing.append("USERNAME")
+        if not os.getenv("FORTICLOUD_PASSWORD"):
+            missing.append("PASSWORD")
         lines.append(f"⚠️ **FortiCloud:** Missing: {', '.join(missing)}")
 
     # Maxotel status
