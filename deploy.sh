@@ -125,7 +125,7 @@ gcloud run deploy $SERVICE_NAME \
     --concurrency=80 \
     --min-instances=0 \
     --max-instances=3 \
-    --set-env-vars="BIGQUERY_PROJECT_ID=$PROJECT_ID,BIGQUERY_JOB_PROJECT_ID=$PROJECT_ID" \
+    --set-env-vars="BIGQUERY_PROJECT_ID=$PROJECT_ID,BIGQUERY_JOB_PROJECT_ID=$PROJECT_ID,BIGQUERY_DATA_PROJECT_ID=vision-radiology" \
     --set-secrets="HALOPSA_RESOURCE_SERVER=HALOPSA_RESOURCE_SERVER:latest" \
     --set-secrets="HALOPSA_AUTH_SERVER=HALOPSA_AUTH_SERVER:latest" \
     --set-secrets="HALOPSA_CLIENT_ID=HALOPSA_CLIENT_ID:latest" \
