@@ -5232,8 +5232,9 @@ class BigQueryConfig:
     """BigQuery configuration from environment variables.
 
     Environment variables:
-    - BIGQUERY_PROJECT_ID: Default project for data/table references (e.g., 'crowdmcp')
+    - BIGQUERY_PROJECT_ID: Default project for queries (e.g., 'crowdmcp')
     - BIGQUERY_JOB_PROJECT_ID: Project where query jobs run and are billed (optional, defaults to BIGQUERY_PROJECT_ID)
+    - BIGQUERY_DATA_PROJECT_ID: Project containing the actual data/datasets (optional, defaults to BIGQUERY_PROJECT_ID)
     - GOOGLE_APPLICATION_CREDENTIALS_JSON: Service account JSON for Cloud Run (optional, uses ADC if not set)
 
     Required IAM permissions:
@@ -5245,6 +5246,8 @@ class BigQueryConfig:
         # Job project is where queries run and billing happens - defaults to project_id
         # The service account MUST have bigquery.jobs.create permission on this project
         self.job_project_id = os.getenv("BIGQUERY_JOB_PROJECT_ID", "") or self.project_id
+        # Data project is where the actual datasets/tables live - defaults to project_id
+        self.data_project_id = os.getenv("BIGQUERY_DATA_PROJECT_ID", "") or self.project_id
         self.credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", "")
         self._client = None
 
@@ -8708,8 +8711,9 @@ if __name__ == "__main__":
 
         try:
             client = bigquery_config.get_client()
-            # List datasets from the data project, not the job project
-            datasets = list(client.list_datasets(project=bigquery_config.project_id))
+            # List datasets from the data project (where actual data lives)
+            data_project = bigquery_config.data_project_id
+            datasets = list(client.list_datasets(project=data_project))
 
             if not datasets:
                 return {"datasets": [], "total_records": 0, "error": None}
@@ -8724,7 +8728,7 @@ if __name__ == "__main__":
                 latest_modified = None
 
                 try:
-                    tables = list(client.list_tables(f"{bigquery_config.project_id}.{dataset_id}"))
+                    tables = list(client.list_tables(f"{data_project}.{dataset_id}"))
 
                     for table in tables:
                         try:
@@ -8766,6 +8770,7 @@ if __name__ == "__main__":
             return {
                 "datasets": dataset_info,
                 "total_records": total_records,
+                "data_project": data_project,
                 "error": None
             }
 
@@ -9029,10 +9034,11 @@ if __name__ == "__main__":
                 </tr>"""
 
             total_records = bq_sync_status.get("total_records", 0)
+            data_project = bq_sync_status.get("data_project", "unknown")
 
             bq_sync_html = f"""
         <div class="services-card bq-sync-card">
-            <h2>📊 BigQuery Sync Status</h2>
+            <h2>📊 BigQuery Sync Status <span style="font-size: 0.8rem; color: #888; font-weight: normal;">({data_project})</span></h2>
             <div class="bq-summary">
                 <div class="bq-stat">
                     <span class="bq-stat-value">{len(bq_sync_status['datasets'])}</span>
