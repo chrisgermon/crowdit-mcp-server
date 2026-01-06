@@ -8708,7 +8708,8 @@ if __name__ == "__main__":
 
         try:
             client = bigquery_config.get_client()
-            datasets = list(client.list_datasets())
+            # List datasets from the data project, not the job project
+            datasets = list(client.list_datasets(project=bigquery_config.project_id))
 
             if not datasets:
                 return {"datasets": [], "total_records": 0, "error": None}
@@ -9061,6 +9062,13 @@ if __name__ == "__main__":
         <div class="services-card bq-sync-card">
             <h2>📊 BigQuery Sync Status</h2>
             <p class="error-message">Error: {bq_sync_status['error']}</p>
+        </div>"""
+        elif bq_sync_status is not None:
+            # BigQuery is configured but no datasets found
+            bq_sync_html = """
+        <div class="services-card bq-sync-card">
+            <h2>📊 BigQuery Sync Status</h2>
+            <p class="text-muted" style="padding: 15px;">No datasets found in BigQuery project.</p>
         </div>"""
 
         html = f"""<!DOCTYPE html>
