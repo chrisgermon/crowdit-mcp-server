@@ -8713,10 +8713,12 @@ if __name__ == "__main__":
             client = bigquery_config.get_client()
             # List datasets from the data project (where actual data lives)
             data_project = bigquery_config.data_project_id
+            logger.info(f"BigQuery sync: querying datasets from project '{data_project}' (job_project: '{bigquery_config.job_project_id}')")
             datasets = list(client.list_datasets(project=data_project))
+            logger.info(f"BigQuery sync: found {len(datasets)} datasets")
 
             if not datasets:
-                return {"datasets": [], "total_records": 0, "error": None}
+                return {"datasets": [], "total_records": 0, "data_project": data_project, "error": None}
 
             dataset_info = []
             total_records = 0
@@ -9071,10 +9073,11 @@ if __name__ == "__main__":
         </div>"""
         elif bq_sync_status is not None:
             # BigQuery is configured but no datasets found
-            bq_sync_html = """
+            empty_project = bq_sync_status.get("data_project", bigquery_config.data_project_id)
+            bq_sync_html = f"""
         <div class="services-card bq-sync-card">
             <h2>📊 BigQuery Sync Status</h2>
-            <p class="text-muted" style="padding: 15px;">No datasets found in BigQuery project.</p>
+            <p class="text-muted" style="padding: 15px;">No datasets found in project: {empty_project}</p>
         </div>"""
 
         html = f"""<!DOCTYPE html>
