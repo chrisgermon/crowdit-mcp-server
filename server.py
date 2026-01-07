@@ -9492,6 +9492,99 @@ if __name__ == "__main__":
             return {"datasets": [], "total_records": 0, "error": str(e)}
 
     # ============================================================================
+    # KARISMA SYNC STATUS HELPER
+    # ============================================================================
+
+    async def get_karisma_sync_status() -> dict:
+        """
+        Get Karisma Live sync status from Vision Radiology server.
+        Reads sync_state_all.json to check if hourly incremental sync is running.
+        Returns dict with sync info or None if not configured/accessible.
+        """
+        if not visionrad_config.is_configured:
+            return None
+
+        try:
+            import asyncssh
+            import json
+            from datetime import datetime, timezone
+
+            async with await _get_visionrad_ssh_connection() as conn:
+                # Read the sync state file
+                result = await conn.run(
+                    "cat /home/chris/karisma-live-sync/sync_state_all.json 2>/dev/null",
+                    check=False
+                )
+
+                if result.exit_status != 0 or not result.stdout.strip():
+                    return {"error": "Sync state file not found", "configured": False}
+
+                sync_state = json.loads(result.stdout)
+
+                # Get crontab status
+                cron_result = await conn.run(
+                    "crontab -l -u chris 2>/dev/null | grep -c karisma_live_sync || echo 0",
+                    check=False
+                )
+                cron_configured = int(cron_result.stdout.strip()) > 0 if cron_result.exit_status == 0 else False
+
+                # Parse last transaction key and calculate data freshness
+                last_txn_key = sync_state.get("last_transaction_key", 0)
+
+                # Find the most recent table sync time
+                tables = sync_state.get("tables", {})
+                latest_sync = None
+                table_count = len(tables)
+
+                for table_name, table_info in tables.items():
+                    last_sync_str = table_info.get("last_sync")
+                    if last_sync_str:
+                        try:
+                            sync_time = datetime.fromisoformat(last_sync_str.replace('Z', '+00:00'))
+                            if sync_time.tzinfo is None:
+                                sync_time = sync_time.replace(tzinfo=timezone.utc)
+                            if latest_sync is None or sync_time > latest_sync:
+                                latest_sync = sync_time
+                        except:
+                            pass
+
+                # Calculate time since last sync
+                now = datetime.now(timezone.utc)
+                if latest_sync:
+                    time_diff = now - latest_sync
+                    hours_ago = time_diff.total_seconds() / 3600
+                    
+                    # Determine health status
+                    if hours_ago < 2:
+                        health = "healthy"
+                        health_msg = "Sync running normally"
+                    elif hours_ago < 6:
+                        health = "warning"
+                        health_msg = f"Last sync was {hours_ago:.1f}h ago"
+                    else:
+                        health = "error"
+                        health_msg = f"Sync may be stalled ({hours_ago:.1f}h since last sync)"
+                else:
+                    health = "error"
+                    health_msg = "No sync timestamps found"
+                    hours_ago = None
+
+                return {
+                    "last_transaction_key": last_txn_key,
+                    "last_sync": latest_sync,
+                    "table_count": table_count,
+                    "cron_configured": cron_configured,
+                    "health": health,
+                    "health_msg": health_msg,
+                    "hours_ago": hours_ago,
+                    "error": None
+                }
+
+        except Exception as e:
+            logger.error(f"Karisma sync status error: {e}")
+            return {"error": str(e)}
+
+    # ============================================================================
     # CLOUD BUILD STATUS HELPER
     # ============================================================================
 
@@ -9501,14 +9594,15 @@ if __name__ == "__main__":
         Returns dict with build name, time, status, and changes or None if not configured/accessible.
         """
         try:
-            from google.cloud.devtools import cloudbuild_v1
+            from google.cloud.devtools.cloudbuild_v1 import CloudBuildClient
+            from google.cloud.devtools.cloudbuild_v1.types import ListBuildsRequest
 
             project_id = os.getenv("GCP_PROJECT_ID", os.getenv("GOOGLE_CLOUD_PROJECT", "crowdmcp"))
 
-            client = cloudbuild_v1.CloudBuildClient()
+            client = CloudBuildClient()
 
             # List recent builds for this project
-            request = cloudbuild_v1.ListBuildsRequest(
+            request = ListBuildsRequest(
                 project_id=project_id,
                 page_size=1,  # Only need the latest build
             )
@@ -9873,6 +9967,103 @@ if __name__ == "__main__":
         <div class="services-card bq-sync-card">
             <h2>📊 BigQuery Sync Status</h2>
             <p class="text-muted" style="padding: 15px;">No datasets found in project: {empty_project}</p>
+        </div>"""
+
+        # Get Karisma Sync status
+        karisma_sync_status = await get_karisma_sync_status()
+
+        # Build Karisma Sync section HTML
+        karisma_sync_html = ""
+        if karisma_sync_status and not karisma_sync_status.get("error"):
+            last_sync = karisma_sync_status.get("last_sync")
+            last_txn_key = karisma_sync_status.get("last_transaction_key", 0)
+            table_count = karisma_sync_status.get("table_count", 0)
+            cron_configured = karisma_sync_status.get("cron_configured", False)
+            health = karisma_sync_status.get("health", "error")
+            health_msg = karisma_sync_status.get("health_msg", "Unknown")
+            hours_ago = karisma_sync_status.get("hours_ago")
+
+            # Format last sync time
+            if last_sync:
+                sync_time_str = last_sync.strftime("%Y-%m-%d %H:%M:%S UTC")
+                if hours_ago is not None:
+                    if hours_ago < 1:
+                        relative = f"{int(hours_ago * 60)}m ago"
+                    elif hours_ago < 24:
+                        relative = f"{hours_ago:.1f}h ago"
+                    else:
+                        relative = f"{hours_ago / 24:.1f}d ago"
+                    sync_display = f'<span title="{sync_time_str}">{relative}</span>'
+                else:
+                    sync_display = sync_time_str
+            else:
+                sync_display = '<span class="text-muted">Never</span>'
+
+            # Health badge styling
+            if health == "healthy":
+                health_icon = "✅"
+                health_class = "badge-ok"
+            elif health == "warning":
+                health_icon = "⚠️"
+                health_class = "badge-warning"
+            else:
+                health_icon = "❌"
+                health_class = "badge-error"
+
+            # Cron status
+            cron_icon = "✅" if cron_configured else "❌"
+            cron_text = "Configured" if cron_configured else "Not configured"
+
+            karisma_sync_html = f"""
+        <div class="services-card bq-sync-card">
+            <h2>🔄 Karisma Live Sync <span style="font-size: 0.8rem; color: #888; font-weight: normal;">(SQL Server → BigQuery)</span></h2>
+            <div class="bq-summary">
+                <div class="bq-stat">
+                    <span class="bq-stat-value">{health_icon}</span>
+                    <span class="bq-stat-label">Status</span>
+                </div>
+                <div class="bq-stat">
+                    <span class="bq-stat-value">{table_count}</span>
+                    <span class="bq-stat-label">Tables</span>
+                </div>
+                <div class="bq-stat">
+                    <span class="bq-stat-value">{last_txn_key:,}</span>
+                    <span class="bq-stat-label">Last TxnKey</span>
+                </div>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Check</th>
+                        <th>Status</th>
+                        <th>Details</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Hourly Cron Job</td>
+                        <td>{cron_icon} {cron_text}</td>
+                        <td class="message">Runs every hour at :00</td>
+                    </tr>
+                    <tr>
+                        <td>Last Sync</td>
+                        <td>{sync_display}</td>
+                        <td class="message"><span class="badge {health_class}">{health_msg}</span></td>
+                    </tr>
+                    <tr>
+                        <td>Transaction Key</td>
+                        <td>{last_txn_key:,}</td>
+                        <td class="message">Incremental sync position</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>"""
+        elif karisma_sync_status and karisma_sync_status.get("error"):
+            error_msg = karisma_sync_status.get("error", "Unknown error")
+            karisma_sync_html = f"""
+        <div class="services-card bq-sync-card">
+            <h2>🔄 Karisma Live Sync</h2>
+            <p class="error-message" style="padding: 15px;">❌ Error: {error_msg}</p>
         </div>"""
 
         # Get Cloud Build status
@@ -10278,6 +10469,8 @@ if __name__ == "__main__":
         </div>
 
         {bq_sync_html}
+
+        {karisma_sync_html}
 
         {cloud_build_html}
 
