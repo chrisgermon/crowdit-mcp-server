@@ -14,6 +14,7 @@ dependencies = [
     "google-auth>=2.29.0",
     "asyncssh>=2.14.0",
     "pymysql>=1.1.0",
+    "google-cloud-build>=3.20.0",
 ]
 
 [build-system]

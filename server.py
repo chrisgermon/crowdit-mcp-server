@@ -9060,6 +9060,82 @@ if __name__ == "__main__":
             logger.error(f"BigQuery sync status error: {e}")
             return {"datasets": [], "total_records": 0, "error": str(e)}
 
+    # ============================================================================
+    # CLOUD BUILD STATUS HELPER
+    # ============================================================================
+
+    async def get_latest_cloud_build() -> dict:
+        """
+        Get the latest Cloud Build revision information.
+        Returns dict with build name, time, status, and changes or None if not configured/accessible.
+        """
+        try:
+            from google.cloud.devtools import cloudbuild_v1
+
+            project_id = os.getenv("GCP_PROJECT_ID", os.getenv("GOOGLE_CLOUD_PROJECT", "crowdmcp"))
+
+            client = cloudbuild_v1.CloudBuildClient()
+
+            # List recent builds for this project
+            request = cloudbuild_v1.ListBuildsRequest(
+                project_id=project_id,
+                page_size=1,  # Only need the latest build
+            )
+
+            builds = client.list_builds(request=request)
+
+            for build in builds:
+                # Get build details
+                build_id = build.id
+                build_status = build.status.name if build.status else "UNKNOWN"
+
+                # Build time
+                create_time = build.create_time
+                finish_time = build.finish_time
+
+                # Get substitutions for revision info
+                substitutions = dict(build.substitutions) if build.substitutions else {}
+
+                # Extract relevant info
+                commit_sha = substitutions.get("COMMIT_SHA", substitutions.get("SHORT_SHA", ""))
+                branch = substitutions.get("BRANCH_NAME", "")
+                repo = substitutions.get("REPO_NAME", "")
+                trigger_name = substitutions.get("TRIGGER_NAME", build.build_trigger_id or "")
+
+                # Get source info if available
+                source_info = {}
+                if build.source:
+                    if build.source.repo_source:
+                        source_info["repo"] = build.source.repo_source.repo_name
+                        source_info["branch"] = build.source.repo_source.branch_name
+                        source_info["commit"] = build.source.repo_source.commit_sha
+                    elif build.source.storage_source:
+                        source_info["bucket"] = build.source.storage_source.bucket
+                        source_info["object"] = build.source.storage_source.object_
+
+                # Get log URL
+                log_url = build.log_url or ""
+
+                return {
+                    "build_id": build_id,
+                    "status": build_status,
+                    "create_time": create_time,
+                    "finish_time": finish_time,
+                    "commit_sha": commit_sha or source_info.get("commit", ""),
+                    "branch": branch or source_info.get("branch", ""),
+                    "repo": repo or source_info.get("repo", ""),
+                    "trigger_name": trigger_name,
+                    "log_url": log_url,
+                    "project_id": project_id,
+                    "error": None
+                }
+
+            return {"error": "No builds found", "project_id": project_id}
+
+        except Exception as e:
+            logger.error(f"Cloud Build status error: {e}")
+            return {"error": str(e)}
+
     # PLATFORM REGISTRY - Add new platforms here for automatic status page updates
     # ============================================================================
     # Each entry: (name, config_obj, category, check_type, env_vars_for_missing)
@@ -9360,6 +9436,125 @@ if __name__ == "__main__":
             <p class="text-muted" style="padding: 15px;">No datasets found in project: {empty_project}</p>
         </div>"""
 
+        # Get Cloud Build status
+        cloud_build_status = await get_latest_cloud_build()
+
+        # Build Cloud Build section HTML
+        cloud_build_html = ""
+        if cloud_build_status and not cloud_build_status.get("error"):
+            build_id = cloud_build_status.get("build_id", "")
+            build_status = cloud_build_status.get("status", "UNKNOWN")
+            create_time = cloud_build_status.get("create_time")
+            finish_time = cloud_build_status.get("finish_time")
+            commit_sha = cloud_build_status.get("commit_sha", "")
+            branch = cloud_build_status.get("branch", "")
+            repo = cloud_build_status.get("repo", "")
+            log_url = cloud_build_status.get("log_url", "")
+            project_id = cloud_build_status.get("project_id", "")
+
+            # Determine status class
+            if build_status == "SUCCESS":
+                status_class = "build-success"
+                status_display = "SUCCESS"
+            elif build_status in ("FAILURE", "TIMEOUT", "CANCELLED"):
+                status_class = "build-failure"
+                status_display = build_status
+            elif build_status in ("WORKING", "PENDING"):
+                status_class = "build-working"
+                status_display = build_status
+            else:
+                status_class = "build-queued"
+                status_display = build_status
+
+            # Format times
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc)
+
+            if finish_time:
+                if hasattr(finish_time, 'tzinfo') and finish_time.tzinfo is None:
+                    finish_time = finish_time.replace(tzinfo=timezone.utc)
+                time_diff = now - finish_time
+                if time_diff.days > 0:
+                    time_ago = f"{time_diff.days}d ago"
+                elif time_diff.seconds >= 3600:
+                    time_ago = f"{time_diff.seconds // 3600}h ago"
+                elif time_diff.seconds >= 60:
+                    time_ago = f"{time_diff.seconds // 60}m ago"
+                else:
+                    time_ago = "just now"
+                time_str = finish_time.strftime("%Y-%m-%d %H:%M:%S UTC") if hasattr(finish_time, 'strftime') else str(finish_time)
+                time_display = f'<span title="{time_str}">{time_ago}</span>'
+            elif create_time:
+                if hasattr(create_time, 'tzinfo') and create_time.tzinfo is None:
+                    create_time = create_time.replace(tzinfo=timezone.utc)
+                time_diff = now - create_time
+                if time_diff.days > 0:
+                    time_ago = f"{time_diff.days}d ago"
+                elif time_diff.seconds >= 3600:
+                    time_ago = f"{time_diff.seconds // 3600}h ago"
+                elif time_diff.seconds >= 60:
+                    time_ago = f"{time_diff.seconds // 60}m ago"
+                else:
+                    time_ago = "just now"
+                time_str = create_time.strftime("%Y-%m-%d %H:%M:%S UTC") if hasattr(create_time, 'strftime') else str(create_time)
+                time_display = f'<span title="{time_str}">Started {time_ago}</span>'
+            else:
+                time_display = '<span class="text-muted">Unknown</span>'
+
+            # Format commit SHA (show short version)
+            short_sha = commit_sha[:7] if len(commit_sha) >= 7 else commit_sha
+            sha_display = f'<span class="commit-sha">{short_sha}</span>' if short_sha else '<span class="text-muted">N/A</span>'
+
+            # Format branch
+            branch_display = branch if branch else '<span class="text-muted">N/A</span>'
+
+            # Format repo
+            repo_display = repo if repo else '<span class="text-muted">N/A</span>'
+
+            # Format log link
+            if log_url:
+                log_display = f'<a href="{log_url}" target="_blank">View Logs</a>'
+            else:
+                log_display = '<span class="text-muted">N/A</span>'
+
+            cloud_build_html = f"""
+        <div class="services-card cloud-build-card">
+            <h2>🚀 Latest Cloud Build <span style="font-size: 0.8rem; color: #888; font-weight: normal;">({project_id})</span></h2>
+            <div class="build-info">
+                <div class="build-header">
+                    <span class="build-status {status_class}">{status_display}</span>
+                    <span class="text-muted">{time_display}</span>
+                </div>
+                <div class="build-details">
+                    <div class="build-detail">
+                        <span class="build-detail-label">Revision</span>
+                        <span class="build-detail-value">{sha_display}</span>
+                    </div>
+                    <div class="build-detail">
+                        <span class="build-detail-label">Branch</span>
+                        <span class="build-detail-value">{branch_display}</span>
+                    </div>
+                    <div class="build-detail">
+                        <span class="build-detail-label">Repository</span>
+                        <span class="build-detail-value">{repo_display}</span>
+                    </div>
+                    <div class="build-detail">
+                        <span class="build-detail-label">Build Logs</span>
+                        <span class="build-detail-value">{log_display}</span>
+                    </div>
+                </div>
+            </div>
+        </div>"""
+        elif cloud_build_status and cloud_build_status.get("error"):
+            error_msg = cloud_build_status.get("error", "Unknown error")
+            project_id = cloud_build_status.get("project_id", "")
+            project_display = f" ({project_id})" if project_id else ""
+            cloud_build_html = f"""
+        <div class="services-card cloud-build-card">
+            <h2>🚀 Latest Cloud Build{project_display}</h2>
+            <p class="error-message">Unable to fetch build status: {error_msg}</p>
+        </div>"""
+
         html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -9538,6 +9733,70 @@ if __name__ == "__main__":
             background: rgba(231, 76, 60, 0.1);
             border-radius: 8px;
         }}
+        /* Cloud Build Status Styles */
+        .cloud-build-card {{
+            margin-top: 20px;
+            border: 1px solid rgba(155, 89, 182, 0.3);
+        }}
+        .cloud-build-card h2 {{
+            color: #9b59b6;
+        }}
+        .build-info {{
+            padding: 20px;
+            background: rgba(155, 89, 182, 0.1);
+            border-radius: 8px;
+        }}
+        .build-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }}
+        .build-status {{
+            display: inline-block;
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.85rem;
+        }}
+        .build-success {{ background: rgba(39, 174, 96, 0.2); color: #27ae60; }}
+        .build-failure {{ background: rgba(231, 76, 60, 0.2); color: #e74c3c; }}
+        .build-working {{ background: rgba(52, 152, 219, 0.2); color: #3498db; }}
+        .build-queued {{ background: rgba(241, 196, 15, 0.2); color: #f1c40f; }}
+        .build-details {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }}
+        .build-detail {{
+            display: flex;
+            flex-direction: column;
+        }}
+        .build-detail-label {{
+            font-size: 0.75rem;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }}
+        .build-detail-value {{
+            color: #e0e0e0;
+            font-size: 0.95rem;
+            word-break: break-all;
+        }}
+        .build-detail-value a {{
+            color: #9b59b6;
+            text-decoration: none;
+        }}
+        .build-detail-value a:hover {{
+            text-decoration: underline;
+        }}
+        .commit-sha {{
+            font-family: monospace;
+            background: rgba(255,255,255,0.1);
+            padding: 2px 6px;
+            border-radius: 4px;
+        }}
     </style>
 </head>
 <body>
@@ -9580,6 +9839,8 @@ if __name__ == "__main__":
         </div>
 
         {bq_sync_html}
+
+        {cloud_build_html}
 
         <footer>
             <p>Last checked: {check_time}</p>
