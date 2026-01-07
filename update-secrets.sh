@@ -14,8 +14,9 @@ echo ""
 echo "1) Update HaloPSA credentials"
 echo "2) Update Xero client secret"
 echo "3) Update Xero tokens (after auth via Claude)"
+echo "4) Update CIPP client secret (M365 Management)"
 echo ""
-read -p "Select option (1-3): " OPTION
+read -p "Select option (1-4): " OPTION
 
 case $OPTION in
     1)
@@ -71,6 +72,19 @@ case $OPTION in
         echo -n "$REFRESH_TOKEN" | gcloud secrets versions add XERO_REFRESH_TOKEN --project=$PROJECT_ID --data-file=-
         echo "   ✓ Updated XERO_REFRESH_TOKEN"
         ;;
+    4)
+        echo ""
+        read -sp "Enter CIPP Client Secret: " CIPP_SECRET
+        echo ""
+        
+        if [ -z "$CIPP_SECRET" ]; then
+            echo "❌ Client Secret is required."
+            exit 1
+        fi
+        
+        echo -n "$CIPP_SECRET" | gcloud secrets versions add CIPP_CLIENT_SECRET --project=$PROJECT_ID --data-file=-
+        echo "   ✓ Updated CIPP_CLIENT_SECRET"
+        ;;
     *)
         echo "Invalid option"
         exit 1
@@ -83,7 +97,7 @@ echo "🔄 Redeploying service to pick up new secrets..."
 gcloud run services update $SERVICE_NAME \
     --project=$PROJECT_ID \
     --region=$REGION \
-    --update-secrets="HALOPSA_RESOURCE_SERVER=HALOPSA_RESOURCE_SERVER:latest,HALOPSA_AUTH_SERVER=HALOPSA_AUTH_SERVER:latest,HALOPSA_CLIENT_ID=HALOPSA_CLIENT_ID:latest,HALOPSA_CLIENT_SECRET=HALOPSA_CLIENT_SECRET:latest,HALOPSA_TENANT=HALOPSA_TENANT:latest,XERO_CLIENT_ID=XERO_CLIENT_ID:latest,XERO_CLIENT_SECRET=XERO_CLIENT_SECRET:latest,XERO_TENANT_ID=XERO_TENANT_ID:latest,XERO_REFRESH_TOKEN=XERO_REFRESH_TOKEN:latest,SHAREPOINT_CLIENT_ID=SHAREPOINT_CLIENT_ID:latest,SHAREPOINT_CLIENT_SECRET=SHAREPOINT_CLIENT_SECRET:latest,SHAREPOINT_TENANT_ID=SHAREPOINT_TENANT_ID:latest,SHAREPOINT_REFRESH_TOKEN=SHAREPOINT_REFRESH_TOKEN:latest,QUOTER_API_KEY=QUOTER_API_KEY:latest,FORTICLOUD_API_KEY=FORTICLOUD_API_KEY:latest,FORTICLOUD_API_SECRET=FORTICLOUD_API_SECRET:latest,FORTICLOUD_CLIENT_ID=FORTICLOUD_CLIENT_ID:latest"
+    --update-secrets="HALOPSA_RESOURCE_SERVER=HALOPSA_RESOURCE_SERVER:latest,HALOPSA_AUTH_SERVER=HALOPSA_AUTH_SERVER:latest,HALOPSA_CLIENT_ID=HALOPSA_CLIENT_ID:latest,HALOPSA_CLIENT_SECRET=HALOPSA_CLIENT_SECRET:latest,HALOPSA_TENANT=HALOPSA_TENANT:latest,XERO_CLIENT_ID=XERO_CLIENT_ID:latest,XERO_CLIENT_SECRET=XERO_CLIENT_SECRET:latest,XERO_TENANT_ID=XERO_TENANT_ID:latest,XERO_REFRESH_TOKEN=XERO_REFRESH_TOKEN:latest,SHAREPOINT_CLIENT_ID=SHAREPOINT_CLIENT_ID:latest,SHAREPOINT_CLIENT_SECRET=SHAREPOINT_CLIENT_SECRET:latest,SHAREPOINT_TENANT_ID=SHAREPOINT_TENANT_ID:latest,SHAREPOINT_REFRESH_TOKEN=SHAREPOINT_REFRESH_TOKEN:latest,QUOTER_API_KEY=QUOTER_API_KEY:latest,FORTICLOUD_API_KEY=FORTICLOUD_API_KEY:latest,FORTICLOUD_API_SECRET=FORTICLOUD_API_SECRET:latest,FORTICLOUD_CLIENT_ID=FORTICLOUD_CLIENT_ID:latest,CIPP_CLIENT_SECRET=CIPP_CLIENT_SECRET:latest"
 
 echo ""
 echo "✅ Secrets updated and service redeployed!"

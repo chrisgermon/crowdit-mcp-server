@@ -100,12 +100,16 @@ create_secret_if_not_exists "FORTICLOUD_API_KEY" "PLACEHOLDER_UPDATE_ME"
 create_secret_if_not_exists "FORTICLOUD_API_SECRET" "PLACEHOLDER_UPDATE_ME"
 create_secret_if_not_exists "FORTICLOUD_CLIENT_ID" "fortigatecloud"
 
+# CIPP secrets (M365 Management)
+create_secret_if_not_exists "CIPP_CLIENT_SECRET" "PLACEHOLDER_UPDATE_ME"
+
 echo ""
 echo "⚠️  NOTE: You need to update secrets after deployment:"
 echo "   - HaloPSA: HALOPSA_CLIENT_ID, HALOPSA_CLIENT_SECRET"
 echo "   - Xero: XERO_CLIENT_SECRET (then auth via Claude to get TENANT_ID and REFRESH_TOKEN)"
 echo "   - SharePoint: All credentials (CLIENT_ID, CLIENT_SECRET, TENANT_ID from Azure AD)"
 echo "   - FortiCloud: FORTICLOUD_API_KEY, FORTICLOUD_API_SECRET (from FortiCloud IAM)"
+echo "   - CIPP: CIPP_CLIENT_SECRET (from Azure AD App Registration)"
 echo ""
 
 # Build and deploy to Cloud Run
@@ -142,7 +146,11 @@ gcloud run deploy $SERVICE_NAME \
     --set-secrets="QUOTER_API_KEY=QUOTER_API_KEY:latest" \
     --set-secrets="FORTICLOUD_API_KEY=FORTICLOUD_API_KEY:latest" \
     --set-secrets="FORTICLOUD_API_SECRET=FORTICLOUD_API_SECRET:latest" \
-    --set-secrets="FORTICLOUD_CLIENT_ID=FORTICLOUD_CLIENT_ID:latest"
+    --set-secrets="FORTICLOUD_CLIENT_ID=FORTICLOUD_CLIENT_ID:latest" \
+    --set-env-vars="CIPP_TENANT_ID=299ea2a8-99a3-426c-9836-8a5c6eafe007" \
+    --set-env-vars="CIPP_CLIENT_ID=728a6a60-ba98-472f-b06a-3fb726ad8270" \
+    --set-env-vars="CIPP_API_URL=https://cippq7gcl.azurewebsites.net" \
+    --set-secrets="CIPP_CLIENT_SECRET=CIPP_CLIENT_SECRET:latest"
 
 # Get service URL
 SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=$REGION --format='value(status.url)')

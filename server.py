@@ -8649,6 +8649,418 @@ async def visionrad_search_files(
 
 
 # ============================================================================
+# CIPP Integration (CyberDrain Improved Partner Portal - M365 Management)
+# ============================================================================
+
+class CIPPConfig:
+    """CIPP API configuration using OAuth2 client_credentials flow.
+    
+    Environment variables:
+    - CIPP_TENANT_ID: Azure AD Tenant ID for authentication
+    - CIPP_CLIENT_ID: Azure AD Application (client) ID
+    - CIPP_CLIENT_SECRET: Azure AD Application client secret
+    - CIPP_API_URL: CIPP instance URL (e.g., https://cippq7gcl.azurewebsites.net)
+    """
+    
+    def __init__(self):
+        self.tenant_id = os.getenv("CIPP_TENANT_ID", "")
+        self.client_id = os.getenv("CIPP_CLIENT_ID", "")
+        self._client_secret: Optional[str] = None
+        self.api_url = os.getenv("CIPP_API_URL", "").rstrip("/")
+        self._access_token: Optional[str] = None
+        self._token_expiry: Optional[datetime] = None
+    
+    @property
+    def client_secret(self) -> str:
+        """Get client secret from Secret Manager (with env var fallback)."""
+        if self._client_secret:
+            return self._client_secret
+        # Try Secret Manager first
+        secret = get_secret_sync("CIPP_CLIENT_SECRET")
+        if secret:
+            self._client_secret = secret
+            return secret
+        # Fallback to environment variable
+        self._client_secret = os.getenv("CIPP_CLIENT_SECRET", "")
+        return self._client_secret
+    
+    @property
+    def token_url(self) -> str:
+        """Get the OAuth2 token endpoint URL."""
+        return f"https://login.microsoftonline.com/{self.tenant_id}/oauth2/v2.0/token"
+    
+    @property
+    def is_configured(self) -> bool:
+        return all([self.tenant_id, self.client_id, self.client_secret, self.api_url])
+    
+    async def get_access_token(self) -> str:
+        """Get valid access token, requesting new one if expired."""
+        if self._access_token and self._token_expiry and datetime.now() < self._token_expiry:
+            return self._access_token
+        
+        # CIPP uses the client_id as the audience for the scope
+        scope = f"api://{self.client_id}/.default"
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                self.token_url,
+                data={
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                    "scope": scope,
+                    "grant_type": "client_credentials"
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=30.0
+            )
+            
+            if response.status_code != 200:
+                error_text = response.text[:500]
+                logger.error(f"CIPP auth failed: {response.status_code} - {error_text}")
+                raise Exception(f"CIPP authentication failed: {response.status_code} - {error_text}")
+            
+            data = response.json()
+            self._access_token = data["access_token"]
+            # Azure tokens typically expire in 1 hour (3600 seconds), refresh 5 mins early
+            expires_in = data.get("expires_in", 3600)
+            self._token_expiry = datetime.now() + timedelta(seconds=expires_in - 300)
+            
+            logger.info(f"CIPP: Auth successful, token expires in {expires_in}s")
+            return self._access_token
+    
+    async def api_request(self, method: str, endpoint: str, params: dict = None, json_data: dict = None) -> dict:
+        """Make authenticated request to CIPP API."""
+        token = await self.get_access_token()
+        url = f"{self.api_url}/api/{endpoint.lstrip('/')}"
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.request(
+                method=method,
+                url=url,
+                params=params,
+                json=json_data,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                },
+                timeout=60.0
+            )
+            
+            if response.status_code >= 400:
+                error_text = response.text[:500]
+                logger.error(f"CIPP API error: {response.status_code} - {error_text}")
+                raise Exception(f"CIPP API error: {response.status_code} - {error_text}")
+            
+            # Handle empty responses
+            if not response.text.strip():
+                return {}
+            
+            return response.json()
+
+
+cipp_config = CIPPConfig()
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def cipp_list_tenants() -> str:
+    """List all M365 tenants managed in CIPP.
+    
+    Returns tenant information including name, domain, and status.
+    """
+    if not cipp_config.is_configured:
+        return "❌ CIPP not configured. Set CIPP_TENANT_ID, CIPP_CLIENT_ID, CIPP_CLIENT_SECRET, and CIPP_API_URL."
+    
+    try:
+        # CIPP uses POST for ListTenants
+        result = await cipp_config.api_request("POST", "ListTenants")
+        
+        if not result:
+            return "No tenants found."
+        
+        # Handle if result is a list or dict
+        tenants = result if isinstance(result, list) else result.get("Results", result.get("tenants", [result]))
+        
+        if not tenants:
+            return "No tenants found."
+        
+        lines = [f"# CIPP Managed Tenants ({len(tenants)} total)\n"]
+        
+        for t in tenants:
+            name = t.get("displayName", t.get("name", "Unknown"))
+            domain = t.get("defaultDomainName", t.get("domain", "N/A"))
+            tenant_id = t.get("customerId", t.get("tenantId", t.get("id", "N/A")))
+            
+            lines.append(f"**{name}**")
+            lines.append(f"- Domain: {domain}")
+            lines.append(f"- Tenant ID: {tenant_id}")
+            lines.append("")
+        
+        return "\n".join(lines)
+    
+    except Exception as e:
+        logger.error(f"CIPP list tenants error: {e}")
+        return f"❌ Error listing tenants: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def cipp_list_users(tenant_filter: str, limit: int = 100) -> str:
+    """List users for a specific M365 tenant.
+    
+    Args:
+        tenant_filter: Tenant domain or ID to filter users
+        limit: Maximum number of users to return (default 100)
+    
+    Returns user list with display name, email, and account status.
+    """
+    if not cipp_config.is_configured:
+        return "❌ CIPP not configured. Set CIPP_TENANT_ID, CIPP_CLIENT_ID, CIPP_CLIENT_SECRET, and CIPP_API_URL."
+    
+    try:
+        result = await cipp_config.api_request("GET", "ListUsers", params={"tenantFilter": tenant_filter})
+        
+        if not result:
+            return f"No users found for tenant: {tenant_filter}"
+        
+        users = result if isinstance(result, list) else result.get("Results", result.get("users", []))
+        
+        if not users:
+            return f"No users found for tenant: {tenant_filter}"
+        
+        # Limit results
+        users = users[:limit]
+        
+        lines = [f"# Users for {tenant_filter} ({len(users)} shown)\n"]
+        
+        for u in users:
+            name = u.get("displayName", "Unknown")
+            email = u.get("userPrincipalName", u.get("mail", "N/A"))
+            enabled = u.get("accountEnabled", u.get("enabled", True))
+            status = "✅ Enabled" if enabled else "❌ Disabled"
+            licenses = u.get("assignedLicenses", [])
+            license_count = len(licenses) if isinstance(licenses, list) else 0
+            
+            lines.append(f"**{name}** ({status})")
+            lines.append(f"- Email: {email}")
+            lines.append(f"- Licenses: {license_count}")
+            lines.append("")
+        
+        return "\n".join(lines)
+    
+    except Exception as e:
+        logger.error(f"CIPP list users error: {e}")
+        return f"❌ Error listing users: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def cipp_get_alerts(limit: int = 50) -> str:
+    """Get active alerts from CIPP alerts queue.
+    
+    Args:
+        limit: Maximum number of alerts to return (default 50)
+    
+    Returns list of active alerts with severity and details.
+    """
+    if not cipp_config.is_configured:
+        return "❌ CIPP not configured. Set CIPP_TENANT_ID, CIPP_CLIENT_ID, CIPP_CLIENT_SECRET, and CIPP_API_URL."
+    
+    try:
+        result = await cipp_config.api_request("GET", "ListAlertsQueue")
+        
+        if not result:
+            return "No alerts found."
+        
+        alerts = result if isinstance(result, list) else result.get("Results", result.get("alerts", []))
+        
+        if not alerts:
+            return "✅ No active alerts."
+        
+        # Limit results
+        alerts = alerts[:limit]
+        
+        lines = [f"# CIPP Alerts ({len(alerts)} shown)\n"]
+        
+        for a in alerts:
+            title = a.get("Title", a.get("title", a.get("AlertTitle", "Unknown Alert")))
+            tenant = a.get("Tenant", a.get("tenant", a.get("TenantId", "N/A")))
+            severity = a.get("Severity", a.get("severity", "Unknown"))
+            timestamp = a.get("Timestamp", a.get("timestamp", a.get("CreatedAt", "N/A")))
+            
+            # Severity emoji
+            if severity.lower() in ["critical", "high"]:
+                emoji = "🔴"
+            elif severity.lower() in ["warning", "medium"]:
+                emoji = "🟡"
+            else:
+                emoji = "🔵"
+            
+            lines.append(f"{emoji} **{title}**")
+            lines.append(f"- Tenant: {tenant}")
+            lines.append(f"- Severity: {severity}")
+            lines.append(f"- Time: {timestamp}")
+            lines.append("")
+        
+        return "\n".join(lines)
+    
+    except Exception as e:
+        logger.error(f"CIPP get alerts error: {e}")
+        return f"❌ Error getting alerts: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def cipp_list_logs(limit: int = 100) -> str:
+    """Get CIPP audit logs.
+    
+    Args:
+        limit: Maximum number of log entries to return (default 100)
+    
+    Returns audit log entries with user, action, and timestamp.
+    """
+    if not cipp_config.is_configured:
+        return "❌ CIPP not configured. Set CIPP_TENANT_ID, CIPP_CLIENT_ID, CIPP_CLIENT_SECRET, and CIPP_API_URL."
+    
+    try:
+        result = await cipp_config.api_request("GET", "ListLogs")
+        
+        if not result:
+            return "No logs found."
+        
+        logs = result if isinstance(result, list) else result.get("Results", result.get("logs", []))
+        
+        if not logs:
+            return "No log entries found."
+        
+        # Limit results
+        logs = logs[:limit]
+        
+        lines = [f"# CIPP Audit Logs ({len(logs)} shown)\n"]
+        
+        for log in logs:
+            timestamp = log.get("Timestamp", log.get("timestamp", log.get("DateTime", "N/A")))
+            user = log.get("User", log.get("user", log.get("Username", "N/A")))
+            message = log.get("Message", log.get("message", log.get("API", "N/A")))
+            tenant = log.get("Tenant", log.get("tenant", ""))
+            
+            lines.append(f"**{timestamp}** - {user}")
+            lines.append(f"- Action: {message}")
+            if tenant:
+                lines.append(f"- Tenant: {tenant}")
+            lines.append("")
+        
+        return "\n".join(lines)
+    
+    except Exception as e:
+        logger.error(f"CIPP list logs error: {e}")
+        return f"❌ Error listing logs: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def cipp_exec_graph_request(
+    tenant_filter: str,
+    endpoint: str,
+    method: str = "GET"
+) -> str:
+    """Execute a Microsoft Graph API request through CIPP.
+    
+    This allows querying any Graph API endpoint for a specific tenant.
+    
+    Args:
+        tenant_filter: Tenant domain or ID to execute request against
+        endpoint: Graph API endpoint (e.g., "/users", "/groups", "/devices")
+        method: HTTP method (GET, POST, etc.) - default GET
+    
+    Returns Graph API response data.
+    
+    Examples:
+        - endpoint="/users" - List all users
+        - endpoint="/groups" - List all groups  
+        - endpoint="/devices" - List all devices
+        - endpoint="/subscribedSkus" - List available licenses
+    """
+    if not cipp_config.is_configured:
+        return "❌ CIPP not configured. Set CIPP_TENANT_ID, CIPP_CLIENT_ID, CIPP_CLIENT_SECRET, and CIPP_API_URL."
+    
+    try:
+        # Clean up endpoint
+        if not endpoint.startswith("/"):
+            endpoint = f"/{endpoint}"
+        
+        params = {
+            "tenantFilter": tenant_filter,
+            "Endpoint": endpoint
+        }
+        
+        result = await cipp_config.api_request(method, "ListGraphRequest", params=params)
+        
+        if not result:
+            return f"No data returned for endpoint: {endpoint}"
+        
+        # Format response
+        if isinstance(result, list):
+            lines = [f"# Graph API Response: {endpoint}\n", f"**Tenant:** {tenant_filter}\n", f"**Results:** {len(result)} items\n"]
+            
+            # Show first few items as sample
+            for i, item in enumerate(result[:10]):
+                if isinstance(item, dict):
+                    name = item.get("displayName", item.get("name", item.get("id", f"Item {i+1}")))
+                    lines.append(f"- {name}")
+                else:
+                    lines.append(f"- {item}")
+            
+            if len(result) > 10:
+                lines.append(f"\n... and {len(result) - 10} more items")
+            
+            return "\n".join(lines)
+        else:
+            # Return formatted JSON for dict responses
+            import json
+            return f"# Graph API Response: {endpoint}\n\n```json\n{json.dumps(result, indent=2, default=str)[:2000]}\n```"
+    
+    except Exception as e:
+        logger.error(f"CIPP Graph request error: {e}")
+        return f"❌ Error executing Graph request: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def cipp_get_tenant_details(tenant_filter: str) -> str:
+    """Get detailed information about a specific M365 tenant.
+    
+    Args:
+        tenant_filter: Tenant domain or ID
+    
+    Returns tenant details including licenses, domains, and configuration.
+    """
+    if not cipp_config.is_configured:
+        return "❌ CIPP not configured. Set CIPP_TENANT_ID, CIPP_CLIENT_ID, CIPP_CLIENT_SECRET, and CIPP_API_URL."
+    
+    try:
+        result = await cipp_config.api_request("GET", "ListTenantDetails", params={"tenantFilter": tenant_filter})
+        
+        if not result:
+            return f"No details found for tenant: {tenant_filter}"
+        
+        # Format tenant details
+        lines = [f"# Tenant Details: {tenant_filter}\n"]
+        
+        if isinstance(result, dict):
+            for key, value in result.items():
+                if isinstance(value, (list, dict)):
+                    import json
+                    lines.append(f"**{key}:**")
+                    lines.append(f"```json\n{json.dumps(value, indent=2, default=str)[:500]}\n```")
+                else:
+                    lines.append(f"**{key}:** {value}")
+        else:
+            import json
+            lines.append(f"```json\n{json.dumps(result, indent=2, default=str)[:2000]}\n```")
+        
+        return "\n".join(lines)
+    
+    except Exception as e:
+        logger.error(f"CIPP get tenant details error: {e}")
+        return f"❌ Error getting tenant details: {str(e)}"
+
+
+# ============================================================================
 # Server Status
 # ============================================================================
 
@@ -8801,6 +9213,25 @@ async def server_status() -> str:
         if not os.getenv("VISIONRAD_PASSWORD") and not os.getenv("VISIONRAD_PRIVATE_KEY"):
             missing.append("PASSWORD or PRIVATE_KEY")
         lines.append(f"⚠️ **Vision Radiology Server:** Missing: {', '.join(missing)}")
+
+    # CIPP status
+    if cipp_config.is_configured:
+        try:
+            await cipp_config.get_access_token()
+            lines.append(f"✅ **CIPP:** Connected ({cipp_config.api_url})")
+        except Exception as e:
+            lines.append(f"❌ **CIPP:** Auth failed - {str(e)[:50]}")
+    else:
+        missing = []
+        if not os.getenv("CIPP_TENANT_ID"):
+            missing.append("TENANT_ID")
+        if not os.getenv("CIPP_CLIENT_ID"):
+            missing.append("CLIENT_ID")
+        if not os.getenv("CIPP_CLIENT_SECRET") and not get_secret_sync("CIPP_CLIENT_SECRET"):
+            missing.append("CLIENT_SECRET")
+        if not os.getenv("CIPP_API_URL"):
+            missing.append("API_URL")
+        lines.append(f"⚠️ **CIPP:** Missing: {', '.join(missing)}")
 
     lines.append(f"\n**Cloud Run URL:** {CLOUD_RUN_URL}")
     return "\n".join(lines)
@@ -9221,6 +9652,14 @@ if __name__ == "__main__":
             "check_type": "ssh_visionrad",
             "env_vars": ["VISIONRAD_HOSTNAME", "VISIONRAD_USERNAME"],
             "auth_env_vars": ["VISIONRAD_PASSWORD", "VISIONRAD_PRIVATE_KEY"]
+        },
+        {
+            "name": "CIPP",
+            "config": cipp_config,
+            "category": "M365 Management",
+            "check_type": "oauth",
+            "env_vars": ["CIPP_TENANT_ID", "CIPP_CLIENT_ID", "CIPP_API_URL"],
+            "auth_env_vars": ["CIPP_CLIENT_SECRET"]
         },
     ]
 
