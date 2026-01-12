@@ -10780,7 +10780,6 @@ if __name__ == "__main__":
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="refresh" content="60">
     <title>Crowd IT MCP Server - Status</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
@@ -10906,6 +10905,23 @@ if __name__ == "__main__":
         .refresh-info {{
             margin-top: 10px;
             font-size: 0.8rem;
+        }}
+        .refresh-btn {{
+            display: inline-block;
+            padding: 8px 20px;
+            margin-top: 15px;
+            background: rgba(52, 152, 219, 0.2);
+            color: #3498db;
+            border: 1px solid #3498db;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.2s ease;
+        }}
+        .refresh-btn:hover {{
+            background: rgba(52, 152, 219, 0.4);
+            transform: translateY(-1px);
         }}
         @media (max-width: 600px) {{
             .stats {{ flex-wrap: wrap; gap: 15px; }}
@@ -11066,8 +11082,8 @@ if __name__ == "__main__":
 
         <footer>
             <p>Last checked: {check_time}</p>
-            <p class="refresh-info">Auto-refreshes every 60 seconds</p>
-            <p style="margin-top: 10px;">MCP Endpoint: <code>{CLOUD_RUN_URL}/mcp</code></p>
+            <a href="/status" class="refresh-btn">🔄 Refresh Status</a>
+            <p style="margin-top: 15px;">MCP Endpoint: <code>{CLOUD_RUN_URL}/mcp</code></p>
         </footer>
     </div>
 </body>
