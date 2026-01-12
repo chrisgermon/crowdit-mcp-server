@@ -1,6 +1,6 @@
 """
 Crowd IT Unified MCP Server
-Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, and Ubuntu Server (SSH) integration.
+Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), and Salesforce integration.
 """
 
 import os
@@ -21,7 +21,7 @@ CLOUD_RUN_URL = os.getenv("CLOUD_RUN_URL", "https://crowdit-mcp-server-lypf4vkh4
 
 mcp = FastMCP(
     name="crowdit-mcp-server",
-    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, and Ubuntu Server (SSH) integration for MSP operations.",
+    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), and Salesforce integration for MSP operations.",
     stateless_http=True  # Required for Cloud Run - enables stateless sessions
 )
 
@@ -9061,6 +9061,577 @@ async def cipp_get_tenant_details(tenant_filter: str) -> str:
 
 
 # ============================================================================
+# Salesforce Integration
+# ============================================================================
+
+class SalesforceConfig:
+    """Salesforce API configuration using OAuth2 refresh token flow.
+
+    Environment variables:
+    - SALESFORCE_INSTANCE_URL: Salesforce instance URL (e.g., https://yourorg.my.salesforce.com)
+    - SALESFORCE_CLIENT_ID: Connected App Client ID
+    - SALESFORCE_CLIENT_SECRET: Connected App Client Secret
+    - SALESFORCE_REFRESH_TOKEN: OAuth2 refresh token
+    """
+
+    API_VERSION = "v59.0"
+
+    def __init__(self):
+        self.instance_url = os.getenv("SALESFORCE_INSTANCE_URL", "").rstrip("/")
+        self.client_id = os.getenv("SALESFORCE_CLIENT_ID", "")
+        self._client_secret: Optional[str] = None
+        self._refresh_token: Optional[str] = None
+        self._access_token: Optional[str] = None
+        self._token_expiry: Optional[datetime] = None
+
+    @property
+    def client_secret(self) -> str:
+        """Get client secret from Secret Manager (with env var fallback)."""
+        if self._client_secret:
+            return self._client_secret
+        secret = get_secret_sync("SALESFORCE_CLIENT_SECRET")
+        if secret:
+            self._client_secret = secret
+            return secret
+        self._client_secret = os.getenv("SALESFORCE_CLIENT_SECRET", "")
+        return self._client_secret
+
+    @property
+    def refresh_token(self) -> str:
+        """Get refresh token from Secret Manager (with env var fallback)."""
+        if self._refresh_token:
+            return self._refresh_token
+        secret = get_secret_sync("SALESFORCE_REFRESH_TOKEN")
+        if secret:
+            self._refresh_token = secret
+            return secret
+        self._refresh_token = os.getenv("SALESFORCE_REFRESH_TOKEN", "")
+        return self._refresh_token
+
+    @property
+    def is_configured(self) -> bool:
+        return all([self.instance_url, self.client_id, self.client_secret, self.refresh_token])
+
+    async def get_access_token(self) -> str:
+        """Get valid access token, refreshing if expired."""
+        if self._access_token and self._token_expiry and datetime.now() < self._token_expiry:
+            return self._access_token
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.instance_url}/services/oauth2/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                    "refresh_token": self.refresh_token
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=30.0
+            )
+
+            if response.status_code != 200:
+                error_text = response.text[:500]
+                logger.error(f"Salesforce auth failed: {response.status_code} - {error_text}")
+                raise Exception(f"Salesforce authentication failed: {response.status_code} - {error_text}")
+
+            data = response.json()
+            self._access_token = data["access_token"]
+            # Salesforce tokens last ~2 hours, refresh at 1 hour
+            self._token_expiry = datetime.now() + timedelta(hours=1)
+
+            logger.info("Salesforce: Auth successful")
+            return self._access_token
+
+    async def query(self, soql: str, max_results: int = 2000) -> dict:
+        """Execute a SOQL query against Salesforce."""
+        token = await self.get_access_token()
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.instance_url}/services/data/{self.API_VERSION}/query",
+                params={"q": soql},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                },
+                timeout=60.0
+            )
+
+            if response.status_code != 200:
+                return {"error": response.text, "status_code": response.status_code}
+
+            result = response.json()
+            all_records = result.get("records", [])
+
+            # Handle pagination
+            while not result.get("done", True) and len(all_records) < max_results:
+                next_url = result.get("nextRecordsUrl")
+                if not next_url:
+                    break
+
+                response = await client.get(
+                    f"{self.instance_url}{next_url}",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json"
+                    },
+                    timeout=60.0
+                )
+
+                if response.status_code != 200:
+                    break
+
+                result = response.json()
+                all_records.extend(result.get("records", []))
+
+            return {
+                "totalSize": result.get("totalSize", len(all_records)),
+                "done": result.get("done", True),
+                "records": all_records[:max_results]
+            }
+
+    async def describe_object(self, object_name: str) -> dict:
+        """Get metadata/schema for a Salesforce object."""
+        token = await self.get_access_token()
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.instance_url}/services/data/{self.API_VERSION}/sobjects/{object_name}/describe",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                },
+                timeout=30.0
+            )
+
+            if response.status_code != 200:
+                return {"error": response.text, "status_code": response.status_code}
+
+            return response.json()
+
+    async def list_objects(self) -> dict:
+        """List all available Salesforce objects."""
+        token = await self.get_access_token()
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.instance_url}/services/data/{self.API_VERSION}/sobjects",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                },
+                timeout=30.0
+            )
+
+            if response.status_code != 200:
+                return {"error": response.text, "status_code": response.status_code}
+
+            return response.json()
+
+    async def get_record(self, object_name: str, record_id: str, fields: list = None) -> dict:
+        """Get a specific record by ID."""
+        token = await self.get_access_token()
+
+        url = f"{self.instance_url}/services/data/{self.API_VERSION}/sobjects/{object_name}/{record_id}"
+        params = {}
+        if fields:
+            params["fields"] = ",".join(fields)
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                url,
+                params=params if params else None,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                },
+                timeout=30.0
+            )
+
+            if response.status_code != 200:
+                return {"error": response.text, "status_code": response.status_code}
+
+            return response.json()
+
+
+salesforce_config = SalesforceConfig()
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def salesforce_soql_query(
+    soql: str = Field(..., description="SOQL query string (e.g., 'SELECT Id, Name FROM Account LIMIT 10')"),
+    max_results: int = Field(500, description="Maximum number of records to return")
+) -> str:
+    """Execute a SOQL query against Salesforce.
+
+    Common objects:
+        - CA_Referral_Details__c: Referral/target records with MLO, Worksite, Procedures
+        - User: Salesforce users
+        - Account: Customer accounts
+
+    Example queries:
+        - SELECT Id, Name FROM User WHERE IsActive = true
+        - SELECT MLO__r.Name, SUM(Procedures__c) FROM CA_Referral_Details__c GROUP BY MLO__r.Name
+    """
+    if not salesforce_config.is_configured:
+        return "❌ Salesforce not configured. Set SALESFORCE_INSTANCE_URL, SALESFORCE_CLIENT_ID, SALESFORCE_CLIENT_SECRET, SALESFORCE_REFRESH_TOKEN."
+
+    try:
+        result = await salesforce_config.query(soql, max_results)
+
+        if "error" in result:
+            return f"❌ Query error: {result['error']}"
+
+        records = result.get("records", [])
+        total = result.get("totalSize", 0)
+
+        if not records:
+            return f"No records found. Total matching: {total}"
+
+        # Get keys from first record, excluding 'attributes'
+        keys = [k for k in records[0].keys() if k != 'attributes']
+
+        # Build markdown table
+        header = "| " + " | ".join(keys) + " |"
+        separator = "| " + " | ".join(["---"] * len(keys)) + " |"
+
+        rows = []
+        for record in records:
+            row_values = []
+            for k in keys:
+                val = record.get(k, "")
+                if isinstance(val, dict):
+                    val = val.get("Name", str(val))
+                row_values.append(str(val) if val is not None else "")
+            rows.append("| " + " | ".join(row_values) + " |")
+
+        table = "\n".join([header, separator] + rows)
+        return f"**Results:** {len(records)} of {total} records\n\n{table}"
+
+    except Exception as e:
+        logger.error(f"Salesforce query error: {e}")
+        return f"❌ Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def salesforce_mlo_report(
+    date_from: Optional[str] = Field(None, description="Start date filter (YYYY-MM-DD format)"),
+    date_to: Optional[str] = Field(None, description="End date filter (YYYY-MM-DD format)"),
+    mlo_name: Optional[str] = Field(None, description="Filter by specific MLO name (e.g., 'Danielle Jensen')"),
+    worksite: Optional[str] = Field(None, description="Filter by specific worksite")
+) -> str:
+    """Get MLO performance report - actuals vs targets with percentages.
+
+    Returns performance summary showing each MLO's actual procedures vs targets.
+    """
+    if not salesforce_config.is_configured:
+        return "❌ Salesforce not configured."
+
+    try:
+        # Build WHERE clause
+        conditions = []
+        if date_from:
+            conditions.append(f"Date_of_Service__c >= {date_from}")
+        if date_to:
+            conditions.append(f"Date_of_Service__c <= {date_to}")
+        if mlo_name:
+            conditions.append(f"MLO__r.Name = '{mlo_name}'")
+        if worksite:
+            conditions.append(f"Worksite__c = '{worksite}'")
+
+        where_clause = " AND ".join(conditions) if conditions else ""
+        where_sql = f"WHERE {where_clause}" if where_clause else ""
+
+        soql = f"""SELECT MLO__r.Name MLOName, RecordType.Name RecType, SUM(Procedures__c) procs
+                   FROM CA_Referral_Details__c {where_sql}
+                   GROUP BY MLO__r.Name, RecordType.Name ORDER BY MLO__r.Name"""
+
+        result = await salesforce_config.query(soql.strip())
+
+        if "error" in result:
+            return f"❌ Error: {result['error']}"
+
+        # Transform into performance summary
+        mlo_data = {}
+        for record in result.get("records", []):
+            mlo = record.get("MLOName") or "Unassigned"
+            rec_type = record.get("RecType")
+            procs = record.get("procs", 0) or 0
+
+            if mlo not in mlo_data:
+                mlo_data[mlo] = {"actuals": 0, "target": 0}
+
+            if rec_type == "Referral":
+                mlo_data[mlo]["actuals"] = procs
+            elif rec_type == "Target":
+                mlo_data[mlo]["target"] = procs
+
+        if not mlo_data:
+            return "No MLO data found for the specified filters."
+
+        # Build markdown table
+        lines = ["## MLO Performance Report\n"]
+
+        filter_desc = []
+        if date_from:
+            filter_desc.append(f"From: {date_from}")
+        if date_to:
+            filter_desc.append(f"To: {date_to}")
+        if mlo_name:
+            filter_desc.append(f"MLO: {mlo_name}")
+        if worksite:
+            filter_desc.append(f"Worksite: {worksite}")
+        if filter_desc:
+            lines.append(f"*Filters: {', '.join(filter_desc)}*\n")
+
+        lines.extend(["| MLO | Actuals | Target | % to Target |",
+                      "| --- | ---: | ---: | ---: |"])
+
+        total_actuals = 0
+        total_targets = 0
+
+        for mlo in sorted(mlo_data.keys()):
+            data = mlo_data[mlo]
+            actuals = data["actuals"]
+            target = data["target"]
+            pct = round((actuals / target * 100), 1) if target > 0 else 0
+            total_actuals += actuals
+            total_targets += target
+
+            if pct >= 80:
+                pct_display = f"**{pct}%** ✅"
+            elif pct >= 50:
+                pct_display = f"{pct}% ⚠️"
+            else:
+                pct_display = f"{pct}% 🔴"
+
+            lines.append(f"| {mlo} | {actuals:,.0f} | {target:,.0f} | {pct_display} |")
+
+        total_pct = round((total_actuals / total_targets * 100), 1) if total_targets > 0 else 0
+        lines.append(f"| **TOTAL** | **{total_actuals:,.0f}** | **{total_targets:,.0f}** | **{total_pct}%** |")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Salesforce MLO report error: {e}")
+        return f"❌ Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def salesforce_worksite_report(
+    date_from: Optional[str] = Field(None, description="Start date filter (YYYY-MM-DD format)"),
+    date_to: Optional[str] = Field(None, description="End date filter (YYYY-MM-DD format)"),
+    mlo_name: Optional[str] = Field(None, description="Filter by specific MLO name")
+) -> str:
+    """Get worksite performance report - actuals vs targets by site.
+
+    Returns worksite performance showing actual procedures vs targets.
+    """
+    if not salesforce_config.is_configured:
+        return "❌ Salesforce not configured."
+
+    try:
+        conditions = []
+        if date_from:
+            conditions.append(f"Date_of_Service__c >= {date_from}")
+        if date_to:
+            conditions.append(f"Date_of_Service__c <= {date_to}")
+        if mlo_name:
+            conditions.append(f"MLO__r.Name = '{mlo_name}'")
+
+        where_clause = " AND ".join(conditions) if conditions else ""
+        where_sql = f"WHERE {where_clause}" if where_clause else ""
+
+        soql = f"""SELECT Worksite__c, RecordType.Name RecType, SUM(Procedures__c) procs
+                   FROM CA_Referral_Details__c {where_sql}
+                   GROUP BY Worksite__c, RecordType.Name ORDER BY Worksite__c"""
+
+        result = await salesforce_config.query(soql.strip())
+
+        if "error" in result:
+            return f"❌ Error: {result['error']}"
+
+        # Transform into performance summary
+        worksite_data = {}
+        for record in result.get("records", []):
+            ws = record.get("Worksite__c") or "Unassigned"
+            rec_type = record.get("RecType")
+            procs = record.get("procs", 0) or 0
+
+            if ws not in worksite_data:
+                worksite_data[ws] = {"actuals": 0, "target": 0}
+
+            if rec_type == "Referral":
+                worksite_data[ws]["actuals"] = procs
+            elif rec_type == "Target":
+                worksite_data[ws]["target"] = procs
+
+        if not worksite_data:
+            return "No worksite data found for the specified filters."
+
+        lines = ["## Worksite Performance Report\n",
+                 "| Worksite | Actuals | Target | % to Target |",
+                 "| --- | ---: | ---: | ---: |"]
+
+        for ws in sorted(worksite_data.keys()):
+            data = worksite_data[ws]
+            actuals = data["actuals"]
+            target = data["target"]
+            pct = round((actuals / target * 100), 1) if target > 0 else 0
+
+            if pct >= 80:
+                pct_display = f"**{pct}%** ✅"
+            elif pct >= 50:
+                pct_display = f"{pct}% ⚠️"
+            else:
+                pct_display = f"{pct}% 🔴"
+
+            lines.append(f"| {ws} | {actuals:,.0f} | {target:,.0f} | {pct_display} |")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Salesforce worksite report error: {e}")
+        return f"❌ Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def salesforce_top_referrers(
+    date_from: Optional[str] = Field(None, description="Start date filter (YYYY-MM-DD format)"),
+    date_to: Optional[str] = Field(None, description="End date filter (YYYY-MM-DD format)"),
+    worksite: Optional[str] = Field(None, description="Filter by specific worksite"),
+    limit: int = Field(20, description="Maximum number of referrers to return")
+) -> str:
+    """Get top referring doctors and practices.
+
+    Returns top referrers ranked by procedure count.
+    """
+    if not salesforce_config.is_configured:
+        return "❌ Salesforce not configured."
+
+    try:
+        conditions = ["RecordType.Name = 'Referral'"]
+        if date_from:
+            conditions.append(f"Date_of_Service__c >= {date_from}")
+        if date_to:
+            conditions.append(f"Date_of_Service__c <= {date_to}")
+        if worksite:
+            conditions.append(f"Worksite__c = '{worksite}'")
+
+        where_clause = " AND ".join(conditions)
+
+        soql = f"""SELECT Practitioner_Full_Name__c, Location_Name__c, SUM(Procedures__c) procs, COUNT(Id) referrals
+                   FROM CA_Referral_Details__c WHERE {where_clause}
+                   GROUP BY Practitioner_Full_Name__c, Location_Name__c
+                   ORDER BY SUM(Procedures__c) DESC LIMIT {limit}"""
+
+        result = await salesforce_config.query(soql)
+
+        if "error" in result:
+            return f"❌ Error: {result['error']}"
+
+        records = result.get("records", [])
+
+        if not records:
+            return "No referrer data found for the specified filters."
+
+        lines = ["## Top Referrers\n",
+                 "| Rank | Doctor | Practice | Procedures | Referrals |",
+                 "| ---: | --- | --- | ---: | ---: |"]
+
+        for i, record in enumerate(records, 1):
+            doctor = record.get("Practitioner_Full_Name__c", "Unknown")
+            practice = record.get("Location_Name__c", "Unknown")
+            procs = record.get("procs", 0) or 0
+            refs = record.get("referrals", 0) or 0
+            lines.append(f"| {i} | {doctor} | {practice} | {procs:,.0f} | {refs:,.0f} |")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Salesforce referrers error: {e}")
+        return f"❌ Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def salesforce_describe(
+    object_name: str = Field(..., description="API name of the object (e.g., 'CA_Referral_Details__c', 'Account', 'User')")
+) -> str:
+    """Get schema/metadata for a Salesforce object.
+
+    Returns field names, types, and labels for the object.
+    """
+    if not salesforce_config.is_configured:
+        return "❌ Salesforce not configured."
+
+    try:
+        result = await salesforce_config.describe_object(object_name)
+
+        if "error" in result:
+            return f"❌ Error: {result['error']}"
+
+        fields = result.get("fields", [])
+
+        lines = [f"## {object_name} Schema\n",
+                 "| Field API Name | Label | Type |",
+                 "| --- | --- | --- |"]
+
+        for field in sorted(fields, key=lambda x: x.get("name", "")):
+            name = field.get("name", "")
+            label = field.get("label", "")
+            ftype = field.get("type", "")
+            lines.append(f"| {name} | {label} | {ftype} |")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Salesforce describe error: {e}")
+        return f"❌ Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def salesforce_list_users() -> str:
+    """List all active Salesforce users.
+
+    Returns users with Id, Name, Email, and Profile.
+    """
+    if not salesforce_config.is_configured:
+        return "❌ Salesforce not configured."
+
+    try:
+        soql = """SELECT Id, Name, Email, Profile.Name, IsActive
+                  FROM User WHERE IsActive = true ORDER BY Name"""
+
+        result = await salesforce_config.query(soql)
+
+        if "error" in result:
+            return f"❌ Error: {result['error']}"
+
+        records = result.get("records", [])
+
+        if not records:
+            return "No active users found."
+
+        lines = ["## Active Salesforce Users\n",
+                 "| Name | Email | Profile |",
+                 "| --- | --- | --- |"]
+
+        for user in records:
+            name = user.get("Name", "Unknown")
+            email = user.get("Email", "N/A")
+            profile = user.get("Profile", {})
+            profile_name = profile.get("Name", "N/A") if isinstance(profile, dict) else "N/A"
+            lines.append(f"| {name} | {email} | {profile_name} |")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Salesforce list users error: {e}")
+        return f"❌ Error: {str(e)}"
+
+
+# ============================================================================
 # Server Status
 # ============================================================================
 
@@ -9232,6 +9803,25 @@ async def server_status() -> str:
         if not os.getenv("CIPP_API_URL"):
             missing.append("API_URL")
         lines.append(f"⚠️ **CIPP:** Missing: {', '.join(missing)}")
+
+    # Salesforce status
+    if salesforce_config.is_configured:
+        try:
+            await salesforce_config.get_access_token()
+            lines.append(f"✅ **Salesforce:** Connected ({salesforce_config.instance_url})")
+        except Exception as e:
+            lines.append(f"❌ **Salesforce:** Auth failed - {str(e)[:50]}")
+    else:
+        missing = []
+        if not os.getenv("SALESFORCE_INSTANCE_URL"):
+            missing.append("INSTANCE_URL")
+        if not os.getenv("SALESFORCE_CLIENT_ID"):
+            missing.append("CLIENT_ID")
+        if not os.getenv("SALESFORCE_CLIENT_SECRET") and not get_secret_sync("SALESFORCE_CLIENT_SECRET"):
+            missing.append("CLIENT_SECRET")
+        if not os.getenv("SALESFORCE_REFRESH_TOKEN") and not get_secret_sync("SALESFORCE_REFRESH_TOKEN"):
+            missing.append("REFRESH_TOKEN")
+        lines.append(f"⚠️ **Salesforce:** Missing: {', '.join(missing)}")
 
     lines.append(f"\n**Cloud Run URL:** {CLOUD_RUN_URL}")
     return "\n".join(lines)
