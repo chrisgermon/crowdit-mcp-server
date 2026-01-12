@@ -9632,6 +9632,218 @@ async def salesforce_list_users() -> str:
 
 
 # ============================================================================
+# Salesforce Execute Apex Tools
+# ============================================================================
+
+@mcp.tool(annotations={"readOnlyHint": False})
+async def salesforce_execute_apex(
+    apex_code: str = Field(..., description="The Apex code to execute")
+) -> str:
+    """Execute anonymous Apex code in Salesforce.
+
+    Common uses:
+        - Run batch jobs: Database.executeBatch(new SharepointFileRetrievalBatch(), 10);
+        - Create test data: insert new Account(Name='Test');
+        - Execute DML operations
+        - Run scheduled jobs: System.schedule('Job Name', '0 0 * * * ?', new MySchedulable());
+
+    Returns execution result including any debug logs or errors.
+    """
+    if not salesforce_config.is_configured:
+        return "❌ Salesforce is not configured."
+
+    try:
+        token = await salesforce_config.get_access_token()
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(
+                f"{salesforce_config.instance_url}/services/data/v59.0/tooling/executeAnonymous/",
+                params={"anonymousBody": apex_code},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                }
+            )
+
+            data = response.json()
+
+            # Check for compile errors
+            if not data.get("compiled", True):
+                return f"❌ **Compile Error:**\n```\nLine {data.get('line', '?')}, Column {data.get('column', '?')}: {data.get('compileProblem', 'Unknown error')}\n```"
+
+            # Check for execution errors
+            if not data.get("success", False):
+                exception_msg = data.get("exceptionMessage", "Unknown error")
+                exception_trace = data.get("exceptionStackTrace", "")
+                return f"❌ **Execution Error:**\n```\n{exception_msg}\n\n{exception_trace}\n```"
+
+            # Success
+            return f"✅ **Apex executed successfully**\n\nCode:\n```apex\n{apex_code}\n```"
+
+    except httpx.TimeoutException:
+        return "⚠️ Request timed out. The Apex may still be executing - check AsyncApexJob in Salesforce."
+    except Exception as e:
+        logger.error(f"Salesforce execute apex error: {e}")
+        return f"❌ Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": False})
+async def salesforce_run_batch(
+    batch_class: str = Field(..., description="Name of the batch class (e.g., 'SharepointFileRetrievalBatch')"),
+    batch_size: int = Field(200, description="Number of records per batch execution (default 200, max 2000)")
+) -> str:
+    """Execute a Salesforce batch job by class name.
+
+    Returns the AsyncApexJob Id for monitoring.
+    """
+    if not salesforce_config.is_configured:
+        return "❌ Salesforce is not configured."
+
+    apex_code = f"Database.executeBatch(new {batch_class}(), {batch_size});"
+
+    try:
+        token = await salesforce_config.get_access_token()
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(
+                f"{salesforce_config.instance_url}/services/data/v59.0/tooling/executeAnonymous/",
+                params={"anonymousBody": apex_code},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                }
+            )
+
+            data = response.json()
+
+            if not data.get("compiled", True):
+                return f"❌ **Compile Error:** {data.get('compileProblem', 'Unknown')}\n\nIs the batch class `{batch_class}` spelled correctly?"
+
+            if not data.get("success", False):
+                return f"❌ **Execution Error:** {data.get('exceptionMessage', 'Unknown')}"
+
+            # Get the job ID
+            job_query = f"""SELECT Id, Status, JobType, CreatedDate, ApexClass.Name
+                           FROM AsyncApexJob
+                           WHERE ApexClass.Name = '{batch_class}'
+                           ORDER BY CreatedDate DESC LIMIT 1"""
+
+            job_response = await client.get(
+                f"{salesforce_config.instance_url}/services/data/v59.0/query/",
+                params={"q": job_query},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                }
+            )
+
+            job_data = job_response.json()
+            records = job_data.get("records", [])
+
+            if records:
+                job = records[0]
+                return f"""✅ **Batch job started**
+
+| Field | Value |
+| --- | --- |
+| Job ID | `{job.get('Id')}` |
+| Class | {batch_class} |
+| Status | {job.get('Status')} |
+| Batch Size | {batch_size} |
+
+Use `salesforce_check_job("{job.get('Id')}")` to monitor progress."""
+            else:
+                return f"✅ Batch `{batch_class}` started with batch size {batch_size}."
+
+    except Exception as e:
+        logger.error(f"Salesforce run batch error: {e}")
+        return f"❌ Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def salesforce_check_job(
+    job_id: Optional[str] = Field(None, description="The AsyncApexJob Id"),
+    class_name: Optional[str] = Field(None, description="Or check by class name to get the latest job")
+) -> str:
+    """Check the status of an async Apex job.
+
+    Returns job status, progress, and any errors.
+    """
+    if not salesforce_config.is_configured:
+        return "❌ Salesforce is not configured."
+
+    try:
+        token = await salesforce_config.get_access_token()
+
+        if job_id:
+            query = f"""SELECT Id, Status, JobType, ApexClass.Name, CreatedDate, CompletedDate,
+                        NumberOfErrors, JobItemsProcessed, TotalJobItems, ExtendedStatus
+                        FROM AsyncApexJob WHERE Id = '{job_id}'"""
+        elif class_name:
+            query = f"""SELECT Id, Status, JobType, ApexClass.Name, CreatedDate, CompletedDate,
+                        NumberOfErrors, JobItemsProcessed, TotalJobItems, ExtendedStatus
+                        FROM AsyncApexJob WHERE ApexClass.Name = '{class_name}'
+                        ORDER BY CreatedDate DESC LIMIT 5"""
+        else:
+            return "❌ Provide either job_id or class_name"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{salesforce_config.instance_url}/services/data/v59.0/query/",
+                params={"q": query},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                }
+            )
+
+            data = response.json()
+            records = data.get("records", [])
+
+            if not records:
+                return "❌ No matching job found."
+
+            output = []
+            for job in records:
+                status = job.get("Status", "Unknown")
+                status_icon = {
+                    "Completed": "✅",
+                    "Processing": "🔄",
+                    "Queued": "⏳",
+                    "Preparing": "⏳",
+                    "Failed": "❌",
+                    "Aborted": "⚠️"
+                }.get(status, "❓")
+
+                processed = job.get("JobItemsProcessed", 0)
+                total = job.get("TotalJobItems", 0)
+                errors = job.get("NumberOfErrors", 0)
+                progress = f"{processed}/{total}" if total else "N/A"
+
+                apex_class = job.get("ApexClass", {})
+                class_display = apex_class.get("Name", "Unknown") if isinstance(apex_class, dict) else "Unknown"
+
+                output.append(f"""**{status_icon} {class_display}**
+| Field | Value |
+| --- | --- |
+| Job ID | `{job.get('Id')}` |
+| Status | {status} |
+| Progress | {progress} batches |
+| Errors | {errors} |
+| Started | {job.get('CreatedDate', 'N/A')} |
+| Completed | {job.get('CompletedDate', 'N/A') or 'In progress'} |""")
+
+                if job.get("ExtendedStatus"):
+                    output.append(f"\n**Extended Status:** {job.get('ExtendedStatus')}")
+
+            return "\n\n---\n\n".join(output)
+
+    except Exception as e:
+        logger.error(f"Salesforce check job error: {e}")
+        return f"❌ Error: {str(e)}"
+
+
+# ============================================================================
 # Server Status
 # ============================================================================
 
