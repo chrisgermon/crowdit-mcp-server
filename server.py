@@ -10557,13 +10557,23 @@ if __name__ == "__main__":
             "env_vars": ["CIPP_TENANT_ID", "CIPP_CLIENT_ID", "CIPP_API_URL"],
             "auth_env_vars": ["CIPP_CLIENT_SECRET"]
         },
+        {
+            "name": "Salesforce",
+            "config": salesforce_config,
+            "category": "CRM",
+            "check_type": "oauth",
+            "env_vars": ["SALESFORCE_INSTANCE_URL", "SALESFORCE_CLIENT_ID"],
+            "auth_env_vars": ["SALESFORCE_CLIENT_SECRET", "SALESFORCE_REFRESH_TOKEN"]
+        },
     ]
 
-    async def check_platform_status(platform: dict) -> tuple:
+    async def check_platform_status(platform: dict) -> dict:
         """
-        Check the status of a platform and return (name, status, message, category).
+        Check the status of a platform and return a detailed dictionary.
         This is called by the status page to check each platform dynamically.
         """
+        from datetime import datetime, timezone
+
         name = platform["name"]
         config = platform["config"]
         category = platform["category"]
@@ -10571,64 +10581,166 @@ if __name__ == "__main__":
         env_vars = platform.get("env_vars", [])
         auth_env_vars = platform.get("auth_env_vars", [])
 
+        # Build base result
+        result = {
+            "name": name,
+            "status": "ok",
+            "message": "",
+            "category": category,
+            "check_type": check_type,
+            "endpoint": None,
+            "api_version": None,
+            "organization": None,
+            "token_expiry": None,
+            "token_expiry_relative": None,
+            "supports_reauth": False,
+            "reauth_url": None,
+            "supports_test": True,
+            "supports_refresh": check_type == "oauth",
+            "last_check": datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Build OAuth re-auth URLs
+        if name == "Xero" and hasattr(config, 'client_id') and config.client_id:
+            result["supports_reauth"] = True
+            result["reauth_url"] = f"https://login.xero.com/identity/connect/authorize?response_type=code&client_id={config.client_id}&redirect_uri={CLOUD_RUN_URL}/callback&scope=openid profile email accounting.transactions accounting.contacts accounting.settings offline_access"
+            result["endpoint"] = "https://api.xero.com"
+            result["api_version"] = "2.0"
+        elif name == "SharePoint" and hasattr(config, 'client_id') and config.client_id:
+            tenant_id = os.getenv("SHAREPOINT_TENANT_ID", "")
+            if tenant_id:
+                result["supports_reauth"] = True
+                result["reauth_url"] = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize?response_type=code&client_id={config.client_id}&redirect_uri={CLOUD_RUN_URL}/sharepoint-callback&scope=https://graph.microsoft.com/.default offline_access"
+            result["endpoint"] = "https://graph.microsoft.com"
+            result["api_version"] = "v1.0"
+        elif name == "HaloPSA":
+            result["endpoint"] = getattr(config, 'base_url', None)
+            result["api_version"] = "1.0"
+        elif name == "Quoter":
+            result["endpoint"] = "https://app.quoter.com"
+            result["api_version"] = "v1"
+        elif name == "Pax8":
+            result["endpoint"] = "https://api.pax8.com"
+            result["api_version"] = "v1"
+        elif name == "BigQuery":
+            result["endpoint"] = f"bigquery.googleapis.com"
+        elif name == "FortiCloud":
+            result["endpoint"] = "https://ems.fortinet.com"
+            result["api_version"] = "v1"
+        elif name == "Salesforce":
+            result["endpoint"] = getattr(config, 'instance_url', None)
+            result["api_version"] = getattr(config, 'API_VERSION', 'v59.0')
+        elif name == "CIPP":
+            result["endpoint"] = os.getenv("CIPP_API_URL", "")
+            result["api_version"] = "v3"
+        elif name == "Front":
+            result["endpoint"] = "https://api2.frontapp.com"
+            result["api_version"] = "v2"
+        elif name == "Maxotel":
+            result["endpoint"] = "https://api.maxotel.com.au"
+            result["api_version"] = "v1"
+
         if not config.is_configured:
             # Build missing env vars message
             missing = []
             for var in env_vars:
                 if not os.getenv(var):
-                    # Extract friendly name (last part after underscore)
                     friendly = var.split("_")[-1] if "_" in var else var
                     missing.append(friendly)
-            # Check auth vars (need at least one)
             if auth_env_vars and not any(os.getenv(v) for v in auth_env_vars):
                 missing.append("AUTH")
 
-            msg = f"Missing: {', '.join(missing)}" if missing else "Not configured"
-            return (name, "warning", msg, category)
+            result["status"] = "warning"
+            result["message"] = f"Missing: {', '.join(missing)}" if missing else "Not configured"
+            result["supports_test"] = False
+            result["supports_refresh"] = False
+            return result
 
         # Platform is configured, now check connectivity
         try:
             if check_type == "oauth":
                 await config.get_access_token()
-                # Add extra info for FortiCloud
-                if name == "FortiCloud" and hasattr(config, 'client_id'):
-                    return (name, "ok", f"Connected ({config.client_id})", category)
-                return (name, "ok", "Connected", category)
+
+                # Get token expiry info
+                if hasattr(config, '_token_expiry') and config._token_expiry:
+                    expiry = config._token_expiry
+                    if expiry.tzinfo is None:
+                        expiry = expiry.replace(tzinfo=timezone.utc)
+                    now = datetime.now(timezone.utc)
+                    result["token_expiry"] = expiry.isoformat()
+
+                    time_diff = expiry - now
+                    if time_diff.total_seconds() <= 0:
+                        result["token_expiry_relative"] = "Expired"
+                    elif time_diff.days > 0:
+                        result["token_expiry_relative"] = f"{time_diff.days}d {time_diff.seconds // 3600}h"
+                    elif time_diff.seconds >= 3600:
+                        result["token_expiry_relative"] = f"{time_diff.seconds // 3600}h {(time_diff.seconds % 3600) // 60}m"
+                    elif time_diff.seconds >= 60:
+                        result["token_expiry_relative"] = f"{time_diff.seconds // 60}m"
+                    else:
+                        result["token_expiry_relative"] = f"{time_diff.seconds}s"
+
+                # Get organization info
+                if name == "Xero" and hasattr(config, 'tenant_id'):
+                    result["organization"] = f"Tenant: {config.tenant_id[:8]}..."
+                elif name == "SharePoint":
+                    result["organization"] = f"Tenant: {os.getenv('SHAREPOINT_TENANT_ID', 'N/A')[:8]}..."
+                elif name == "Salesforce" and hasattr(config, 'instance_url'):
+                    # Extract org from URL
+                    instance = config.instance_url.replace("https://", "").split(".")[0]
+                    result["organization"] = instance
+                elif name == "FortiCloud" and hasattr(config, 'client_id'):
+                    result["organization"] = config.client_id
+                elif name == "CIPP":
+                    result["organization"] = f"Tenant: {os.getenv('CIPP_TENANT_ID', 'N/A')[:8]}..."
+
+                result["message"] = "Connected"
 
             elif check_type == "api_key":
-                return (name, "ok", "Configured", category)
+                result["message"] = "Configured"
 
             elif check_type == "bigquery":
                 client = config.get_client()
                 list(client.list_datasets(max_results=1))
                 job_info = f" (jobs: {config.job_project_id})" if config.job_project_id != config.project_id else ""
-                return (name, "ok", f"Connected to {config.project_id}{job_info}", category)
+                result["message"] = f"Connected to {config.project_id}{job_info}"
+                result["organization"] = config.project_id
 
             elif check_type == "ssh_ubuntu":
                 import asyncssh
                 async with await _get_ssh_connection() as conn:
-                    result = await conn.run("hostname", check=False)
-                    hostname = result.stdout.strip() if result.exit_status == 0 else "unknown"
-                display_name = f"Ubuntu ({config.server_name})" if hasattr(config, 'server_name') else name
-                return (display_name, "ok", f"Connected to {hostname}", category)
+                    result_ssh = await conn.run("hostname", check=False)
+                    hostname = result_ssh.stdout.strip() if result_ssh.exit_status == 0 else "unknown"
+                result["name"] = f"Ubuntu ({config.server_name})" if hasattr(config, 'server_name') else name
+                result["message"] = f"Connected to {hostname}"
+                result["organization"] = hostname
+                result["endpoint"] = getattr(config, 'hostname', None)
 
             elif check_type == "ssh_visionrad":
                 import asyncssh
                 async with await _get_visionrad_ssh_connection() as conn:
-                    result = await conn.run("hostname", check=False)
-                    hostname = result.stdout.strip() if result.exit_status == 0 else "unknown"
-                display_name = f"Vision Radiology ({config.server_name})" if hasattr(config, 'server_name') else name
-                return (display_name, "ok", f"Connected to {hostname}", category)
+                    result_ssh = await conn.run("hostname", check=False)
+                    hostname = result_ssh.stdout.strip() if result_ssh.exit_status == 0 else "unknown"
+                result["name"] = f"Vision Radiology ({config.server_name})" if hasattr(config, 'server_name') else name
+                result["message"] = f"Connected to {hostname}"
+                result["organization"] = hostname
+                result["endpoint"] = getattr(config, 'hostname', None)
 
             else:
-                return (name, "warning", f"Unknown check type: {check_type}", category)
+                result["status"] = "warning"
+                result["message"] = f"Unknown check type: {check_type}"
 
         except Exception as e:
-            error_msg = str(e)[:40]
+            error_msg = str(e)[:60]
+            result["status"] = "error"
             if check_type in ("ssh_ubuntu", "ssh_visionrad"):
-                display_name = f"{name} ({config.server_name})" if hasattr(config, 'server_name') else name
-                return (display_name, "error", f"SSH failed: {error_msg}", category)
-            return (name, "error", f"Auth failed: {error_msg}", category)
+                result["name"] = f"{name} ({config.server_name})" if hasattr(config, 'server_name') else name
+                result["message"] = f"SSH failed: {error_msg}"
+            else:
+                result["message"] = f"Auth failed: {error_msg}"
+
+        return result
 
     async def status_page_route(request):
         """Web-based status page showing all service integrations.
@@ -10643,13 +10755,13 @@ if __name__ == "__main__":
         # Build status checks dynamically from registry
         services = []
         for platform in PLATFORM_REGISTRY:
-            status_tuple = await check_platform_status(platform)
-            services.append(status_tuple)
+            status_dict = await check_platform_status(platform)
+            services.append(status_dict)
 
         # Count statuses
-        ok_count = sum(1 for s in services if s[1] == "ok")
-        error_count = sum(1 for s in services if s[1] == "error")
-        warning_count = sum(1 for s in services if s[1] == "warning")
+        ok_count = sum(1 for s in services if s["status"] == "ok")
+        error_count = sum(1 for s in services if s["status"] == "error")
+        warning_count = sum(1 for s in services if s["status"] == "warning")
 
         # Overall status
         if error_count > 0:
@@ -10662,9 +10774,22 @@ if __name__ == "__main__":
             overall_status = "ok"
             overall_text = "All Systems Operational"
 
-        # Build service rows HTML
+        # Build service rows HTML with enhanced details
         service_rows = ""
-        for name, status, message, category in services:
+        for svc in services:
+            name = svc["name"]
+            status = svc["status"]
+            message = svc["message"]
+            category = svc["category"]
+            endpoint = svc.get("endpoint")
+            api_version = svc.get("api_version")
+            organization = svc.get("organization")
+            token_expiry_relative = svc.get("token_expiry_relative")
+            supports_reauth = svc.get("supports_reauth", False)
+            reauth_url = svc.get("reauth_url")
+            supports_test = svc.get("supports_test", False)
+            supports_refresh = svc.get("supports_refresh", False)
+
             if status == "ok":
                 icon = "✅"
                 badge_class = "badge-ok"
@@ -10675,12 +10800,42 @@ if __name__ == "__main__":
                 icon = "⚠️"
                 badge_class = "badge-warning"
 
+            # Build details section
+            details_parts = []
+            if message:
+                details_parts.append(f'<span class="detail-message">{message}</span>')
+            if organization:
+                details_parts.append(f'<span class="detail-org" title="Organization/Instance">{organization}</span>')
+            if endpoint:
+                details_parts.append(f'<span class="detail-endpoint" title="API Endpoint">{endpoint}</span>')
+            if api_version:
+                details_parts.append(f'<span class="detail-version" title="API Version">v{api_version}</span>')
+            if token_expiry_relative:
+                expiry_class = "expiry-warning" if "m" in token_expiry_relative and int(token_expiry_relative.replace("m", "").split()[0]) < 30 else "expiry-ok"
+                details_parts.append(f'<span class="detail-expiry {expiry_class}" title="Token expires in">Token: {token_expiry_relative}</span>')
+
+            details_html = " ".join(details_parts) if details_parts else '<span class="text-muted">-</span>'
+
+            # Build action buttons
+            action_buttons = []
+            if supports_test:
+                safe_name = name.replace(" ", "_").replace("(", "").replace(")", "")
+                action_buttons.append(f'<button class="btn btn-sm btn-test" onclick="testConnection(\'{safe_name}\')" title="Test Connection">Test</button>')
+            if supports_refresh:
+                safe_name = name.replace(" ", "_").replace("(", "").replace(")", "")
+                action_buttons.append(f'<button class="btn btn-sm btn-refresh" onclick="refreshToken(\'{safe_name}\')" title="Refresh Token">Refresh</button>')
+            if supports_reauth and reauth_url:
+                action_buttons.append(f'<a href="{reauth_url}" class="btn btn-sm btn-reauth" title="Re-authorize OAuth" target="_blank">Re-auth</a>')
+
+            actions_html = " ".join(action_buttons) if action_buttons else '<span class="text-muted">-</span>'
+
             service_rows += f"""
-            <tr>
+            <tr data-service="{name}">
                 <td><span class="status-icon">{icon}</span> {name}</td>
                 <td><span class="badge {badge_class}">{status.upper()}</span></td>
-                <td class="message">{message}</td>
+                <td class="details-cell">{details_html}</td>
                 <td class="category">{category}</td>
+                <td class="actions-cell">{actions_html}</td>
             </tr>"""
 
         # Get BigQuery sync status
@@ -11109,6 +11264,160 @@ if __name__ == "__main__":
             color: #666;
             font-size: 0.85rem;
         }}
+        /* Details cell styling */
+        .details-cell {{
+            font-size: 0.85rem;
+        }}
+        .details-cell span {{
+            display: inline-block;
+            margin-right: 8px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+        }}
+        .detail-message {{
+            color: #aaa;
+            background: transparent;
+            padding: 0 !important;
+        }}
+        .detail-org {{
+            color: #9b59b6;
+            background: rgba(155, 89, 182, 0.15);
+        }}
+        .detail-endpoint {{
+            color: #3498db;
+            background: rgba(52, 152, 219, 0.15);
+            font-family: monospace;
+            font-size: 0.7rem;
+        }}
+        .detail-version {{
+            color: #1abc9c;
+            background: rgba(26, 188, 156, 0.15);
+        }}
+        .detail-expiry {{
+            font-weight: 500;
+        }}
+        .expiry-ok {{
+            color: #27ae60;
+            background: rgba(39, 174, 96, 0.15);
+        }}
+        .expiry-warning {{
+            color: #f39c12;
+            background: rgba(243, 156, 18, 0.15);
+        }}
+        /* Action buttons */
+        .actions-cell {{
+            white-space: nowrap;
+        }}
+        .btn {{
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            cursor: pointer;
+            border: none;
+            text-decoration: none;
+            transition: all 0.2s;
+        }}
+        .btn-sm {{
+            padding: 3px 8px;
+            font-size: 0.7rem;
+            margin-right: 4px;
+        }}
+        .btn-test {{
+            background: rgba(52, 152, 219, 0.2);
+            color: #3498db;
+            border: 1px solid rgba(52, 152, 219, 0.3);
+        }}
+        .btn-test:hover {{
+            background: rgba(52, 152, 219, 0.35);
+        }}
+        .btn-refresh {{
+            background: rgba(46, 204, 113, 0.2);
+            color: #2ecc71;
+            border: 1px solid rgba(46, 204, 113, 0.3);
+        }}
+        .btn-refresh:hover {{
+            background: rgba(46, 204, 113, 0.35);
+        }}
+        .btn-reauth {{
+            background: rgba(155, 89, 182, 0.2);
+            color: #9b59b6;
+            border: 1px solid rgba(155, 89, 182, 0.3);
+        }}
+        .btn-reauth:hover {{
+            background: rgba(155, 89, 182, 0.35);
+        }}
+        .btn:disabled {{
+            opacity: 0.5;
+            cursor: not-allowed;
+        }}
+        .btn-loading {{
+            position: relative;
+            color: transparent !important;
+        }}
+        .btn-loading::after {{
+            content: "";
+            position: absolute;
+            width: 12px;
+            height: 12px;
+            top: 50%;
+            left: 50%;
+            margin-left: -6px;
+            margin-top: -6px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }}
+        @keyframes spin {{
+            to {{ transform: rotate(360deg); }}
+        }}
+        /* Manual refresh button */
+        .header-actions {{
+            margin-top: 15px;
+        }}
+        .btn-manual-refresh {{
+            background: rgba(52, 152, 219, 0.2);
+            color: #3498db;
+            border: 1px solid rgba(52, 152, 219, 0.3);
+            padding: 8px 16px;
+            font-size: 0.85rem;
+        }}
+        .btn-manual-refresh:hover {{
+            background: rgba(52, 152, 219, 0.35);
+        }}
+        /* Toast notifications */
+        .toast-container {{
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+        }}
+        .toast {{
+            padding: 12px 20px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            animation: slideIn 0.3s ease;
+            max-width: 350px;
+        }}
+        .toast-success {{
+            background: rgba(39, 174, 96, 0.95);
+            color: #fff;
+        }}
+        .toast-error {{
+            background: rgba(231, 76, 60, 0.95);
+            color: #fff;
+        }}
+        .toast-info {{
+            background: rgba(52, 152, 219, 0.95);
+            color: #fff;
+        }}
+        @keyframes slideIn {{
+            from {{ transform: translateX(100%); opacity: 0; }}
+            to {{ transform: translateX(0); opacity: 1; }}
+        }}
         footer {{
             text-align: center;
             margin-top: 30px;
@@ -11119,10 +11428,16 @@ if __name__ == "__main__":
             margin-top: 10px;
             font-size: 0.8rem;
         }}
-        @media (max-width: 600px) {{
+        @media (max-width: 800px) {{
             .stats {{ flex-wrap: wrap; gap: 15px; }}
             th, td {{ padding: 10px 8px; font-size: 0.85rem; }}
             .category {{ display: none; }}
+            .detail-endpoint {{ display: none; }}
+            .detail-version {{ display: none; }}
+        }}
+        @media (max-width: 600px) {{
+            .actions-cell {{ display: none; }}
+            .details-cell span {{ display: block; margin-bottom: 4px; }}
         }}
         /* BigQuery Sync Status Styles */
         .bq-sync-card {{
@@ -11251,7 +11566,13 @@ if __name__ == "__main__":
                     <div class="stat-label">Issues</div>
                 </div>
             </div>
+            <div class="header-actions">
+                <button class="btn btn-manual-refresh" onclick="refreshPage()">Refresh Status</button>
+                <button class="btn btn-manual-refresh" onclick="testAllConnections()" style="margin-left: 10px;">Test All Connections</button>
+            </div>
         </header>
+
+        <div id="toast-container" class="toast-container"></div>
 
         <div class="services-card">
             <h2>Service Integrations</h2>
@@ -11262,6 +11583,7 @@ if __name__ == "__main__":
                         <th>Status</th>
                         <th>Details</th>
                         <th>Category</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -11282,14 +11604,309 @@ if __name__ == "__main__":
             <p style="margin-top: 10px;">MCP Endpoint: <code>{CLOUD_RUN_URL}/mcp</code></p>
         </footer>
     </div>
+
+    <script>
+        // Toast notification system
+        function showToast(message, type = 'info') {{
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${{type}}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+            setTimeout(() => toast.remove(), 5000);
+        }}
+
+        // Refresh page
+        function refreshPage() {{
+            showToast('Refreshing status...', 'info');
+            setTimeout(() => location.reload(), 500);
+        }}
+
+        // Test connection for a specific service
+        async function testConnection(serviceName) {{
+            const btn = event.target;
+            btn.classList.add('btn-loading');
+            btn.disabled = true;
+
+            try {{
+                const response = await fetch(`/api/test-connection/${{serviceName}}`);
+                const data = await response.json();
+
+                if (data.status === 'ok') {{
+                    showToast(`${{serviceName}}: Connection successful`, 'success');
+                    // Update row status
+                    updateRowStatus(serviceName, 'ok', data.message);
+                }} else {{
+                    showToast(`${{serviceName}}: ${{data.message}}`, 'error');
+                    updateRowStatus(serviceName, data.status, data.message);
+                }}
+            }} catch (error) {{
+                showToast(`${{serviceName}}: Failed to test - ${{error.message}}`, 'error');
+            }} finally {{
+                btn.classList.remove('btn-loading');
+                btn.disabled = false;
+            }}
+        }}
+
+        // Refresh token for a specific service
+        async function refreshToken(serviceName) {{
+            const btn = event.target;
+            btn.classList.add('btn-loading');
+            btn.disabled = true;
+
+            try {{
+                const response = await fetch(`/api/refresh-token/${{serviceName}}`);
+                const data = await response.json();
+
+                if (data.status === 'ok') {{
+                    showToast(`${{serviceName}}: Token refreshed successfully`, 'success');
+                    if (data.token_expiry_relative) {{
+                        updateTokenExpiry(serviceName, data.token_expiry_relative);
+                    }}
+                }} else {{
+                    showToast(`${{serviceName}}: ${{data.message}}`, 'error');
+                }}
+            }} catch (error) {{
+                showToast(`${{serviceName}}: Failed to refresh - ${{error.message}}`, 'error');
+            }} finally {{
+                btn.classList.remove('btn-loading');
+                btn.disabled = false;
+            }}
+        }}
+
+        // Test all connections
+        async function testAllConnections() {{
+            const btn = event.target;
+            btn.classList.add('btn-loading');
+            btn.disabled = true;
+
+            showToast('Testing all connections...', 'info');
+
+            try {{
+                const response = await fetch('/api/test-all-connections');
+                const data = await response.json();
+
+                let successCount = 0;
+                let errorCount = 0;
+
+                for (const result of data.results) {{
+                    if (result.status === 'ok') {{
+                        successCount++;
+                    }} else {{
+                        errorCount++;
+                    }}
+                    updateRowStatus(result.name.replace(/ /g, '_').replace(/[()]/g, ''), result.status, result.message);
+                }}
+
+                if (errorCount === 0) {{
+                    showToast(`All ${{successCount}} services connected successfully`, 'success');
+                }} else {{
+                    showToast(`${{successCount}} connected, ${{errorCount}} failed`, errorCount > 0 ? 'error' : 'success');
+                }}
+            }} catch (error) {{
+                showToast(`Failed to test connections: ${{error.message}}`, 'error');
+            }} finally {{
+                btn.classList.remove('btn-loading');
+                btn.disabled = false;
+            }}
+        }}
+
+        // Update row status visually
+        function updateRowStatus(serviceName, status, message) {{
+            const row = document.querySelector(`tr[data-service*="${{serviceName.replace(/_/g, ' ')}}"], tr[data-service*="${{serviceName}}"]`);
+            if (!row) return;
+
+            const statusCell = row.querySelector('td:nth-child(2)');
+            const badge = statusCell.querySelector('.badge');
+
+            badge.className = 'badge';
+            if (status === 'ok') {{
+                badge.classList.add('badge-ok');
+                badge.textContent = 'OK';
+            }} else if (status === 'error') {{
+                badge.classList.add('badge-error');
+                badge.textContent = 'ERROR';
+            }} else {{
+                badge.classList.add('badge-warning');
+                badge.textContent = 'WARNING';
+            }}
+
+            // Update details message
+            const detailsCell = row.querySelector('.details-cell');
+            const msgSpan = detailsCell.querySelector('.detail-message');
+            if (msgSpan) {{
+                msgSpan.textContent = message;
+            }}
+        }}
+
+        // Update token expiry display
+        function updateTokenExpiry(serviceName, expiryRelative) {{
+            const row = document.querySelector(`tr[data-service*="${{serviceName.replace(/_/g, ' ')}}"], tr[data-service*="${{serviceName}}"]`);
+            if (!row) return;
+
+            const detailsCell = row.querySelector('.details-cell');
+            let expirySpan = detailsCell.querySelector('.detail-expiry');
+
+            if (expirySpan) {{
+                expirySpan.textContent = `Token: ${{expiryRelative}}`;
+                expirySpan.className = 'detail-expiry expiry-ok';
+            }}
+        }}
+    </script>
 </body>
 </html>"""
 
         return HTMLResponse(html)
 
+    # ============================================================================
+    # API ROUTES FOR STATUS PAGE ACTIONS
+    # ============================================================================
+
+    async def api_test_connection_route(request):
+        """API endpoint to test a specific connection."""
+        from starlette.responses import JSONResponse
+        from datetime import datetime, timezone
+
+        service_name = request.path_params.get("service_name", "").replace("_", " ")
+
+        # Find the platform by name
+        platform = None
+        for p in PLATFORM_REGISTRY:
+            # Match by normalized name
+            p_name = p["name"].replace(" ", "_").replace("(", "").replace(")", "")
+            req_name = service_name.replace(" ", "_").replace("(", "").replace(")", "")
+            if p_name.lower() == req_name.lower() or p["name"].lower() == service_name.lower():
+                platform = p
+                break
+
+        if not platform:
+            return JSONResponse({"status": "error", "message": f"Service not found: {service_name}"})
+
+        try:
+            result = await check_platform_status(platform)
+            return JSONResponse({
+                "status": result["status"],
+                "message": result["message"],
+                "name": result["name"],
+                "token_expiry_relative": result.get("token_expiry_relative"),
+                "organization": result.get("organization"),
+            })
+        except Exception as e:
+            return JSONResponse({"status": "error", "message": str(e)[:100]})
+
+    async def api_refresh_token_route(request):
+        """API endpoint to force refresh a token for a specific OAuth service."""
+        from starlette.responses import JSONResponse
+        from datetime import datetime, timezone
+
+        service_name = request.path_params.get("service_name", "").replace("_", " ")
+
+        # Find the platform by name
+        platform = None
+        for p in PLATFORM_REGISTRY:
+            p_name = p["name"].replace(" ", "_").replace("(", "").replace(")", "")
+            req_name = service_name.replace(" ", "_").replace("(", "").replace(")", "")
+            if p_name.lower() == req_name.lower() or p["name"].lower() == service_name.lower():
+                platform = p
+                break
+
+        if not platform:
+            return JSONResponse({"status": "error", "message": f"Service not found: {service_name}"})
+
+        config = platform["config"]
+        check_type = platform["check_type"]
+
+        if check_type != "oauth":
+            return JSONResponse({"status": "warning", "message": "This service does not use OAuth tokens"})
+
+        if not config.is_configured:
+            return JSONResponse({"status": "error", "message": "Service is not configured"})
+
+        try:
+            # Clear cached token to force refresh
+            if hasattr(config, '_access_token'):
+                config._access_token = None
+            if hasattr(config, '_token_expiry'):
+                config._token_expiry = None
+
+            # Force token refresh
+            await config.get_access_token()
+
+            # Get new expiry info
+            token_expiry_relative = None
+            if hasattr(config, '_token_expiry') and config._token_expiry:
+                expiry = config._token_expiry
+                if expiry.tzinfo is None:
+                    expiry = expiry.replace(tzinfo=timezone.utc)
+                now = datetime.now(timezone.utc)
+                time_diff = expiry - now
+                if time_diff.days > 0:
+                    token_expiry_relative = f"{time_diff.days}d {time_diff.seconds // 3600}h"
+                elif time_diff.seconds >= 3600:
+                    token_expiry_relative = f"{time_diff.seconds // 3600}h {(time_diff.seconds % 3600) // 60}m"
+                elif time_diff.seconds >= 60:
+                    token_expiry_relative = f"{time_diff.seconds // 60}m"
+                else:
+                    token_expiry_relative = f"{time_diff.seconds}s"
+
+            return JSONResponse({
+                "status": "ok",
+                "message": "Token refreshed successfully",
+                "token_expiry_relative": token_expiry_relative,
+            })
+        except Exception as e:
+            return JSONResponse({"status": "error", "message": str(e)[:100]})
+
+    async def api_test_all_connections_route(request):
+        """API endpoint to test all connections."""
+        from starlette.responses import JSONResponse
+
+        results = []
+        for platform in PLATFORM_REGISTRY:
+            try:
+                result = await check_platform_status(platform)
+                results.append({
+                    "name": result["name"],
+                    "status": result["status"],
+                    "message": result["message"],
+                })
+            except Exception as e:
+                results.append({
+                    "name": platform["name"],
+                    "status": "error",
+                    "message": str(e)[:50],
+                })
+
+        return JSONResponse({"results": results})
+
+    async def api_status_json_route(request):
+        """API endpoint to get full status as JSON."""
+        from starlette.responses import JSONResponse
+        from datetime import datetime, timezone
+
+        services = []
+        for platform in PLATFORM_REGISTRY:
+            result = await check_platform_status(platform)
+            services.append(result)
+
+        ok_count = sum(1 for s in services if s["status"] == "ok")
+        error_count = sum(1 for s in services if s["status"] == "error")
+        warning_count = sum(1 for s in services if s["status"] == "warning")
+
+        return JSONResponse({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "summary": {
+                "ok": ok_count,
+                "error": error_count,
+                "warning": warning_count,
+                "total": len(services),
+            },
+            "services": services,
+        })
+
     # Get API key for middleware
     api_key = os.getenv("MCP_API_KEY") or get_secret_sync("MCP_API_KEY")
-    
+
     # Run FastMCP directly - it handles its own routing
     # Add custom routes via Starlette mounting
     app = Starlette(
@@ -11298,6 +11915,10 @@ if __name__ == "__main__":
             Route("/status", status_page_route),
             Route("/callback", callback_route),
             Route("/sharepoint-callback", sharepoint_callback_route),
+            Route("/api/test-connection/{service_name:path}", api_test_connection_route),
+            Route("/api/refresh-token/{service_name:path}", api_refresh_token_route),
+            Route("/api/test-all-connections", api_test_all_connections_route),
+            Route("/api/status", api_status_json_route),
         ],
         lifespan=mcp_app.lifespan,
     )
