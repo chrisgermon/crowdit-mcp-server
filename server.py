@@ -2330,11 +2330,17 @@ async def xero_update_invoice(
 
 @mcp.tool(annotations={"readOnlyHint": True})
 async def xero_get_contacts(
-    search: Optional[str] = Field(None, description="Search by name"),
+    search: Optional[str] = Field(None, description="Search by name (partial match)"),
     is_customer: bool = Field(True, description="Filter to customers only"),
-    limit: int = Field(20, description="Max results")
+    is_supplier: bool = Field(False, description="Filter to suppliers only"),
+    include_archived: bool = Field(False, description="Include archived contacts"),
+    limit: int = Field(50, description="Max results (1-100)")
 ) -> str:
-    """List Xero contacts/customers."""
+    """List Xero contacts with ContactIDs for updates.
+
+    Returns contact list including ContactID, first/last name, email, and outstanding balance.
+    Use the ContactID when calling xero_update_contact or xero_bulk_update_contacts.
+    """
     if not xero_config.is_configured:
         return "Error: Xero not configured."
 
@@ -2347,6 +2353,10 @@ async def xero_get_contacts(
             where_parts.append(f'Name.Contains("{search}")')
         if is_customer:
             where_parts.append("IsCustomer==true")
+        if is_supplier:
+            where_parts.append("IsSupplier==true")
+        if not include_archived:
+            where_parts.append('ContactStatus!="ARCHIVED"')
         if where_parts:
             params["where"] = " AND ".join(where_parts)
 
@@ -2364,18 +2374,23 @@ async def xero_get_contacts(
             if error:
                 return error
             contacts = response.json().get("Contacts", [])[:limit]
-        
+
         if not contacts:
             return "No contacts found."
-        
+
         results = []
         for c in contacts:
+            contact_id = c.get("ContactID", "N/A")
             name = c.get("Name", "Unknown")
+            first_name = c.get("FirstName", "")
+            last_name = c.get("LastName", "")
             email = c.get("EmailAddress", "N/A")
             balance = c.get("Balances", {}).get("AccountsReceivable", {}).get("Outstanding", 0)
-            results.append(f"- **{name}** ({email}) - Outstanding: ${balance:,.2f}")
-        
-        return "## Contacts\n\n" + "\n".join(results)
+
+            person_name = f"{first_name} {last_name}".strip() if first_name or last_name else "N/A"
+            results.append(f"- **{name}** (ID: `{contact_id}`)\n  Contact: {person_name} | Email: {email} | Outstanding: ${balance:,.2f}")
+
+        return f"## Contacts ({len(results)} found)\n\n" + "\n".join(results)
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -3470,14 +3485,22 @@ async def xero_create_contact(
 
 @mcp.tool(annotations={"readOnlyHint": False})
 async def xero_update_contact(
-    contact_id: str = Field(..., description="Contact ID (GUID)"),
-    name: Optional[str] = Field(None, description="Update name"),
-    email: Optional[str] = Field(None, description="Update email"),
-    phone: Optional[str] = Field(None, description="Update phone"),
+    contact_id: str = Field(..., description="Contact ID (GUID) - get this from xero_get_contacts"),
+    name: Optional[str] = Field(None, description="Update company/organisation name"),
+    first_name: Optional[str] = Field(None, description="Update first name of contact person"),
+    last_name: Optional[str] = Field(None, description="Update last name of contact person"),
+    email: Optional[str] = Field(None, description="Update email address"),
+    phone: Optional[str] = Field(None, description="Update phone number"),
     is_customer: Optional[bool] = Field(None, description="Set as customer"),
-    is_supplier: Optional[bool] = Field(None, description="Set as supplier")
+    is_supplier: Optional[bool] = Field(None, description="Set as supplier"),
+    account_number: Optional[str] = Field(None, description="User-defined account number"),
+    contact_status: Optional[str] = Field(None, description="Contact status: ACTIVE or ARCHIVED")
 ) -> str:
-    """Update an existing contact."""
+    """Update an existing contact in Xero.
+
+    Use xero_get_contacts to find the ContactID first, then use this function to update.
+    You can update the contact person (first/last name), company name, email, phone, and status.
+    """
     if not xero_config.is_configured:
         return "Error: Xero not configured."
 
@@ -3486,16 +3509,26 @@ async def xero_update_contact(
 
         contact_data = {"ContactID": contact_id}
 
-        if name:
+        if name is not None:
             contact_data["Name"] = name
-        if email:
+        if first_name is not None:
+            contact_data["FirstName"] = first_name
+        if last_name is not None:
+            contact_data["LastName"] = last_name
+        if email is not None:
             contact_data["EmailAddress"] = email
-        if phone:
+        if phone is not None:
             contact_data["Phones"] = [{"PhoneType": "DEFAULT", "PhoneNumber": phone}]
         if is_customer is not None:
             contact_data["IsCustomer"] = is_customer
         if is_supplier is not None:
             contact_data["IsSupplier"] = is_supplier
+        if account_number is not None:
+            contact_data["AccountNumber"] = account_number
+        if contact_status is not None:
+            if contact_status.upper() not in ["ACTIVE", "ARCHIVED"]:
+                return "Error: contact_status must be ACTIVE or ARCHIVED"
+            contact_data["ContactStatus"] = contact_status.upper()
 
         if len(contact_data) == 1:
             return "Error: No updates specified."
@@ -3516,7 +3549,234 @@ async def xero_update_contact(
                 return error
             updated = response.json().get("Contacts", [{}])[0]
 
-        return f"✅ Contact **{updated.get('Name', contact_id)}** updated."
+        # Build a detailed success message
+        details = []
+        if updated.get("FirstName") or updated.get("LastName"):
+            details.append(f"Contact Person: {updated.get('FirstName', '')} {updated.get('LastName', '')}".strip())
+        if updated.get("EmailAddress"):
+            details.append(f"Email: {updated.get('EmailAddress')}")
+
+        detail_str = f" ({', '.join(details)})" if details else ""
+        return f"Contact **{updated.get('Name', contact_id)}** updated successfully.{detail_str}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def xero_get_contact_details(
+    contact_id: Optional[str] = Field(None, description="Xero ContactID (GUID) - use this if known"),
+    contact_name: Optional[str] = Field(None, description="Contact/company name to search for (exact or partial match)")
+) -> str:
+    """Get detailed contact information from Xero including ContactID.
+
+    Returns full contact details including:
+    - ContactID (required for updates)
+    - Name, FirstName, LastName
+    - Email, Phone numbers
+    - Addresses
+    - Customer/Supplier status
+    - Contact persons
+
+    Use this to get full details for a specific contact, or to find a ContactID by name.
+    """
+    if not xero_config.is_configured:
+        return "Error: Xero not configured."
+
+    if not contact_id and not contact_name:
+        return "Error: Must provide either contact_id or contact_name"
+
+    try:
+        token = await xero_config.get_access_token()
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Xero-Tenant-Id": xero_config.tenant_id,
+            "Accept": "application/json"
+        }
+
+        async with httpx.AsyncClient() as client:
+            if contact_id:
+                # Get by ID directly
+                url = f"https://api.xero.com/api.xro/2.0/Contacts/{contact_id}"
+                response = await client.get(url, headers=headers)
+            else:
+                # Search by name
+                url = "https://api.xero.com/api.xro/2.0/Contacts"
+                params = {"where": f'Name.Contains("{contact_name}")'}
+                response = await client.get(url, headers=headers, params=params)
+
+            error = _check_xero_response(response)
+            if error:
+                return error
+
+            contacts = response.json().get("Contacts", [])
+
+        if not contacts:
+            search_term = contact_name or contact_id
+            return f"No contacts found matching: {search_term}"
+
+        results = []
+        for c in contacts:
+            # Extract phone numbers
+            phones = []
+            for phone in c.get("Phones", []):
+                if phone.get("PhoneNumber"):
+                    phone_type = phone.get("PhoneType", "DEFAULT")
+                    phones.append(f"{phone_type}: {phone.get('PhoneNumber')}")
+
+            # Extract addresses
+            addresses = []
+            for addr in c.get("Addresses", []):
+                addr_parts = [
+                    addr.get("AddressLine1", ""),
+                    addr.get("AddressLine2", ""),
+                    addr.get("City", ""),
+                    addr.get("Region", ""),
+                    addr.get("PostalCode", ""),
+                    addr.get("Country", "")
+                ]
+                addr_str = ", ".join(p for p in addr_parts if p)
+                if addr_str:
+                    addresses.append(f"{addr.get('AddressType', 'ADDRESS')}: {addr_str}")
+
+            # Extract contact persons
+            contact_persons = []
+            for person in c.get("ContactPersons", []):
+                person_name = f"{person.get('FirstName', '')} {person.get('LastName', '')}".strip()
+                person_email = person.get("EmailAddress", "")
+                if person_name:
+                    contact_persons.append(f"{person_name}" + (f" ({person_email})" if person_email else ""))
+
+            # Get outstanding balance
+            balances = c.get("Balances", {})
+            ar_balance = balances.get("AccountsReceivable", {}).get("Outstanding", 0)
+            ap_balance = balances.get("AccountsPayable", {}).get("Outstanding", 0)
+
+            result = f"""## {c.get('Name', 'Unknown')}
+
+**ContactID:** `{c.get('ContactID', 'N/A')}`
+**Status:** {c.get('ContactStatus', 'N/A')}
+
+### Contact Person
+- **First Name:** {c.get('FirstName', 'N/A')}
+- **Last Name:** {c.get('LastName', 'N/A')}
+- **Email:** {c.get('EmailAddress', 'N/A')}
+
+### Details
+- **Is Customer:** {c.get('IsCustomer', False)}
+- **Is Supplier:** {c.get('IsSupplier', False)}
+- **Account Number:** {c.get('AccountNumber', 'N/A')}
+- **Contact Number:** {c.get('ContactNumber', 'N/A')}
+
+### Balances
+- **Accounts Receivable:** ${ar_balance:,.2f}
+- **Accounts Payable:** ${ap_balance:,.2f}"""
+
+            if phones:
+                result += f"\n\n### Phones\n" + "\n".join(f"- {p}" for p in phones)
+
+            if addresses:
+                result += f"\n\n### Addresses\n" + "\n".join(f"- {a}" for a in addresses)
+
+            if contact_persons:
+                result += f"\n\n### Additional Contact Persons\n" + "\n".join(f"- {p}" for p in contact_persons)
+
+            results.append(result)
+
+        return "\n\n---\n\n".join(results)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": False})
+async def xero_bulk_update_contacts(
+    updates: str = Field(..., description="JSON array of contact updates. Each object must have 'contact_id' and optional fields: 'first_name', 'last_name', 'email', 'name'")
+) -> str:
+    """Bulk update multiple contacts in Xero.
+
+    Efficiently updates multiple contacts in a single API call. Perfect for updating
+    contact person details across many contacts at once.
+
+    Args:
+        updates: JSON array of updates. Example:
+            [
+                {"contact_id": "abc-123", "first_name": "John", "last_name": "Smith"},
+                {"contact_id": "def-456", "first_name": "Jane", "last_name": "Doe", "email": "jane@example.com"}
+            ]
+
+    Returns:
+        Summary of updated contacts
+    """
+    if not xero_config.is_configured:
+        return "Error: Xero not configured."
+
+    try:
+        update_list = json.loads(updates)
+    except json.JSONDecodeError as e:
+        return f"Error: Invalid JSON in updates parameter - {str(e)}"
+
+    if not isinstance(update_list, list):
+        return "Error: updates must be a JSON array"
+
+    if not update_list:
+        return "Error: No updates provided"
+
+    try:
+        token = await xero_config.get_access_token()
+
+        # Build contacts array for bulk update
+        contacts = []
+        for update in update_list:
+            if "contact_id" not in update:
+                return f"Error: Each update must have a 'contact_id'. Invalid entry: {update}"
+
+            contact_data = {"ContactID": update["contact_id"]}
+
+            if "first_name" in update:
+                contact_data["FirstName"] = update["first_name"]
+            if "last_name" in update:
+                contact_data["LastName"] = update["last_name"]
+            if "email" in update:
+                contact_data["EmailAddress"] = update["email"]
+            if "name" in update:
+                contact_data["Name"] = update["name"]
+            if "phone" in update:
+                contact_data["Phones"] = [{"PhoneType": "DEFAULT", "PhoneNumber": update["phone"]}]
+            if "account_number" in update:
+                contact_data["AccountNumber"] = update["account_number"]
+            if "contact_status" in update:
+                contact_data["ContactStatus"] = update["contact_status"].upper()
+
+            contacts.append(contact_data)
+
+        payload = {"Contacts": contacts}
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.xero.com/api.xro/2.0/Contacts",
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Xero-Tenant-Id": xero_config.tenant_id,
+                    "Accept": "application/json",
+                    "Content-Type": "application/json"
+                }
+            )
+            error = _check_xero_response(response)
+            if error:
+                return error
+
+            updated = response.json().get("Contacts", [])
+
+        # Build summary
+        results = []
+        for c in updated:
+            first = c.get("FirstName", "")
+            last = c.get("LastName", "")
+            person = f"{first} {last}".strip() if first or last else "N/A"
+            results.append(f"- **{c.get('Name', 'Unknown')}** - Contact: {person}")
+
+        return f"## Bulk Update Complete\n\n**{len(results)} contacts updated:**\n\n" + "\n".join(results)
     except Exception as e:
         return f"Error: {str(e)}"
 
