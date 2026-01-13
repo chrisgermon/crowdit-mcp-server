@@ -10463,6 +10463,246 @@ if __name__ == "__main__":
             logger.error(f"Cloud Build status error: {e}")
             return {"error": str(e)}
 
+    # ============================================================================
+    # CLOUD BUILD / CLOUD RUN DEPLOYMENT TOOLS
+    # ============================================================================
+
+    @mcp.tool(annotations={"readOnlyHint": True})
+    async def cloud_run_deployments(
+        limit: int = Field(10, description="Number of recent deployments to return (1-50)"),
+        status_filter: Optional[str] = Field(None, description="Filter by status: 'success', 'failure', 'working', 'queued', or 'all'")
+    ) -> str:
+        """
+        Get recent Cloud Run deployment history from Cloud Build.
+
+        Shows deployment status, timing, commit info, and links to logs.
+        Use this to monitor deployments and check if new revisions have been deployed.
+        """
+        try:
+            from google.cloud.devtools.cloudbuild_v1 import CloudBuildClient
+            from google.cloud.devtools.cloudbuild_v1.types import ListBuildsRequest
+
+            project_id = os.getenv("GCP_PROJECT_ID", os.getenv("GOOGLE_CLOUD_PROJECT", "crowdmcp"))
+
+            client = CloudBuildClient()
+
+            # Limit to reasonable range
+            limit = min(max(1, limit), 50)
+
+            # List recent builds for this project
+            request = ListBuildsRequest(
+                project_id=project_id,
+                page_size=limit,
+            )
+
+            builds_response = client.list_builds(request=request)
+
+            # Status mapping for filtering and display
+            status_map = {
+                "STATUS_UNKNOWN": "❓ Unknown",
+                "PENDING": "⏳ Pending",
+                "QUEUED": "📋 Queued",
+                "WORKING": "🔄 Building",
+                "SUCCESS": "✅ Success",
+                "FAILURE": "❌ Failed",
+                "INTERNAL_ERROR": "⚠️ Internal Error",
+                "TIMEOUT": "⏰ Timeout",
+                "CANCELLED": "🚫 Cancelled",
+                "EXPIRED": "📅 Expired",
+            }
+
+            # Filter mapping
+            filter_map = {
+                "success": ["SUCCESS"],
+                "failure": ["FAILURE", "INTERNAL_ERROR", "TIMEOUT"],
+                "working": ["WORKING", "PENDING"],
+                "queued": ["QUEUED", "PENDING"],
+            }
+
+            builds = []
+            for build in builds_response:
+                build_status = build.status.name if build.status else "STATUS_UNKNOWN"
+
+                # Apply status filter if specified
+                if status_filter and status_filter.lower() != "all":
+                    allowed_statuses = filter_map.get(status_filter.lower(), [])
+                    if allowed_statuses and build_status not in allowed_statuses:
+                        continue
+
+                # Get substitutions for commit info
+                substitutions = dict(build.substitutions) if build.substitutions else {}
+
+                commit_sha = substitutions.get("COMMIT_SHA", substitutions.get("SHORT_SHA", ""))
+                short_sha = commit_sha[:7] if commit_sha else "N/A"
+                branch = substitutions.get("BRANCH_NAME", "")
+                repo = substitutions.get("REPO_NAME", "")
+                trigger_name = substitutions.get("TRIGGER_NAME", build.build_trigger_id or "")
+
+                # Get source info if substitutions don't have it
+                if build.source:
+                    if build.source.repo_source:
+                        if not branch:
+                            branch = build.source.repo_source.branch_name or ""
+                        if not commit_sha:
+                            commit_sha = build.source.repo_source.commit_sha or ""
+                            short_sha = commit_sha[:7] if commit_sha else "N/A"
+                        if not repo:
+                            repo = build.source.repo_source.repo_name or ""
+
+                # Format times
+                create_time = build.create_time
+                finish_time = build.finish_time
+
+                create_str = create_time.strftime("%Y-%m-%d %H:%M:%S UTC") if create_time else "N/A"
+
+                # Calculate duration
+                duration_str = "In progress"
+                if finish_time and create_time:
+                    duration = finish_time - create_time
+                    minutes = int(duration.total_seconds() // 60)
+                    seconds = int(duration.total_seconds() % 60)
+                    duration_str = f"{minutes}m {seconds}s"
+
+                status_display = status_map.get(build_status, f"❓ {build_status}")
+
+                builds.append({
+                    "id": build.id,
+                    "status": status_display,
+                    "status_raw": build_status,
+                    "created": create_str,
+                    "duration": duration_str,
+                    "commit": short_sha,
+                    "branch": branch or "N/A",
+                    "repo": repo or "N/A",
+                    "trigger": trigger_name or "N/A",
+                    "log_url": build.log_url or "",
+                })
+
+                if len(builds) >= limit:
+                    break
+
+            if not builds:
+                return f"No deployments found for project '{project_id}'" + (f" with status filter '{status_filter}'" if status_filter else "") + "."
+
+            # Format output
+            output = [f"# Cloud Run Deployments ({project_id})\n"]
+            output.append(f"Showing {len(builds)} recent deployment(s):\n")
+
+            for i, b in enumerate(builds, 1):
+                output.append(f"## {i}. {b['status']}")
+                output.append(f"   - **Build ID:** `{b['id'][:12]}...`")
+                output.append(f"   - **Started:** {b['created']}")
+                output.append(f"   - **Duration:** {b['duration']}")
+                output.append(f"   - **Commit:** `{b['commit']}` on `{b['branch']}`")
+                if b['log_url']:
+                    output.append(f"   - **Logs:** {b['log_url']}")
+                output.append("")
+
+            # Add summary
+            success_count = sum(1 for b in builds if b['status_raw'] == 'SUCCESS')
+            failed_count = sum(1 for b in builds if b['status_raw'] in ['FAILURE', 'INTERNAL_ERROR', 'TIMEOUT'])
+            in_progress = sum(1 for b in builds if b['status_raw'] in ['WORKING', 'PENDING', 'QUEUED'])
+
+            output.append("---")
+            output.append(f"**Summary:** {success_count} successful, {failed_count} failed, {in_progress} in progress")
+
+            return "\n".join(output)
+
+        except ImportError:
+            return "Error: google-cloud-build package not installed. Run: pip install google-cloud-build"
+        except Exception as e:
+            logger.error(f"Cloud Run deployments error: {e}")
+            return f"Error fetching deployments: {str(e)}"
+
+    @mcp.tool(annotations={"readOnlyHint": True})
+    async def cloud_run_latest_deployment() -> str:
+        """
+        Get details about the most recent Cloud Run deployment.
+
+        Quick check to see the current deployment status and when it was deployed.
+        """
+        try:
+            build_info = await get_latest_cloud_build()
+
+            if build_info.get("error"):
+                return f"Error: {build_info['error']}"
+
+            # Status emoji mapping
+            status_map = {
+                "SUCCESS": "✅ Success",
+                "FAILURE": "❌ Failed",
+                "WORKING": "🔄 Building",
+                "QUEUED": "📋 Queued",
+                "PENDING": "⏳ Pending",
+                "TIMEOUT": "⏰ Timeout",
+                "CANCELLED": "🚫 Cancelled",
+            }
+
+            status = build_info.get("status", "UNKNOWN")
+            status_display = status_map.get(status, f"❓ {status}")
+
+            # Format times
+            create_time = build_info.get("create_time")
+            finish_time = build_info.get("finish_time")
+
+            create_str = create_time.strftime("%Y-%m-%d %H:%M:%S UTC") if create_time else "N/A"
+            finish_str = finish_time.strftime("%Y-%m-%d %H:%M:%S UTC") if finish_time else "In progress"
+
+            # Calculate duration
+            duration_str = "In progress"
+            if finish_time and create_time:
+                duration = finish_time - create_time
+                minutes = int(duration.total_seconds() // 60)
+                seconds = int(duration.total_seconds() % 60)
+                duration_str = f"{minutes}m {seconds}s"
+
+            # Calculate time since deployment
+            time_since = ""
+            if finish_time:
+                from datetime import timezone
+                now = datetime.now(timezone.utc)
+                delta = now - finish_time
+                hours = int(delta.total_seconds() // 3600)
+                minutes = int((delta.total_seconds() % 3600) // 60)
+                if hours > 24:
+                    days = hours // 24
+                    time_since = f" ({days} day{'s' if days != 1 else ''} ago)"
+                elif hours > 0:
+                    time_since = f" ({hours}h {minutes}m ago)"
+                else:
+                    time_since = f" ({minutes}m ago)"
+
+            commit = build_info.get("commit_sha", "N/A")
+            short_commit = commit[:7] if commit and commit != "N/A" else "N/A"
+
+            output = [
+                f"# Latest Cloud Run Deployment",
+                f"",
+                f"**Status:** {status_display}{time_since}",
+                f"**Project:** {build_info.get('project_id', 'N/A')}",
+                f"**Build ID:** `{build_info.get('build_id', 'N/A')}`",
+                f"",
+                f"## Timing",
+                f"- **Started:** {create_str}",
+                f"- **Finished:** {finish_str}",
+                f"- **Duration:** {duration_str}",
+                f"",
+                f"## Source",
+                f"- **Commit:** `{short_commit}`",
+                f"- **Branch:** `{build_info.get('branch', 'N/A')}`",
+                f"- **Repo:** {build_info.get('repo', 'N/A')}",
+            ]
+
+            if build_info.get("log_url"):
+                output.append(f"")
+                output.append(f"**Logs:** {build_info['log_url']}")
+
+            return "\n".join(output)
+
+        except Exception as e:
+            logger.error(f"Cloud Run latest deployment error: {e}")
+            return f"Error: {str(e)}"
+
     # PLATFORM REGISTRY - Add new platforms here for automatic status page updates
     # ============================================================================
     # Each entry: (name, config_obj, category, check_type, env_vars_for_missing)
