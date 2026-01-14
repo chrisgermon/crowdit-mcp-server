@@ -4906,62 +4906,22 @@ async def sharepoint_upload_file(
 # ============================================================================
 
 class QuoterConfig:
+    """Quoter API Configuration (now part of ScalePad)"""
     def __init__(self):
         self.api_key = os.getenv("QUOTER_API_KEY", "")
-        self.client_id = os.getenv("QUOTER_CLIENT_ID", "")
-        self.client_secret = os.getenv("QUOTER_CLIENT_SECRET", "")
-        self.base_url = "https://api.quoter.com/v1"
-        self._access_token: Optional[str] = None
-        self._refresh_token: Optional[str] = None
-        self._token_expiry: Optional[datetime] = None
-    
+        self.base_url = "https://api.scalepad.com/quoter/v1"
+
     @property
     def is_configured(self) -> bool:
-        return bool(self.api_key) or (bool(self.client_id) and bool(self.client_secret))
-    
-    async def get_access_token(self) -> str:
-        # If we have a simple API key, use it directly
-        if self.api_key:
-            return self.api_key
-        
-        # Otherwise use OAuth2 flow
-        if self._access_token and self._token_expiry and datetime.now() < self._token_expiry:
-            return self._access_token
-        
-        # Try refresh token first
-        if self._refresh_token:
-            try:
-                async with httpx.AsyncClient() as client:
-                    response = await client.post(
-                        f"{self.base_url}/auth/refresh",
-                        headers={"Authorization": f"Bearer {self._refresh_token}"}
-                    )
-                    if response.status_code == 200:
-                        data = response.json()
-                        self._access_token = data["access_token"]
-                        self._refresh_token = data.get("refresh_token", self._refresh_token)
-                        self._token_expiry = datetime.now() + timedelta(seconds=3540)  # 59 minutes
-                        return self._access_token
-            except Exception:
-                pass
-        
-        # Get new token
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{self.base_url}/auth/oauth/authorize",
-                json={
-                    "client_id": self.client_id,
-                    "client_secret": self.client_secret,
-                    "grant_type": "client_credentials"
-                },
-                headers={"Content-Type": "application/json"}
-            )
-            response.raise_for_status()
-            data = response.json()
-            self._access_token = data["access_token"]
-            self._refresh_token = data.get("refresh_token")
-            self._token_expiry = datetime.now() + timedelta(seconds=3540)  # 59 minutes
-            return self._access_token
+        return bool(self.api_key)
+
+    def get_headers(self) -> dict:
+        """Get headers for Quoter API requests using x-api-key authentication."""
+        return {
+            "x-api-key": self.api_key,
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
 
 quoter_config = QuoterConfig()
 
@@ -4972,19 +4932,18 @@ async def quoter_list_quotes(
     limit: int = Field(50, description="Max results (1-100)"),
     page: int = Field(1, description="Page number")
 ) -> str:
-    """List quotes from Quoter."""
+    """List quotes from Quoter (ScalePad)."""
     if not quoter_config.is_configured:
-        return "Error: Quoter not configured. Set QUOTER_API_KEY or QUOTER_CLIENT_ID + QUOTER_CLIENT_SECRET."
-    
+        return "Error: Quoter not configured. Set QUOTER_API_KEY."
+
     try:
-        token = await quoter_config.get_access_token()
         params = {"limit": min(max(1, limit), 100), "page": page}
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{quoter_config.base_url}/quotes",
                 params=params,
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                headers=quoter_config.get_headers()
             )
             response.raise_for_status()
             data = response.json()
@@ -5017,21 +4976,20 @@ async def quoter_list_contacts(
     limit: int = Field(50, description="Max results (1-100)"),
     page: int = Field(1, description="Page number")
 ) -> str:
-    """List contacts from Quoter."""
+    """List contacts from Quoter (ScalePad)."""
     if not quoter_config.is_configured:
-        return "Error: Quoter not configured."
-    
+        return "Error: Quoter not configured. Set QUOTER_API_KEY."
+
     try:
-        token = await quoter_config.get_access_token()
         params = {"limit": min(max(1, limit), 100), "page": page}
         if search:
             params["organization[cont]"] = search
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{quoter_config.base_url}/contacts",
                 params=params,
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                headers=quoter_config.get_headers()
             )
             response.raise_for_status()
             data = response.json()
@@ -5059,17 +5017,15 @@ async def quoter_list_contacts(
 async def quoter_get_contact(
     contact_id: str = Field(..., description="Contact ID")
 ) -> str:
-    """Get detailed contact information from Quoter."""
+    """Get detailed contact information from Quoter (ScalePad)."""
     if not quoter_config.is_configured:
-        return "Error: Quoter not configured."
-    
+        return "Error: Quoter not configured. Set QUOTER_API_KEY."
+
     try:
-        token = await quoter_config.get_access_token()
-        
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{quoter_config.base_url}/contacts/{contact_id}",
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                headers=quoter_config.get_headers()
             )
             response.raise_for_status()
             c = response.json()
@@ -5110,13 +5066,11 @@ async def quoter_create_contact(
     billing_postal_code: Optional[str] = Field(None, description="Billing postal code"),
     billing_country_iso: Optional[str] = Field("AU", description="Billing country ISO code (default: AU)")
 ) -> str:
-    """Create a new contact in Quoter."""
+    """Create a new contact in Quoter (ScalePad)."""
     if not quoter_config.is_configured:
-        return "Error: Quoter not configured."
-    
+        return "Error: Quoter not configured. Set QUOTER_API_KEY."
+
     try:
-        token = await quoter_config.get_access_token()
-        
         payload = {
             "first_name": first_name,
             "last_name": last_name,
@@ -5129,12 +5083,12 @@ async def quoter_create_contact(
         if billing_region_iso: payload["billing_region_iso"] = billing_region_iso
         if billing_postal_code: payload["billing_postal_code"] = billing_postal_code
         if billing_country_iso: payload["billing_country_iso"] = billing_country_iso
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{quoter_config.base_url}/contacts",
                 json=payload,
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                headers=quoter_config.get_headers()
             )
             response.raise_for_status()
             c = response.json()
@@ -5151,23 +5105,22 @@ async def quoter_list_items(
     limit: int = Field(50, description="Max results (1-100)"),
     page: int = Field(1, description="Page number")
 ) -> str:
-    """List items/products from Quoter."""
+    """List items/products from Quoter (ScalePad)."""
     if not quoter_config.is_configured:
-        return "Error: Quoter not configured."
-    
+        return "Error: Quoter not configured. Set QUOTER_API_KEY."
+
     try:
-        token = await quoter_config.get_access_token()
         params = {"limit": min(max(1, limit), 100), "page": page}
         if search:
             params["name[cont]"] = search
         if category_id:
             params["category_id"] = category_id
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{quoter_config.base_url}/items",
                 params=params,
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                headers=quoter_config.get_headers()
             )
             response.raise_for_status()
             data = response.json()
@@ -5200,17 +5153,15 @@ async def quoter_list_items(
 async def quoter_get_item(
     item_id: str = Field(..., description="Item ID")
 ) -> str:
-    """Get detailed item information from Quoter."""
+    """Get detailed item information from Quoter (ScalePad)."""
     if not quoter_config.is_configured:
-        return "Error: Quoter not configured."
-    
+        return "Error: Quoter not configured. Set QUOTER_API_KEY."
+
     try:
-        token = await quoter_config.get_access_token()
-        
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{quoter_config.base_url}/items/{item_id}",
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                headers=quoter_config.get_headers()
             )
             response.raise_for_status()
             i = response.json()
@@ -5257,19 +5208,18 @@ async def quoter_list_categories(
     limit: int = Field(100, description="Max results (1-100)"),
     page: int = Field(1, description="Page number")
 ) -> str:
-    """List categories from Quoter."""
+    """List categories from Quoter (ScalePad)."""
     if not quoter_config.is_configured:
-        return "Error: Quoter not configured."
-    
+        return "Error: Quoter not configured. Set QUOTER_API_KEY."
+
     try:
-        token = await quoter_config.get_access_token()
         params = {"limit": min(max(1, limit), 100), "page": page}
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{quoter_config.base_url}/categories",
                 params=params,
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                headers=quoter_config.get_headers()
             )
             response.raise_for_status()
             data = response.json()
@@ -5297,19 +5247,18 @@ async def quoter_list_templates(
     limit: int = Field(50, description="Max results (1-100)"),
     page: int = Field(1, description="Page number")
 ) -> str:
-    """List quote templates from Quoter."""
+    """List quote templates from Quoter (ScalePad)."""
     if not quoter_config.is_configured:
-        return "Error: Quoter not configured."
-    
+        return "Error: Quoter not configured. Set QUOTER_API_KEY."
+
     try:
-        token = await quoter_config.get_access_token()
         params = {"limit": min(max(1, limit), 100), "page": page}
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{quoter_config.base_url}/quote_templates",
                 params=params,
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                headers=quoter_config.get_headers()
             )
             response.raise_for_status()
             data = response.json()
@@ -5336,22 +5285,20 @@ async def quoter_create_quote(
     name: Optional[str] = Field(None, description="Quote name/title"),
     template_id: Optional[str] = Field(None, description="Quote template ID to use")
 ) -> str:
-    """Create a new draft quote in Quoter."""
+    """Create a new draft quote in Quoter (ScalePad)."""
     if not quoter_config.is_configured:
-        return "Error: Quoter not configured."
-    
+        return "Error: Quoter not configured. Set QUOTER_API_KEY."
+
     try:
-        token = await quoter_config.get_access_token()
-        
         payload = {"contact_id": contact_id}
         if name: payload["name"] = name
         if template_id: payload["quote_template_id"] = template_id
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{quoter_config.base_url}/quotes",
                 json=payload,
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                headers=quoter_config.get_headers()
             )
             response.raise_for_status()
             q = response.json()
@@ -5369,21 +5316,20 @@ async def quoter_list_manufacturers(
     limit: int = Field(50, description="Max results (1-100)"),
     page: int = Field(1, description="Page number")
 ) -> str:
-    """List manufacturers from Quoter."""
+    """List manufacturers from Quoter (ScalePad)."""
     if not quoter_config.is_configured:
-        return "Error: Quoter not configured."
-    
+        return "Error: Quoter not configured. Set QUOTER_API_KEY."
+
     try:
-        token = await quoter_config.get_access_token()
         params = {"limit": min(max(1, limit), 100), "page": page}
         if search:
             params["name[cont]"] = search
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{quoter_config.base_url}/manufacturers",
                 params=params,
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                headers=quoter_config.get_headers()
             )
             response.raise_for_status()
             data = response.json()
@@ -5409,19 +5355,18 @@ async def quoter_list_suppliers(
     limit: int = Field(50, description="Max results (1-100)"),
     page: int = Field(1, description="Page number")
 ) -> str:
-    """List suppliers from Quoter."""
+    """List suppliers from Quoter (ScalePad)."""
     if not quoter_config.is_configured:
-        return "Error: Quoter not configured."
-    
+        return "Error: Quoter not configured. Set QUOTER_API_KEY."
+
     try:
-        token = await quoter_config.get_access_token()
         params = {"limit": min(max(1, limit), 100), "page": page}
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{quoter_config.base_url}/suppliers",
                 params=params,
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                headers=quoter_config.get_headers()
             )
             response.raise_for_status()
             data = response.json()
@@ -10229,13 +10174,9 @@ async def server_status() -> str:
         lines.append("⚠️ **Front:** Not configured")
     
     if quoter_config.is_configured:
-        try:
-            await quoter_config.get_access_token()
-            lines.append("✅ **Quoter:** Connected")
-        except Exception as e:
-            lines.append(f"❌ **Quoter:** Auth failed - {str(e)[:50]}")
+        lines.append("✅ **Quoter (ScalePad):** Configured")
     else:
-        lines.append("⚠️ **Quoter:** Not configured (set QUOTER_API_KEY)")
+        lines.append("⚠️ **Quoter (ScalePad):** Not configured (set QUOTER_API_KEY)")
 
     if pax8_config.is_configured:
         try:
@@ -11104,8 +11045,8 @@ if __name__ == "__main__":
             "name": "Quoter",
             "config": quoter_config,
             "category": "Quoting",
-            "check_type": "oauth",
-            "env_vars": []
+            "check_type": "api_key",
+            "env_vars": ["QUOTER_API_KEY"]
         },
         {
             "name": "Pax8",
@@ -11219,7 +11160,7 @@ if __name__ == "__main__":
             result["endpoint"] = getattr(config, 'base_url', None)
             result["api_version"] = "1.0"
         elif name == "Quoter":
-            result["endpoint"] = "https://app.quoter.com"
+            result["endpoint"] = "https://api.scalepad.com/quoter"
             result["api_version"] = "v1"
         elif name == "Pax8":
             result["endpoint"] = "https://api.pax8.com"
