@@ -9,7 +9,7 @@ import logging
 import json
 import re
 from datetime import datetime, timedelta, date
-from typing import Optional
+from typing import Optional, Dict, Any
 import httpx
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
