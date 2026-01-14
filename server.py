@@ -7,6 +7,7 @@ import os
 import asyncio
 import logging
 import json
+import re
 from datetime import datetime, timedelta, date
 from typing import Optional
 import httpx
@@ -10107,6 +10108,79 @@ async def salesforce_check_job(
 # Server Status
 # ============================================================================
 
+async def get_pacs_sync_status() -> dict:
+    """Get PACS to BigQuery sync status."""
+    try:
+        from google.cloud import bigquery
+
+        # Use existing BigQuery config or create client for vision-radiology project
+        if bigquery_config.credentials_json:
+            from google.oauth2 import service_account
+            credentials_info = json.loads(bigquery_config.credentials_json)
+            credentials = service_account.Credentials.from_service_account_info(credentials_info)
+            client = bigquery.Client(project='vision-radiology', credentials=credentials)
+        else:
+            client = bigquery.Client(project='vision-radiology')
+
+        # Get total studies and last sync from BigQuery
+        query = """
+            SELECT
+                COUNT(*) as total_studies,
+                MAX(sync_timestamp) as last_sync,
+                COUNTIF(DATE(PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%E*S', sync_timestamp)) = CURRENT_DATE()) as today_studies
+            FROM `vision-radiology.pacs_data.DICOM_Studies`
+        """
+        result = list(client.query(query).result())[0]
+
+        total_studies = result.total_studies
+        last_sync = result.last_sync
+        today_studies = result.today_studies
+
+        # Calculate next sync (every 5 minutes)
+        if last_sync:
+            last_sync_dt = datetime.fromisoformat(str(last_sync).replace('+00:00', ''))
+            next_sync = last_sync_dt + timedelta(minutes=5)
+            next_sync_str = next_sync.strftime('%Y-%m-%d %H:%M:%S')
+            last_sync_str = last_sync_dt.strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            next_sync_str = "Unknown"
+            last_sync_str = "Never"
+
+        # Get last sync stats from log file via SSH
+        last_sync_new = 0
+        last_sync_total = 0
+        try:
+            if visionrad_config.is_configured:
+                import asyncssh
+                async with await _get_visionrad_ssh_connection() as conn:
+                    log_result = await conn.run("tail -1 /home/chris/dicom_sync/sync_5min.log 2>/dev/null", check=False)
+                    if log_result.exit_status == 0 and log_result.stdout and 'total' in log_result.stdout:
+                        # Parse: "2026-01-14T04:06:03.074417 - 1000 total, 5 new (6.9s)"
+                        match = re.search(r'(\d+) total, (\d+) new', log_result.stdout)
+                        if match:
+                            last_sync_total = int(match.group(1))
+                            last_sync_new = int(match.group(2))
+        except Exception:
+            pass
+
+        return {
+            "status": "ok",
+            "total_studies": total_studies,
+            "today_studies": today_studies,
+            "last_sync": last_sync_str,
+            "last_sync_new": last_sync_new,
+            "last_sync_found": last_sync_total,
+            "next_sync": next_sync_str,
+            "sync_interval": "5 minutes"
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+
 @mcp.tool(annotations={"readOnlyHint": True})
 async def server_status() -> str:
     """Check MCP server status and integrations."""
@@ -10256,6 +10330,18 @@ async def server_status() -> str:
         if not os.getenv("VISIONRAD_PASSWORD") and not os.getenv("VISIONRAD_PRIVATE_KEY"):
             missing.append("PASSWORD or PRIVATE_KEY")
         lines.append(f"⚠️ **Vision Radiology Server:** Missing: {', '.join(missing)}")
+
+    # PACS Sync status (BigQuery + log file)
+    try:
+        pacs_status = await get_pacs_sync_status()
+        if pacs_status["status"] == "ok":
+            lines.append(f'✅ **PACS Sync:** {pacs_status["total_studies"]:,} studies ({pacs_status["today_studies"]:,} today)')
+            lines.append(f'   Last: {pacs_status["last_sync"]} ({pacs_status["last_sync_new"]} new of {pacs_status["last_sync_found"]} found)')
+            lines.append(f'   Next: {pacs_status["next_sync"]}')
+        else:
+            lines.append(f'❌ **PACS Sync:** {pacs_status.get("error", "Unknown error")}')
+    except Exception as e:
+        lines.append(f'❌ **PACS Sync:** Error - {str(e)[:50]}')
 
     # CIPP status
     if cipp_config.is_configured:
