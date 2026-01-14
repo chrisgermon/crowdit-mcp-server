@@ -10561,6 +10561,7 @@ if __name__ == "__main__":
         """
         Get Karisma Live sync status from Vision Radiology server.
         Reads sync_state_all.json to check if hourly incremental sync is running.
+        Also checks for running sync processes and reads progress if available.
         Returns dict with sync info or None if not configured/accessible.
         """
         if not visionrad_config.is_configured:
@@ -10590,6 +10591,26 @@ if __name__ == "__main__":
                 )
                 cron_configured = int(cron_result.stdout.strip()) > 0 if cron_result.exit_status == 0 else False
 
+                # Check if sync is currently running (check for python process running sync script)
+                ps_result = await conn.run(
+                    "ps aux | grep -E 'karisma.*sync|sync.*karisma' | grep -v grep | head -1",
+                    check=False
+                )
+                is_running = bool(ps_result.stdout.strip()) if ps_result.exit_status == 0 else False
+
+                # Try to read progress file if sync is running
+                progress_info = None
+                if is_running:
+                    progress_result = await conn.run(
+                        "cat /home/chris/karisma-live-sync/sync_progress.json 2>/dev/null",
+                        check=False
+                    )
+                    if progress_result.exit_status == 0 and progress_result.stdout.strip():
+                        try:
+                            progress_info = json.loads(progress_result.stdout)
+                        except json.JSONDecodeError:
+                            pass
+
                 # Parse last transaction key and calculate data freshness
                 last_txn_key = sync_state.get("last_transaction_key", 0)
 
@@ -10615,9 +10636,12 @@ if __name__ == "__main__":
                 if latest_sync:
                     time_diff = now - latest_sync
                     hours_ago = time_diff.total_seconds() / 3600
-                    
+
                     # Determine health status
-                    if hours_ago < 2:
+                    if is_running:
+                        health = "running"
+                        health_msg = "Sync in progress"
+                    elif hours_ago < 2:
                         health = "healthy"
                         health_msg = "Sync running normally"
                     elif hours_ago < 6:
@@ -10627,11 +10651,15 @@ if __name__ == "__main__":
                         health = "error"
                         health_msg = f"Sync may be stalled ({hours_ago:.1f}h since last sync)"
                 else:
-                    health = "error"
-                    health_msg = "No sync timestamps found"
+                    if is_running:
+                        health = "running"
+                        health_msg = "Sync in progress"
+                    else:
+                        health = "error"
+                        health_msg = "No sync timestamps found"
                     hours_ago = None
 
-                return {
+                result_dict = {
                     "last_transaction_key": last_txn_key,
                     "last_sync": latest_sync,
                     "table_count": table_count,
@@ -10639,8 +10667,23 @@ if __name__ == "__main__":
                     "health": health,
                     "health_msg": health_msg,
                     "hours_ago": hours_ago,
+                    "is_running": is_running,
                     "error": None
                 }
+
+                # Add progress info if available
+                if progress_info:
+                    result_dict["progress"] = {
+                        "current_table": progress_info.get("current_table"),
+                        "tables_completed": progress_info.get("tables_completed", 0),
+                        "total_tables": progress_info.get("total_tables", table_count),
+                        "rows_processed": progress_info.get("rows_processed", 0),
+                        "total_rows": progress_info.get("total_rows"),
+                        "started_at": progress_info.get("started_at"),
+                        "percent_complete": progress_info.get("percent_complete"),
+                    }
+
+                return result_dict
 
         except Exception as e:
             logger.error(f"Karisma sync status error: {e}")
@@ -11455,6 +11498,8 @@ if __name__ == "__main__":
             health = karisma_sync_status.get("health", "error")
             health_msg = karisma_sync_status.get("health_msg", "Unknown")
             hours_ago = karisma_sync_status.get("hours_ago")
+            is_running = karisma_sync_status.get("is_running", False)
+            progress = karisma_sync_status.get("progress")
 
             # Format last sync time
             if last_sync:
@@ -11473,7 +11518,10 @@ if __name__ == "__main__":
                 sync_display = '<span class="text-muted">Never</span>'
 
             # Health badge styling
-            if health == "healthy":
+            if health == "running":
+                health_icon = "🔄"
+                health_class = "badge-running"
+            elif health == "healthy":
                 health_icon = "✅"
                 health_class = "badge-ok"
             elif health == "warning":
@@ -11487,9 +11535,73 @@ if __name__ == "__main__":
             cron_icon = "✅" if cron_configured else "❌"
             cron_text = "Configured" if cron_configured else "Not configured"
 
+            # Build progress section HTML if sync is running
+            progress_html = ""
+            if is_running:
+                if progress:
+                    current_table = progress.get("current_table", "Unknown")
+                    tables_completed = progress.get("tables_completed", 0)
+                    total_tables = progress.get("total_tables", table_count)
+                    rows_processed = progress.get("rows_processed", 0)
+                    total_rows = progress.get("total_rows")
+                    percent = progress.get("percent_complete")
+
+                    # Calculate percent if not provided
+                    if percent is None and total_tables > 0:
+                        percent = int((tables_completed / total_tables) * 100)
+                    elif percent is None:
+                        percent = 0
+
+                    # Format rows
+                    rows_display = f"{rows_processed:,}"
+                    if total_rows:
+                        rows_display += f" / {total_rows:,}"
+
+                    progress_html = f"""
+            <div class="sync-progress-section" style="background: linear-gradient(135deg, #1a1f35 0%, #0d1117 100%); border: 1px solid #3b82f6; border-radius: 8px; padding: 16px; margin-bottom: 16px;">
+                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                    <span class="sync-spinner"></span>
+                    <span style="color: #3b82f6; font-weight: 600;">Sync In Progress</span>
+                </div>
+                <div class="sync-progress-bar-container" style="background: #1e293b; border-radius: 4px; height: 24px; overflow: hidden; margin-bottom: 12px; position: relative;">
+                    <div class="sync-progress-bar" style="background: linear-gradient(90deg, #3b82f6, #60a5fa); height: 100%; width: {percent}%; transition: width 0.5s ease; position: relative;">
+                        <div class="sync-progress-bar-shine"></div>
+                    </div>
+                    <span style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-size: 12px; font-weight: 600; text-shadow: 0 1px 2px rgba(0,0,0,0.5);">{percent}%</span>
+                </div>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; font-size: 13px;">
+                    <div style="background: rgba(59, 130, 246, 0.1); padding: 8px 12px; border-radius: 4px;">
+                        <div style="color: #94a3b8; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">Current Table</div>
+                        <div style="color: #f1f5f9; font-weight: 500; margin-top: 2px;">{current_table}</div>
+                    </div>
+                    <div style="background: rgba(59, 130, 246, 0.1); padding: 8px 12px; border-radius: 4px;">
+                        <div style="color: #94a3b8; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">Tables Progress</div>
+                        <div style="color: #f1f5f9; font-weight: 500; margin-top: 2px;">{tables_completed} / {total_tables}</div>
+                    </div>
+                    <div style="background: rgba(59, 130, 246, 0.1); padding: 8px 12px; border-radius: 4px;">
+                        <div style="color: #94a3b8; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">Rows Processed</div>
+                        <div style="color: #f1f5f9; font-weight: 500; margin-top: 2px;">{rows_display}</div>
+                    </div>
+                </div>
+            </div>"""
+                else:
+                    # Sync is running but no progress file - show basic indicator
+                    progress_html = """
+            <div class="sync-progress-section" style="background: linear-gradient(135deg, #1a1f35 0%, #0d1117 100%); border: 1px solid #3b82f6; border-radius: 8px; padding: 16px; margin-bottom: 16px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span class="sync-spinner"></span>
+                    <span style="color: #3b82f6; font-weight: 600;">Sync In Progress</span>
+                    <span style="color: #94a3b8; font-size: 13px; margin-left: 8px;">Detailed progress not available</span>
+                </div>
+                <div class="sync-progress-bar-container" style="background: #1e293b; border-radius: 4px; height: 8px; overflow: hidden; margin-top: 12px;">
+                    <div class="sync-progress-bar-indeterminate"></div>
+                </div>
+            </div>"""
+
             karisma_sync_html = f"""
         <div class="services-card bq-sync-card">
             <h2>🔄 Karisma Live Sync <span style="font-size: 0.8rem; color: #888; font-weight: normal;">(SQL Server → BigQuery)</span></h2>
+            {progress_html}
             <div class="bq-summary">
                 <div class="bq-stat">
                     <span class="bq-stat-value">{health_icon}</span>
@@ -11658,12 +11770,17 @@ if __name__ == "__main__":
             <p class="error-message">Unable to fetch build status: {error_msg}</p>
         </div>"""
 
+        # Determine if any sync is running to adjust refresh interval
+        sync_is_running = karisma_sync_status and karisma_sync_status.get("is_running", False)
+        refresh_interval = 10 if sync_is_running else 60
+        refresh_message = "Auto-refreshes every 10 seconds (sync in progress)" if sync_is_running else "Auto-refreshes every 60 seconds"
+
         html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="refresh" content="60">
+    <meta http-equiv="refresh" content="{refresh_interval}">
     <title>Crowd IT MCP Server - Status</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
@@ -11772,6 +11889,44 @@ if __name__ == "__main__":
         .badge-ok {{ background: rgba(39, 174, 96, 0.2); color: #27ae60; }}
         .badge-warning {{ background: rgba(241, 196, 15, 0.2); color: #f1c40f; }}
         .badge-error {{ background: rgba(231, 76, 60, 0.2); color: #e74c3c; }}
+        .badge-running {{ background: rgba(59, 130, 246, 0.2); color: #3b82f6; }}
+
+        /* Sync progress animations */
+        .sync-spinner {{
+            width: 16px;
+            height: 16px;
+            border: 2px solid #3b82f6;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }}
+        @keyframes spin {{
+            to {{ transform: rotate(360deg); }}
+        }}
+        .sync-progress-bar-shine {{
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+            animation: shine 2s ease-in-out infinite;
+        }}
+        @keyframes shine {{
+            0% {{ transform: translateX(-100%); }}
+            100% {{ transform: translateX(100%); }}
+        }}
+        .sync-progress-bar-indeterminate {{
+            height: 100%;
+            width: 30%;
+            background: linear-gradient(90deg, #3b82f6, #60a5fa);
+            border-radius: 4px;
+            animation: indeterminate 1.5s ease-in-out infinite;
+        }}
+        @keyframes indeterminate {{
+            0% {{ transform: translateX(-100%); }}
+            100% {{ transform: translateX(400%); }}
+        }}
         .message {{
             color: #aaa;
             font-size: 0.9rem;
@@ -12116,7 +12271,7 @@ if __name__ == "__main__":
 
         <footer>
             <p>Last checked: {check_time}</p>
-            <p class="refresh-info">Auto-refreshes every 60 seconds</p>
+            <p class="refresh-info">{refresh_message}</p>
             <p style="margin-top: 10px;">MCP Endpoint: <code>{CLOUD_RUN_URL}/mcp</code></p>
         </footer>
     </div>
