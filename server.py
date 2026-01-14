@@ -1,6 +1,6 @@
 """
 Crowd IT Unified MCP Server
-Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), and Salesforce integration.
+Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, and Office 365 (Email, OneDrive, Calendar) integration.
 """
 
 import os
@@ -22,7 +22,7 @@ CLOUD_RUN_URL = os.getenv("CLOUD_RUN_URL", "https://crowdit-mcp-server-lypf4vkh4
 
 mcp = FastMCP(
     name="crowdit-mcp-server",
-    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), and Salesforce integration for MSP operations.",
+    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, and Office 365 (Email, OneDrive, Calendar) integration for MSP operations.",
     stateless_http=True  # Required for Cloud Run - enables stateless sessions
 )
 
@@ -10105,6 +10105,1323 @@ async def salesforce_check_job(
 
 
 # ============================================================================
+# Office 365 Integration (Microsoft Graph API - Email, OneDrive, Calendar)
+# ============================================================================
+
+class Office365Config:
+    """Office 365 configuration for Microsoft Graph API access (Email, OneDrive, Calendar)."""
+
+    def __init__(self):
+        self.client_id = os.getenv("OFFICE365_CLIENT_ID", "")
+        self.client_secret = os.getenv("OFFICE365_CLIENT_SECRET", "")
+        self.tenant_id = os.getenv("OFFICE365_TENANT_ID", "")
+        self._refresh_token: Optional[str] = None  # Loaded on-demand from Secret Manager
+        self._access_token: Optional[str] = None
+        self._token_expiry: Optional[datetime] = None
+
+    def _get_refresh_token(self) -> str:
+        """Get refresh token from Secret Manager (with env var fallback)."""
+        if self._refresh_token:
+            return self._refresh_token
+        # Try Secret Manager first for the latest token
+        token = get_secret_sync("OFFICE365_REFRESH_TOKEN")
+        if token:
+            self._refresh_token = token
+            logger.info("Loaded Office365 refresh token from Secret Manager")
+            return token
+        # Fallback to environment variable
+        token = os.getenv("OFFICE365_REFRESH_TOKEN", "")
+        if token:
+            self._refresh_token = token
+            logger.info("Loaded Office365 refresh token from environment variable")
+        return token
+
+    @property
+    def is_configured(self) -> bool:
+        return all([self.client_id, self.client_secret, self.tenant_id, self._get_refresh_token()])
+
+    async def get_access_token(self) -> str:
+        """Get valid access token, refreshing if needed."""
+        if self._access_token and self._token_expiry and datetime.now() < self._token_expiry:
+            return self._access_token
+
+        current_refresh_token = self._get_refresh_token()
+        if not current_refresh_token:
+            raise Exception("No Office365 refresh token available. Run office365_auth_start to connect.")
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"https://login.microsoftonline.com/{self.tenant_id}/oauth2/v2.0/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                    "refresh_token": current_refresh_token,
+                    "scope": "https://graph.microsoft.com/.default offline_access"
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"}
+            )
+            if response.status_code >= 400:
+                if response.status_code == 401:
+                    raise Exception("Office365 authentication expired or invalid. Run office365_auth_start to reconnect.")
+                elif response.status_code == 400:
+                    raise Exception("Office365 token refresh failed. The refresh token may be invalid or expired. Run office365_auth_start to reconnect.")
+                else:
+                    raise Exception(f"Office365 token refresh failed: {response.status_code} - {response.text}")
+            data = response.json()
+
+            self._access_token = data["access_token"]
+            if "refresh_token" in data:
+                new_refresh = data["refresh_token"]
+                if new_refresh != current_refresh_token:
+                    self._refresh_token = new_refresh
+                    update_secret_sync("OFFICE365_REFRESH_TOKEN", new_refresh)
+                    logger.info("Office365 refresh token rotated and saved to Secret Manager")
+
+            expires_in = data.get("expires_in", 3600)
+            self._token_expiry = datetime.now() + timedelta(seconds=expires_in - 60)
+            return self._access_token
+
+office365_config = Office365Config()
+
+
+def _check_office365_response(response: httpx.Response) -> Optional[str]:
+    """
+    Check Microsoft Graph API response for errors and return a user-friendly error message.
+    Returns None if the response is successful, otherwise returns an error string.
+    """
+    if response.status_code >= 400:
+        try:
+            error_data = response.json()
+            if "error" in error_data:
+                error_obj = error_data["error"]
+                code = error_obj.get("code", "Unknown")
+                message = error_obj.get("message", "Unknown error")
+                return f"Office365 API Error: {response.status_code} - {code}: {message}"
+        except Exception:
+            pass
+
+        if response.status_code == 401:
+            return "Office365 API Error: 401 - Authentication expired. Run office365_auth_start to reconnect."
+        elif response.status_code == 403:
+            return "Office365 API Error: 403 - Access forbidden. Check your app permissions."
+        elif response.status_code == 404:
+            return "Office365 API Error: 404 - Resource not found."
+        elif response.status_code == 429:
+            return "Office365 API Error: 429 - Rate limit exceeded. Please wait before retrying."
+
+        return f"Office365 API Error: {response.status_code} - {response.text}"
+    return None
+
+
+# ---- OAuth Flow Tools ----
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def office365_auth_start() -> str:
+    """Get authorization URL to connect Office 365 (Email, OneDrive, Calendar). Use this if Office 365 is not connected."""
+    client_id = os.getenv("OFFICE365_CLIENT_ID", "")
+    tenant_id = os.getenv("OFFICE365_TENANT_ID", "")
+
+    if not client_id:
+        return "Error: OFFICE365_CLIENT_ID not configured in secrets."
+    if not tenant_id:
+        return "Error: OFFICE365_TENANT_ID not configured in secrets."
+
+    redirect_uri = f"{CLOUD_RUN_URL}/office365-callback"
+    # Scopes for Email, OneDrive, and Calendar
+    scopes = "offline_access Mail.Read Mail.Send Mail.ReadWrite Files.Read Files.ReadWrite Calendars.Read Calendars.ReadWrite User.Read"
+
+    auth_url = (
+        f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize"
+        f"?client_id={client_id}"
+        f"&response_type=code"
+        f"&redirect_uri={redirect_uri}"
+        f"&scope={scopes}"
+        f"&response_mode=query"
+        f"&state=office365"
+    )
+
+    return f"""## Office 365 Authorization Required
+
+**Click this link to authorize:**
+{auth_url}
+
+After authorizing, you'll be redirected back automatically and Office 365 will be connected.
+
+**Redirect URI for Azure AD App:** `{redirect_uri}`
+
+Make sure your Azure AD app has the following **Delegated** API permissions:
+- Microsoft Graph > Mail.Read (Read user mail)
+- Microsoft Graph > Mail.Send (Send mail as user)
+- Microsoft Graph > Mail.ReadWrite (Read and write user mail)
+- Microsoft Graph > Files.Read (Read user files)
+- Microsoft Graph > Files.ReadWrite (Have full access to user files)
+- Microsoft Graph > Calendars.Read (Read user calendars)
+- Microsoft Graph > Calendars.ReadWrite (Have full access to user calendars)
+- Microsoft Graph > User.Read (Sign in and read user profile)
+- Microsoft Graph > offline_access (Maintain access to data)"""
+
+
+@mcp.tool(annotations={"readOnlyHint": False})
+async def office365_auth_complete(
+    auth_code: str = Field(..., description="Authorization code from callback URL")
+) -> str:
+    """Complete Office 365 authorization with the code from callback URL."""
+    client_id = os.getenv("OFFICE365_CLIENT_ID", "")
+    client_secret = os.getenv("OFFICE365_CLIENT_SECRET", "")
+    tenant_id = os.getenv("OFFICE365_TENANT_ID", "")
+
+    if not all([client_id, client_secret, tenant_id]):
+        return "Error: Office 365 credentials not configured."
+
+    redirect_uri = f"{CLOUD_RUN_URL}/office365-callback"
+    scopes = "offline_access Mail.Read Mail.Send Mail.ReadWrite Files.Read Files.ReadWrite Calendars.Read Calendars.ReadWrite User.Read"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "code": auth_code,
+                    "redirect_uri": redirect_uri,
+                    "scope": scopes
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"}
+            )
+            response.raise_for_status()
+            tokens = response.json()
+
+            access_token = tokens["access_token"]
+            refresh_token = tokens.get("refresh_token", "")
+
+            # Get user info
+            user_response = await client.get(
+                "https://graph.microsoft.com/v1.0/me",
+                headers={"Authorization": f"Bearer {access_token}"}
+            )
+            user_info = user_response.json() if user_response.status_code == 200 else {}
+            user_name = user_info.get("displayName", "Unknown")
+            user_email = user_info.get("mail", user_info.get("userPrincipalName", "Unknown"))
+
+        office365_config._access_token = access_token
+        office365_config._refresh_token = refresh_token
+        office365_config._token_expiry = datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600) - 60)
+
+        saved_refresh = update_secret_sync("OFFICE365_REFRESH_TOKEN", refresh_token) if refresh_token else False
+
+        if saved_refresh:
+            return f"""✅ Office 365 connected successfully!
+
+**User:** {user_name}
+**Email:** {user_email}
+**Tenant ID:** {tenant_id}
+
+Refresh token has been automatically saved to Secret Manager.
+
+You now have access to:
+- Email (Outlook): List, read, send, and search emails
+- OneDrive: List, read, upload, and search files
+- Calendar: List, create, and update events"""
+        else:
+            return f"""✅ Office 365 connected for this session!
+
+**User:** {user_name}
+**Email:** {user_email}
+**Tenant ID:** {tenant_id}
+
+⚠️ To persist, run:
+```bash
+echo -n "{refresh_token}" | gcloud secrets versions add OFFICE365_REFRESH_TOKEN --data-file=- --project=crowdmcp
+```"""
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: {e.response.text}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+# ---- Email (Outlook) Tools ----
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def office365_list_emails(
+    folder: str = Field("inbox", description="Folder: 'inbox', 'drafts', 'sentitems', 'deleteditems', or folder ID"),
+    unread_only: bool = Field(False, description="Only show unread emails"),
+    search: Optional[str] = Field(None, description="Search in subject/body"),
+    from_address: Optional[str] = Field(None, description="Filter by sender email"),
+    limit: int = Field(20, description="Max results (1-100)")
+) -> str:
+    """List emails from Office 365 Outlook mailbox."""
+    if not office365_config.is_configured:
+        return "Error: Office 365 not configured. Run office365_auth_start to connect."
+
+    try:
+        token = await office365_config.get_access_token()
+
+        # Build URL with folder
+        folder_map = {
+            "inbox": "inbox",
+            "drafts": "drafts",
+            "sentitems": "sentItems",
+            "sent": "sentItems",
+            "deleteditems": "deletedItems",
+            "deleted": "deletedItems",
+            "junk": "junkemail",
+            "archive": "archive"
+        }
+        folder_path = folder_map.get(folder.lower(), folder)
+
+        url = f"https://graph.microsoft.com/v1.0/me/mailFolders/{folder_path}/messages"
+
+        params = {
+            "$top": min(max(1, limit), 100),
+            "$orderby": "receivedDateTime desc",
+            "$select": "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview"
+        }
+
+        # Build filters
+        filters = []
+        if unread_only:
+            filters.append("isRead eq false")
+        if from_address:
+            filters.append(f"from/emailAddress/address eq '{from_address}'")
+
+        if filters:
+            params["$filter"] = " and ".join(filters)
+
+        if search:
+            params["$search"] = f'"{search}"'
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
+            error = _check_office365_response(response)
+            if error:
+                return error
+            emails = response.json().get("value", [])
+
+        if not emails:
+            return f"No emails found in {folder}."
+
+        results = []
+        for email in emails:
+            email_id = email.get("id", "")[:20]
+            subject = email.get("subject", "(No subject)")[:60]
+            from_info = email.get("from", {}).get("emailAddress", {})
+            from_name = from_info.get("name", "Unknown")
+            from_addr = from_info.get("address", "")
+            received = email.get("receivedDateTime", "")[:16].replace("T", " ")
+            is_read = "✓" if email.get("isRead", True) else "●"
+            has_attachments = "📎" if email.get("hasAttachments", False) else ""
+            preview = email.get("bodyPreview", "")[:80]
+
+            results.append(f"{is_read} **{subject}** {has_attachments}\n  From: {from_name} <{from_addr}>\n  Date: {received}\n  ID: `{email_id}...`\n  Preview: {preview}...")
+
+        return f"## Emails in {folder.title()}\n\nFound {len(results)} email(s):\n\n" + "\n\n".join(results)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def office365_get_email(
+    email_id: str = Field(..., description="Email ID"),
+    include_attachments: bool = Field(False, description="Include attachment list")
+) -> str:
+    """Get full email details from Office 365 Outlook."""
+    if not office365_config.is_configured:
+        return "Error: Office 365 not configured."
+
+    try:
+        token = await office365_config.get_access_token()
+
+        url = f"https://graph.microsoft.com/v1.0/me/messages/{email_id}"
+        params = {"$select": "id,subject,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,isRead,hasAttachments,body,importance"}
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
+            error = _check_office365_response(response)
+            if error:
+                return error
+            email = response.json()
+
+        subject = email.get("subject", "(No subject)")
+        from_info = email.get("from", {}).get("emailAddress", {})
+        from_str = f"{from_info.get('name', '')} <{from_info.get('address', '')}>"
+
+        to_list = [f"{r.get('emailAddress', {}).get('name', '')} <{r.get('emailAddress', {}).get('address', '')}>"
+                   for r in email.get("toRecipients", [])]
+        cc_list = [f"{r.get('emailAddress', {}).get('name', '')} <{r.get('emailAddress', {}).get('address', '')}>"
+                   for r in email.get("ccRecipients", [])]
+
+        received = email.get("receivedDateTime", "")[:19].replace("T", " ")
+        sent = email.get("sentDateTime", "")[:19].replace("T", " ")
+        importance = email.get("importance", "normal")
+        is_read = "Yes" if email.get("isRead", True) else "No"
+
+        body = email.get("body", {})
+        body_content = body.get("content", "")
+        # Strip HTML tags for cleaner output
+        if body.get("contentType", "").lower() == "html":
+            import re
+            body_content = re.sub(r'<style[^>]*>.*?</style>', '', body_content, flags=re.DOTALL | re.IGNORECASE)
+            body_content = re.sub(r'<[^>]+>', ' ', body_content)
+            body_content = re.sub(r'\s+', ' ', body_content).strip()
+
+        result = f"""# {subject}
+
+**From:** {from_str}
+**To:** {', '.join(to_list) if to_list else 'N/A'}
+**CC:** {', '.join(cc_list) if cc_list else 'N/A'}
+**Received:** {received}
+**Sent:** {sent}
+**Importance:** {importance}
+**Read:** {is_read}
+**Has Attachments:** {'Yes' if email.get('hasAttachments') else 'No'}
+
+## Body
+{body_content[:3000]}{'...' if len(body_content) > 3000 else ''}"""
+
+        # Get attachments if requested
+        if include_attachments and email.get("hasAttachments"):
+            async with httpx.AsyncClient() as client:
+                att_response = await client.get(
+                    f"https://graph.microsoft.com/v1.0/me/messages/{email_id}/attachments",
+                    headers={"Authorization": f"Bearer {token}"}
+                )
+                if att_response.status_code == 200:
+                    attachments = att_response.json().get("value", [])
+                    if attachments:
+                        result += "\n\n## Attachments\n"
+                        for att in attachments:
+                            att_name = att.get("name", "Unknown")
+                            att_size = att.get("size", 0) / 1024
+                            att_id = att.get("id", "")[:20]
+                            result += f"- **{att_name}** ({att_size:.1f} KB) - ID: `{att_id}...`\n"
+
+        return result
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": False})
+async def office365_send_email(
+    to: str = Field(..., description="Recipient email address(es), comma-separated"),
+    subject: str = Field(..., description="Email subject"),
+    body: str = Field(..., description="Email body (plain text or HTML)"),
+    cc: Optional[str] = Field(None, description="CC email address(es), comma-separated"),
+    is_html: bool = Field(False, description="Whether body is HTML"),
+    importance: str = Field("normal", description="Importance: 'low', 'normal', 'high'"),
+    save_to_sent: bool = Field(True, description="Save copy to Sent Items")
+) -> str:
+    """Send an email via Office 365 Outlook."""
+    if not office365_config.is_configured:
+        return "Error: Office 365 not configured."
+
+    try:
+        token = await office365_config.get_access_token()
+
+        # Parse recipients
+        to_recipients = [{"emailAddress": {"address": addr.strip()}} for addr in to.split(",")]
+        cc_recipients = [{"emailAddress": {"address": addr.strip()}} for addr in cc.split(",")] if cc else []
+
+        message = {
+            "subject": subject,
+            "body": {
+                "contentType": "HTML" if is_html else "Text",
+                "content": body
+            },
+            "toRecipients": to_recipients,
+            "importance": importance
+        }
+
+        if cc_recipients:
+            message["ccRecipients"] = cc_recipients
+
+        url = "https://graph.microsoft.com/v1.0/me/sendMail"
+        payload = {
+            "message": message,
+            "saveToSentItems": save_to_sent
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                url,
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                }
+            )
+            error = _check_office365_response(response)
+            if error:
+                return error
+
+        return f"✅ Email sent successfully!\n\n**To:** {to}\n**Subject:** {subject}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def office365_search_emails(
+    query: str = Field(..., description="Search query (searches subject, body, sender)"),
+    folder: str = Field("all", description="Folder to search: 'all', 'inbox', 'sentitems', etc."),
+    limit: int = Field(25, description="Max results")
+) -> str:
+    """Search emails across Office 365 Outlook mailbox."""
+    if not office365_config.is_configured:
+        return "Error: Office 365 not configured."
+
+    try:
+        token = await office365_config.get_access_token()
+
+        if folder.lower() == "all":
+            url = "https://graph.microsoft.com/v1.0/me/messages"
+        else:
+            folder_map = {"inbox": "inbox", "sentitems": "sentItems", "sent": "sentItems", "drafts": "drafts"}
+            folder_path = folder_map.get(folder.lower(), folder)
+            url = f"https://graph.microsoft.com/v1.0/me/mailFolders/{folder_path}/messages"
+
+        params = {
+            "$search": f'"{query}"',
+            "$top": min(max(1, limit), 100),
+            "$orderby": "receivedDateTime desc",
+            "$select": "id,subject,from,receivedDateTime,isRead,bodyPreview,parentFolderId"
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
+            error = _check_office365_response(response)
+            if error:
+                return error
+            emails = response.json().get("value", [])
+
+        if not emails:
+            return f"No emails found matching '{query}'."
+
+        results = []
+        for email in emails:
+            subject = email.get("subject", "(No subject)")[:50]
+            from_info = email.get("from", {}).get("emailAddress", {})
+            from_name = from_info.get("name", from_info.get("address", "Unknown"))
+            received = email.get("receivedDateTime", "")[:10]
+            preview = email.get("bodyPreview", "")[:60]
+            is_read = "✓" if email.get("isRead", True) else "●"
+
+            results.append(f"{is_read} **{subject}**\n  From: {from_name} | Date: {received}\n  Preview: {preview}...")
+
+        return f"## Search Results for '{query}'\n\nFound {len(results)} email(s):\n\n" + "\n\n".join(results)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": False})
+async def office365_mark_email_read(
+    email_id: str = Field(..., description="Email ID"),
+    is_read: bool = Field(True, description="Mark as read (true) or unread (false)")
+) -> str:
+    """Mark an email as read or unread in Office 365 Outlook."""
+    if not office365_config.is_configured:
+        return "Error: Office 365 not configured."
+
+    try:
+        token = await office365_config.get_access_token()
+
+        url = f"https://graph.microsoft.com/v1.0/me/messages/{email_id}"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(
+                url,
+                json={"isRead": is_read},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                }
+            )
+            error = _check_office365_response(response)
+            if error:
+                return error
+
+        status = "read" if is_read else "unread"
+        return f"✅ Email marked as {status}."
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+# ---- OneDrive Tools ----
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def office365_list_files(
+    folder_path: str = Field("", description="Folder path (empty for root, e.g., 'Documents/Projects')"),
+    limit: int = Field(50, description="Max results")
+) -> str:
+    """List files and folders in OneDrive."""
+    if not office365_config.is_configured:
+        return "Error: Office 365 not configured. Run office365_auth_start to connect."
+
+    try:
+        token = await office365_config.get_access_token()
+
+        if folder_path:
+            url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{folder_path}:/children"
+        else:
+            url = "https://graph.microsoft.com/v1.0/me/drive/root/children"
+
+        params = {
+            "$top": min(max(1, limit), 200),
+            "$orderby": "name asc"
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
+            error = _check_office365_response(response)
+            if error:
+                return error
+            items = response.json().get("value", [])
+
+        if not items:
+            return f"No items found in {'/' + folder_path if folder_path else 'root'}."
+
+        results = []
+        for item in items:
+            name = item.get("name", "Unknown")
+            item_id = item.get("id", "")[:20]
+            is_folder = "folder" in item
+            size = item.get("size", 0)
+            modified = item.get("lastModifiedDateTime", "")[:10]
+
+            if is_folder:
+                child_count = item.get("folder", {}).get("childCount", 0)
+                results.append(f"📁 **{name}/** ({child_count} items)\n   Modified: {modified} | ID: `{item_id}...`")
+            else:
+                if size >= 1024 * 1024:
+                    size_str = f"{size / (1024*1024):.1f} MB"
+                else:
+                    size_str = f"{size / 1024:.1f} KB"
+                results.append(f"📄 **{name}** ({size_str})\n   Modified: {modified} | ID: `{item_id}...`")
+
+        path_display = '/' + folder_path if folder_path else 'root'
+        return f"## OneDrive: {path_display}\n\nFound {len(results)} item(s):\n\n" + "\n\n".join(results)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def office365_get_file_info(
+    file_path: str = Field(..., description="File path (e.g., 'Documents/report.docx') or item ID")
+) -> str:
+    """Get detailed information about a file in OneDrive."""
+    if not office365_config.is_configured:
+        return "Error: Office 365 not configured."
+
+    try:
+        token = await office365_config.get_access_token()
+
+        # Determine if it's a path or an ID
+        if "/" in file_path or "." in file_path:
+            url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{file_path}"
+        else:
+            url = f"https://graph.microsoft.com/v1.0/me/drive/items/{file_path}"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+            error = _check_office365_response(response)
+            if error:
+                return error
+            item = response.json()
+
+        name = item.get("name", "Unknown")
+        item_id = item.get("id", "N/A")
+        size = item.get("size", 0)
+        is_folder = "folder" in item
+        created = item.get("createdDateTime", "")[:19].replace("T", " ")
+        modified = item.get("lastModifiedDateTime", "")[:19].replace("T", " ")
+        web_url = item.get("webUrl", "N/A")
+
+        created_by = item.get("createdBy", {}).get("user", {}).get("displayName", "Unknown")
+        modified_by = item.get("lastModifiedBy", {}).get("user", {}).get("displayName", "Unknown")
+
+        parent_path = item.get("parentReference", {}).get("path", "").replace("/drive/root:", "")
+
+        if is_folder:
+            child_count = item.get("folder", {}).get("childCount", 0)
+            return f"""# 📁 {name}
+
+**Type:** Folder
+**Items:** {child_count}
+**Location:** {parent_path}/
+**ID:** `{item_id}`
+
+**Created:** {created} by {created_by}
+**Modified:** {modified} by {modified_by}
+
+**Web URL:** {web_url}"""
+        else:
+            if size >= 1024 * 1024:
+                size_str = f"{size / (1024*1024):.2f} MB"
+            else:
+                size_str = f"{size / 1024:.2f} KB"
+
+            mime_type = item.get("file", {}).get("mimeType", "Unknown")
+
+            return f"""# 📄 {name}
+
+**Type:** File
+**Size:** {size_str}
+**MIME Type:** {mime_type}
+**Location:** {parent_path}/
+**ID:** `{item_id}`
+
+**Created:** {created} by {created_by}
+**Modified:** {modified} by {modified_by}
+
+**Web URL:** {web_url}"""
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def office365_download_file_content(
+    file_path: str = Field(..., description="File path (e.g., 'Documents/notes.txt') or item ID"),
+    max_size_kb: int = Field(500, description="Maximum file size to download in KB")
+) -> str:
+    """Download and return the content of a text file from OneDrive (for text-based files only)."""
+    if not office365_config.is_configured:
+        return "Error: Office 365 not configured."
+
+    try:
+        token = await office365_config.get_access_token()
+
+        # Get file metadata first
+        if "/" in file_path or "." in file_path:
+            meta_url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{file_path}"
+        else:
+            meta_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{file_path}"
+
+        async with httpx.AsyncClient() as client:
+            meta_response = await client.get(meta_url, headers={"Authorization": f"Bearer {token}"})
+            error = _check_office365_response(meta_response)
+            if error:
+                return error
+            item = meta_response.json()
+
+        name = item.get("name", "Unknown")
+        size = item.get("size", 0)
+        mime_type = item.get("file", {}).get("mimeType", "")
+
+        # Check if it's a text-based file
+        text_types = ["text/", "application/json", "application/xml", "application/javascript"]
+        is_text = any(mime_type.startswith(t) for t in text_types)
+        text_extensions = [".txt", ".md", ".json", ".xml", ".csv", ".log", ".py", ".js", ".html", ".css", ".yaml", ".yml", ".sh"]
+        is_text_ext = any(name.lower().endswith(ext) for ext in text_extensions)
+
+        if not is_text and not is_text_ext:
+            return f"Error: Cannot display content of binary file '{name}' (type: {mime_type}). Use this tool only for text files."
+
+        # Check file size
+        max_size_bytes = max_size_kb * 1024
+        if size > max_size_bytes:
+            return f"Error: File '{name}' ({size/1024:.1f} KB) exceeds maximum size of {max_size_kb} KB."
+
+        # Get download URL
+        download_url = item.get("@microsoft.graph.downloadUrl")
+        if not download_url:
+            if "/" in file_path or "." in file_path:
+                content_url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{file_path}:/content"
+            else:
+                content_url = f"https://graph.microsoft.com/v1.0/me/drive/items/{file_path}/content"
+
+            async with httpx.AsyncClient(follow_redirects=True) as client:
+                content_response = await client.get(content_url, headers={"Authorization": f"Bearer {token}"})
+                if content_response.status_code >= 400:
+                    return f"Error downloading file: {content_response.status_code}"
+                content = content_response.text
+        else:
+            async with httpx.AsyncClient() as client:
+                content_response = await client.get(download_url)
+                content = content_response.text
+
+        return f"""# Content of {name}
+
+**Size:** {size/1024:.1f} KB
+**Type:** {mime_type}
+
+---
+
+```
+{content}
+```"""
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": False})
+async def office365_upload_file(
+    file_path: str = Field(..., description="Destination path in OneDrive (e.g., 'Documents/notes.txt')"),
+    content: str = Field(..., description="File content to upload"),
+    conflict_behavior: str = Field("rename", description="'rename' (create new), 'replace' (overwrite), 'fail' (error if exists)")
+) -> str:
+    """Upload a text file to OneDrive."""
+    if not office365_config.is_configured:
+        return "Error: Office 365 not configured."
+
+    try:
+        token = await office365_config.get_access_token()
+
+        url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{file_path}:/content"
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "text/plain"
+        }
+
+        # Add conflict behavior header
+        if conflict_behavior == "replace":
+            headers["@microsoft.graph.conflictBehavior"] = "replace"
+        elif conflict_behavior == "fail":
+            headers["@microsoft.graph.conflictBehavior"] = "fail"
+        else:
+            headers["@microsoft.graph.conflictBehavior"] = "rename"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.put(
+                url,
+                content=content.encode('utf-8'),
+                headers=headers
+            )
+            error = _check_office365_response(response)
+            if error:
+                return error
+            item = response.json()
+
+        name = item.get("name", "Unknown")
+        size = item.get("size", 0)
+        web_url = item.get("webUrl", "")
+
+        return f"""✅ File uploaded successfully!
+
+**Name:** {name}
+**Size:** {size/1024:.1f} KB
+**Path:** /{file_path}
+**Web URL:** {web_url}"""
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def office365_search_files(
+    query: str = Field(..., description="Search query (searches file names and content)"),
+    limit: int = Field(25, description="Max results")
+) -> str:
+    """Search for files in OneDrive."""
+    if not office365_config.is_configured:
+        return "Error: Office 365 not configured."
+
+    try:
+        token = await office365_config.get_access_token()
+
+        url = f"https://graph.microsoft.com/v1.0/me/drive/root/search(q='{query}')"
+        params = {"$top": min(max(1, limit), 100)}
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
+            error = _check_office365_response(response)
+            if error:
+                return error
+            items = response.json().get("value", [])
+
+        if not items:
+            return f"No files found matching '{query}'."
+
+        results = []
+        for item in items:
+            name = item.get("name", "Unknown")
+            is_folder = "folder" in item
+            size = item.get("size", 0)
+            modified = item.get("lastModifiedDateTime", "")[:10]
+            parent_path = item.get("parentReference", {}).get("path", "").replace("/drive/root:", "") or "/"
+
+            if is_folder:
+                results.append(f"📁 **{name}/**\n   Location: {parent_path}")
+            else:
+                size_str = f"{size/1024:.1f} KB" if size < 1024*1024 else f"{size/(1024*1024):.1f} MB"
+                results.append(f"📄 **{name}** ({size_str})\n   Location: {parent_path} | Modified: {modified}")
+
+        return f"## Search Results for '{query}'\n\nFound {len(results)} item(s):\n\n" + "\n\n".join(results)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": False})
+async def office365_create_folder(
+    folder_path: str = Field(..., description="Full path for new folder (e.g., 'Documents/NewFolder')"),
+) -> str:
+    """Create a new folder in OneDrive."""
+    if not office365_config.is_configured:
+        return "Error: Office 365 not configured."
+
+    try:
+        token = await office365_config.get_access_token()
+
+        # Split path into parent and folder name
+        parts = folder_path.rstrip("/").rsplit("/", 1)
+        if len(parts) == 2:
+            parent_path, folder_name = parts
+            url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{parent_path}:/children"
+        else:
+            folder_name = parts[0]
+            url = "https://graph.microsoft.com/v1.0/me/drive/root/children"
+
+        payload = {
+            "name": folder_name,
+            "folder": {},
+            "@microsoft.graph.conflictBehavior": "fail"
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                url,
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                }
+            )
+
+            if response.status_code == 409:
+                return f"Error: Folder '{folder_name}' already exists at this location."
+
+            error = _check_office365_response(response)
+            if error:
+                return error
+            item = response.json()
+
+        return f"""✅ Folder created successfully!
+
+**Name:** {item.get('name')}
+**Path:** /{folder_path}
+**ID:** `{item.get('id', 'N/A')}`"""
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+# ---- Calendar Tools ----
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def office365_list_events(
+    days_ahead: int = Field(7, description="Number of days ahead to show events"),
+    days_back: int = Field(0, description="Number of days back to show events"),
+    calendar_id: str = Field("", description="Calendar ID (empty for default calendar)"),
+    limit: int = Field(50, description="Max results")
+) -> str:
+    """List calendar events from Office 365."""
+    if not office365_config.is_configured:
+        return "Error: Office 365 not configured. Run office365_auth_start to connect."
+
+    try:
+        token = await office365_config.get_access_token()
+
+        # Calculate date range
+        start_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00Z")
+        end_date = (datetime.now() + timedelta(days=days_ahead)).strftime("%Y-%m-%dT23:59:59Z")
+
+        if calendar_id:
+            url = f"https://graph.microsoft.com/v1.0/me/calendars/{calendar_id}/calendarView"
+        else:
+            url = "https://graph.microsoft.com/v1.0/me/calendarView"
+
+        params = {
+            "startDateTime": start_date,
+            "endDateTime": end_date,
+            "$top": min(max(1, limit), 100),
+            "$orderby": "start/dateTime asc",
+            "$select": "id,subject,start,end,location,isAllDay,organizer,attendees,showAs"
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
+            error = _check_office365_response(response)
+            if error:
+                return error
+            events = response.json().get("value", [])
+
+        if not events:
+            return f"No events found for the next {days_ahead} days."
+
+        results = []
+        for event in events:
+            subject = event.get("subject", "(No subject)")
+            start = event.get("start", {})
+            end = event.get("end", {})
+
+            start_str = start.get("dateTime", "")[:16].replace("T", " ")
+            end_str = end.get("dateTime", "")[:16].replace("T", " ")
+
+            is_all_day = event.get("isAllDay", False)
+            location = event.get("location", {}).get("displayName", "")
+            show_as = event.get("showAs", "busy")
+
+            event_id = event.get("id", "")[:20]
+
+            time_str = "All day" if is_all_day else f"{start_str} - {end_str}"
+            location_str = f"\n   Location: {location}" if location else ""
+
+            results.append(f"📅 **{subject}**\n   {time_str} ({show_as}){location_str}\n   ID: `{event_id}...`")
+
+        range_str = f"past {days_back} days and " if days_back > 0 else ""
+        return f"## Calendar Events ({range_str}next {days_ahead} days)\n\nFound {len(results)} event(s):\n\n" + "\n\n".join(results)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def office365_get_event(
+    event_id: str = Field(..., description="Event ID")
+) -> str:
+    """Get full details of a calendar event."""
+    if not office365_config.is_configured:
+        return "Error: Office 365 not configured."
+
+    try:
+        token = await office365_config.get_access_token()
+
+        url = f"https://graph.microsoft.com/v1.0/me/events/{event_id}"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+            error = _check_office365_response(response)
+            if error:
+                return error
+            event = response.json()
+
+        subject = event.get("subject", "(No subject)")
+        start = event.get("start", {})
+        end = event.get("end", {})
+
+        start_str = start.get("dateTime", "")[:19].replace("T", " ")
+        end_str = end.get("dateTime", "")[:19].replace("T", " ")
+        timezone = start.get("timeZone", "UTC")
+
+        is_all_day = event.get("isAllDay", False)
+        location = event.get("location", {}).get("displayName", "N/A")
+
+        organizer = event.get("organizer", {}).get("emailAddress", {})
+        organizer_str = f"{organizer.get('name', '')} <{organizer.get('address', '')}>"
+
+        attendees = event.get("attendees", [])
+        attendee_list = []
+        for att in attendees:
+            att_email = att.get("emailAddress", {})
+            status = att.get("status", {}).get("response", "none")
+            attendee_list.append(f"- {att_email.get('name', '')} <{att_email.get('address', '')}> ({status})")
+
+        body = event.get("body", {})
+        body_content = body.get("content", "")
+        if body.get("contentType", "").lower() == "html":
+            import re
+            body_content = re.sub(r'<[^>]+>', ' ', body_content)
+            body_content = re.sub(r'\s+', ' ', body_content).strip()
+
+        recurrence = event.get("recurrence")
+        recurrence_str = "Yes (recurring)" if recurrence else "No"
+
+        show_as = event.get("showAs", "busy")
+        importance = event.get("importance", "normal")
+
+        return f"""# {subject}
+
+**When:** {start_str} - {end_str} ({timezone})
+**All Day:** {'Yes' if is_all_day else 'No'}
+**Location:** {location}
+**Show As:** {show_as}
+**Importance:** {importance}
+**Recurring:** {recurrence_str}
+
+**Organizer:** {organizer_str}
+
+## Attendees
+{chr(10).join(attendee_list) if attendee_list else 'No attendees'}
+
+## Description
+{body_content[:1500] if body_content else 'No description'}"""
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": False})
+async def office365_create_event(
+    subject: str = Field(..., description="Event subject/title"),
+    start_datetime: str = Field(..., description="Start date/time (YYYY-MM-DD HH:MM or YYYY-MM-DD for all-day)"),
+    end_datetime: str = Field(..., description="End date/time (YYYY-MM-DD HH:MM or YYYY-MM-DD for all-day)"),
+    location: Optional[str] = Field(None, description="Event location"),
+    body: Optional[str] = Field(None, description="Event description"),
+    attendees: Optional[str] = Field(None, description="Comma-separated email addresses of attendees"),
+    is_all_day: bool = Field(False, description="Is this an all-day event"),
+    reminder_minutes: int = Field(15, description="Reminder before event in minutes"),
+    timezone: str = Field("Australia/Sydney", description="Timezone for the event")
+) -> str:
+    """Create a new calendar event in Office 365."""
+    if not office365_config.is_configured:
+        return "Error: Office 365 not configured."
+
+    try:
+        token = await office365_config.get_access_token()
+
+        # Parse dates
+        if is_all_day:
+            start_dt = start_datetime[:10]
+            end_dt = end_datetime[:10]
+            event_data = {
+                "subject": subject,
+                "isAllDay": True,
+                "start": {
+                    "dateTime": f"{start_dt}T00:00:00",
+                    "timeZone": timezone
+                },
+                "end": {
+                    "dateTime": f"{end_dt}T00:00:00",
+                    "timeZone": timezone
+                }
+            }
+        else:
+            # Ensure proper datetime format
+            if len(start_datetime) == 16:  # YYYY-MM-DD HH:MM
+                start_datetime = start_datetime.replace(" ", "T") + ":00"
+            if len(end_datetime) == 16:
+                end_datetime = end_datetime.replace(" ", "T") + ":00"
+
+            event_data = {
+                "subject": subject,
+                "start": {
+                    "dateTime": start_datetime,
+                    "timeZone": timezone
+                },
+                "end": {
+                    "dateTime": end_datetime,
+                    "timeZone": timezone
+                }
+            }
+
+        if location:
+            event_data["location"] = {"displayName": location}
+
+        if body:
+            event_data["body"] = {
+                "contentType": "Text",
+                "content": body
+            }
+
+        if attendees:
+            attendee_list = []
+            for email in attendees.split(","):
+                attendee_list.append({
+                    "emailAddress": {"address": email.strip()},
+                    "type": "required"
+                })
+            event_data["attendees"] = attendee_list
+
+        event_data["reminderMinutesBeforeStart"] = reminder_minutes
+        event_data["isReminderOn"] = reminder_minutes > 0
+
+        url = "https://graph.microsoft.com/v1.0/me/events"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                url,
+                json=event_data,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                }
+            )
+            error = _check_office365_response(response)
+            if error:
+                return error
+            event = response.json()
+
+        return f"""✅ Event created successfully!
+
+**Subject:** {event.get('subject')}
+**When:** {event.get('start', {}).get('dateTime', '')[:16]} - {event.get('end', {}).get('dateTime', '')[:16]}
+**Location:** {event.get('location', {}).get('displayName', 'N/A')}
+**ID:** `{event.get('id', '')[:30]}...`"""
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": False})
+async def office365_update_event(
+    event_id: str = Field(..., description="Event ID"),
+    subject: Optional[str] = Field(None, description="New subject/title"),
+    start_datetime: Optional[str] = Field(None, description="New start date/time (YYYY-MM-DD HH:MM)"),
+    end_datetime: Optional[str] = Field(None, description="New end date/time (YYYY-MM-DD HH:MM)"),
+    location: Optional[str] = Field(None, description="New location"),
+    body: Optional[str] = Field(None, description="New description"),
+    timezone: str = Field("Australia/Sydney", description="Timezone")
+) -> str:
+    """Update an existing calendar event."""
+    if not office365_config.is_configured:
+        return "Error: Office 365 not configured."
+
+    try:
+        token = await office365_config.get_access_token()
+
+        update_data = {}
+
+        if subject:
+            update_data["subject"] = subject
+
+        if start_datetime:
+            if len(start_datetime) == 16:
+                start_datetime = start_datetime.replace(" ", "T") + ":00"
+            update_data["start"] = {
+                "dateTime": start_datetime,
+                "timeZone": timezone
+            }
+
+        if end_datetime:
+            if len(end_datetime) == 16:
+                end_datetime = end_datetime.replace(" ", "T") + ":00"
+            update_data["end"] = {
+                "dateTime": end_datetime,
+                "timeZone": timezone
+            }
+
+        if location:
+            update_data["location"] = {"displayName": location}
+
+        if body:
+            update_data["body"] = {
+                "contentType": "Text",
+                "content": body
+            }
+
+        if not update_data:
+            return "Error: No updates specified."
+
+        url = f"https://graph.microsoft.com/v1.0/me/events/{event_id}"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(
+                url,
+                json=update_data,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                }
+            )
+            error = _check_office365_response(response)
+            if error:
+                return error
+            event = response.json()
+
+        return f"""✅ Event updated successfully!
+
+**Subject:** {event.get('subject')}
+**When:** {event.get('start', {}).get('dateTime', '')[:16]} - {event.get('end', {}).get('dateTime', '')[:16]}"""
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True})
+async def office365_delete_event(
+    event_id: str = Field(..., description="Event ID to delete")
+) -> str:
+    """Delete a calendar event from Office 365."""
+    if not office365_config.is_configured:
+        return "Error: Office 365 not configured."
+
+    try:
+        token = await office365_config.get_access_token()
+
+        url = f"https://graph.microsoft.com/v1.0/me/events/{event_id}"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.delete(url, headers={"Authorization": f"Bearer {token}"})
+            if response.status_code == 204:
+                return "✅ Event deleted successfully!"
+            error = _check_office365_response(response)
+            if error:
+                return error
+
+        return "✅ Event deleted successfully!"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def office365_list_calendars() -> str:
+    """List all calendars available in Office 365."""
+    if not office365_config.is_configured:
+        return "Error: Office 365 not configured. Run office365_auth_start to connect."
+
+    try:
+        token = await office365_config.get_access_token()
+
+        url = "https://graph.microsoft.com/v1.0/me/calendars"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+            error = _check_office365_response(response)
+            if error:
+                return error
+            calendars = response.json().get("value", [])
+
+        if not calendars:
+            return "No calendars found."
+
+        results = []
+        for cal in calendars:
+            name = cal.get("name", "Unknown")
+            cal_id = cal.get("id", "")[:20]
+            color = cal.get("color", "auto")
+            can_edit = "Yes" if cal.get("canEdit", False) else "No"
+            is_default = "✓ Default" if cal.get("isDefaultCalendar", False) else ""
+            owner = cal.get("owner", {}).get("name", "")
+
+            results.append(f"📅 **{name}** {is_default}\n   Owner: {owner} | Can Edit: {can_edit} | Color: {color}\n   ID: `{cal_id}...`")
+
+        return f"## Your Calendars\n\nFound {len(results)} calendar(s):\n\n" + "\n\n".join(results)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def office365_get_user_info() -> str:
+    """Get current Office 365 user profile information."""
+    if not office365_config.is_configured:
+        return "Error: Office 365 not configured. Run office365_auth_start to connect."
+
+    try:
+        token = await office365_config.get_access_token()
+
+        url = "https://graph.microsoft.com/v1.0/me"
+        params = {"$select": "displayName,mail,userPrincipalName,jobTitle,department,officeLocation,mobilePhone,businessPhones"}
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
+            error = _check_office365_response(response)
+            if error:
+                return error
+            user = response.json()
+
+        phones = user.get("businessPhones", [])
+        phone_str = ", ".join(phones) if phones else "N/A"
+
+        return f"""# Office 365 User Profile
+
+**Name:** {user.get('displayName', 'N/A')}
+**Email:** {user.get('mail', user.get('userPrincipalName', 'N/A'))}
+**Job Title:** {user.get('jobTitle', 'N/A')}
+**Department:** {user.get('department', 'N/A')}
+**Office:** {user.get('officeLocation', 'N/A')}
+**Mobile:** {user.get('mobilePhone', 'N/A')}
+**Business Phone:** {phone_str}"""
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+# ============================================================================
 # Server Status
 # ============================================================================
 
@@ -10551,6 +11868,77 @@ if __name__ == "__main__":
 <h1 style="color:#27ae60;">✅ SharePoint Connected!</h1>
 <p><b>Tenant ID:</b> {tenant_id}</p>
 <p>{status_msg}</p>
+<p>You can close this window.</p>
+</body></html>""")
+        except Exception as e:
+            return HTMLResponse(f"<html><body><h1>Error</h1><p>{str(e)}</p></body></html>", status_code=500)
+
+    async def office365_callback_route(request):
+        """Handle OAuth callback for Office 365 (Email, OneDrive, Calendar)."""
+        code = request.query_params.get("code")
+        error = request.query_params.get("error")
+        error_description = request.query_params.get("error_description", "")
+
+        if error:
+            return HTMLResponse(f"<html><body><h1>❌ Office 365 Authorization Failed</h1><p>{error}: {error_description}</p></body></html>", status_code=400)
+
+        if not code:
+            return HTMLResponse("<html><body><h1>No Authorization Code</h1></body></html>", status_code=400)
+
+        client_id = os.getenv("OFFICE365_CLIENT_ID", "")
+        client_secret = os.getenv("OFFICE365_CLIENT_SECRET", "")
+        tenant_id = os.getenv("OFFICE365_TENANT_ID", "")
+        redirect_uri = f"{CLOUD_RUN_URL}/office365-callback"
+        scopes = "offline_access Mail.Read Mail.Send Mail.ReadWrite Files.Read Files.ReadWrite Calendars.Read Calendars.ReadWrite User.Read"
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
+                    data={
+                        "grant_type": "authorization_code",
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "code": code,
+                        "redirect_uri": redirect_uri,
+                        "scope": scopes
+                    },
+                    headers={"Content-Type": "application/x-www-form-urlencoded"}
+                )
+                response.raise_for_status()
+                tokens = response.json()
+                access_token = tokens["access_token"]
+                refresh_token = tokens.get("refresh_token", "")
+
+                # Get user info
+                user_response = await client.get(
+                    "https://graph.microsoft.com/v1.0/me",
+                    headers={"Authorization": f"Bearer {access_token}"}
+                )
+                user_info = user_response.json() if user_response.status_code == 200 else {}
+                user_name = user_info.get("displayName", "Unknown")
+                user_email = user_info.get("mail", user_info.get("userPrincipalName", "Unknown"))
+
+            office365_config._access_token = access_token
+            office365_config._refresh_token = refresh_token
+            office365_config._token_expiry = datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600) - 60)
+
+            saved_refresh = update_secret_sync("OFFICE365_REFRESH_TOKEN", refresh_token) if refresh_token else False
+            status_msg = "Tokens saved ✅" if saved_refresh else "⚠️ Manual save needed"
+
+            return HTMLResponse(f"""<html><head><title>Office 365 Connected!</title></head>
+<body style="font-family:Arial,sans-serif;max-width:600px;margin:50px auto;padding:20px;">
+<h1 style="color:#27ae60;">✅ Office 365 Connected!</h1>
+<p><b>User:</b> {user_name}</p>
+<p><b>Email:</b> {user_email}</p>
+<p><b>Tenant ID:</b> {tenant_id}</p>
+<p>{status_msg}</p>
+<p style="margin-top: 20px;">You now have access to:</p>
+<ul>
+<li>📧 Email (Outlook) - List, read, send, and search emails</li>
+<li>📁 OneDrive - List, read, upload, and search files</li>
+<li>📅 Calendar - List, create, and update events</li>
+</ul>
 <p>You can close this window.</p>
 </body></html>""")
         except Exception as e:
@@ -11167,6 +12555,14 @@ if __name__ == "__main__":
             "env_vars": ["SALESFORCE_INSTANCE_URL", "SALESFORCE_CLIENT_ID"],
             "auth_env_vars": ["SALESFORCE_CLIENT_SECRET", "SALESFORCE_REFRESH_TOKEN"]
         },
+        {
+            "name": "Office 365",
+            "config": office365_config,
+            "category": "Email, Files & Calendar",
+            "check_type": "oauth",
+            "env_vars": ["OFFICE365_CLIENT_ID", "OFFICE365_TENANT_ID"],
+            "auth_env_vars": ["OFFICE365_CLIENT_SECRET", "OFFICE365_REFRESH_TOKEN"]
+        },
     ]
 
     async def check_platform_status(platform: dict) -> dict:
@@ -11232,6 +12628,14 @@ if __name__ == "__main__":
         elif name == "Salesforce":
             result["endpoint"] = getattr(config, 'instance_url', None)
             result["api_version"] = getattr(config, 'API_VERSION', 'v59.0')
+        elif name == "Office 365" and hasattr(config, 'client_id') and config.client_id:
+            tenant_id = os.getenv("OFFICE365_TENANT_ID", "")
+            if tenant_id:
+                result["supports_reauth"] = True
+                scopes = "offline_access Mail.Read Mail.Send Mail.ReadWrite Files.Read Files.ReadWrite Calendars.Read Calendars.ReadWrite User.Read"
+                result["reauth_url"] = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize?response_type=code&client_id={config.client_id}&redirect_uri={CLOUD_RUN_URL}/office365-callback&scope={scopes}"
+            result["endpoint"] = "https://graph.microsoft.com"
+            result["api_version"] = "v1.0"
         elif name == "CIPP":
             result["endpoint"] = os.getenv("CIPP_API_URL", "")
             result["api_version"] = "v3"
@@ -11296,6 +12700,8 @@ if __name__ == "__main__":
                     result["organization"] = config.client_id
                 elif name == "CIPP":
                     result["organization"] = f"Tenant: {os.getenv('CIPP_TENANT_ID', 'N/A')[:8]}..."
+                elif name == "Office 365":
+                    result["organization"] = f"Tenant: {os.getenv('OFFICE365_TENANT_ID', 'N/A')[:8]}..."
 
                 result["message"] = "Connected"
 
@@ -12517,6 +13923,7 @@ if __name__ == "__main__":
             Route("/status", status_page_route),
             Route("/callback", callback_route),
             Route("/sharepoint-callback", sharepoint_callback_route),
+            Route("/office365-callback", office365_callback_route),
             Route("/api/test-connection/{service_name:path}", api_test_connection_route),
             Route("/api/refresh-token/{service_name:path}", api_refresh_token_route),
             Route("/api/test-all-connections", api_test_all_connections_route),
