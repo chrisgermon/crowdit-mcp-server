@@ -3,9 +3,14 @@ Crowd IT Unified MCP Server
 Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), and Salesforce integration.
 """
 
+import sys
+print("[STARTUP] Python starting...", file=sys.stderr, flush=True)
+
 import os
 import time
 _module_start_time = time.time()
+
+print(f"[STARTUP] Basic imports done at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
 import asyncio
 import logging
@@ -14,19 +19,19 @@ import re
 from datetime import datetime, timedelta, date
 from typing import Optional, Dict, Any
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-logger.info(f"[STARTUP] Module imports started, stdlib complete at t={time.time() - _module_start_time:.2f}s")
+print(f"[STARTUP] stdlib imports done at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
 import httpx
-logger.info(f"[STARTUP] httpx imported at t={time.time() - _module_start_time:.2f}s")
+print(f"[STARTUP] httpx imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
 from fastmcp import FastMCP
-logger.info(f"[STARTUP] FastMCP imported at t={time.time() - _module_start_time:.2f}s")
+print(f"[STARTUP] FastMCP imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
 from pydantic import BaseModel, Field
-logger.info(f"[STARTUP] pydantic imported at t={time.time() - _module_start_time:.2f}s")
+print(f"[STARTUP] pydantic imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
 # Cloud Run URL for OAuth callback
 CLOUD_RUN_URL = os.getenv("CLOUD_RUN_URL", "https://crowdit-mcp-server-lypf4vkh4q-ts.a.run.app")
@@ -36,7 +41,7 @@ mcp = FastMCP(
     instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), and Salesforce integration for MSP operations.",
     stateless_http=True  # Required for Cloud Run - enables stateless sessions
 )
-logger.info(f"[STARTUP] FastMCP instance created at t={time.time() - _module_start_time:.2f}s")
+print(f"[STARTUP] FastMCP instance created at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
 # ============================================================================
 # Secret Manager Helper
@@ -10558,14 +10563,14 @@ async def server_status() -> str:
 
 
 
-logger.info(f"[STARTUP] Module loading complete at t={time.time() - _module_start_time:.2f}s")
+print(f"[STARTUP] Module loading complete at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
 # ============================================================================
 # Main Entry Point
 # ============================================================================
 
 if __name__ == "__main__":
-    logger.info(f"[STARTUP] __main__ block starting at t={time.time() - _module_start_time:.2f}s")
+    print(f"[STARTUP] __main__ block starting at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
     import uvicorn
     from starlette.applications import Starlette
@@ -10574,7 +10579,7 @@ if __name__ == "__main__":
     from starlette.middleware import Middleware
     from starlette.middleware.base import BaseHTTPMiddleware
 
-    logger.info(f"[STARTUP] Imports complete at t={time.time() - _module_start_time:.2f}s")
+    print(f"[STARTUP] Starlette imports done at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
     # API Key validation middleware
     class APIKeyMiddleware(BaseHTTPMiddleware):
@@ -10630,12 +10635,12 @@ if __name__ == "__main__":
             return await call_next(request)
     
     port = int(os.getenv("PORT", 8080))
-    logger.info(f"[STARTUP] Port={port} at t={time.time() - _module_start_time:.2f}s")
+    print(f"[STARTUP] Port={port} at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
     # Get FastMCP's HTTP app
-    logger.info(f"[STARTUP] Creating FastMCP HTTP app at t={time.time() - _module_start_time:.2f}s")
+    print(f"[STARTUP] Creating FastMCP HTTP app at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
     mcp_app = mcp.http_app()
-    logger.info(f"[STARTUP] FastMCP HTTP app created at t={time.time() - _module_start_time:.2f}s")
+    print(f"[STARTUP] FastMCP HTTP app created at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
     
     # Starlette route handlers
     async def home_route(request):
@@ -12700,11 +12705,11 @@ if __name__ == "__main__":
 
     # Get API key for middleware (lazy load from Secret Manager if not in env)
     api_key = os.getenv("MCP_API_KEY")  # Don't call Secret Manager at startup
-    logger.info(f"[STARTUP] API key check at t={time.time() - _module_start_time:.2f}s (from env: {api_key is not None})")
+    print(f"[STARTUP] API key check at t={time.time() - _module_start_time:.3f}s (from env: {api_key is not None})", file=sys.stderr, flush=True)
 
     # Run FastMCP directly - it handles its own routing
     # Add custom routes via Starlette mounting
-    logger.info(f"[STARTUP] Creating Starlette app at t={time.time() - _module_start_time:.2f}s")
+    print(f"[STARTUP] Creating Starlette app at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
     # Use minimal lifespan without mcp_app.lifespan - speeds up startup significantly
     # FastMCP works fine without lifespan in stateless_http mode
@@ -12712,9 +12717,9 @@ if __name__ == "__main__":
 
     @asynccontextmanager
     async def minimal_lifespan(app):
-        logger.info(f"[STARTUP] Lifespan startup at t={time.time() - _module_start_time:.2f}s")
+        print(f"[STARTUP] Lifespan startup at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
         yield
-        logger.info(f"[STARTUP] Lifespan shutdown")
+        print(f"[STARTUP] Lifespan shutdown", file=sys.stderr, flush=True)
 
     app = Starlette(
         routes=[
@@ -12729,7 +12734,7 @@ if __name__ == "__main__":
         ],
         lifespan=minimal_lifespan,
     )
-    logger.info(f"[STARTUP] Starlette app created at t={time.time() - _module_start_time:.2f}s")
+    print(f"[STARTUP] Starlette app created at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
     # Add API Key middleware for MCP endpoint protection
     app.add_middleware(APIKeyMiddleware, api_key=api_key)
@@ -12737,5 +12742,5 @@ if __name__ == "__main__":
     # Mount MCP app to handle all other paths (including /mcp, /sse)
     app.mount("/", mcp_app)
 
-    logger.info(f"[STARTUP] Starting uvicorn at t={time.time() - _module_start_time:.2f}s - listening on 0.0.0.0:{port}")
+    print(f"[STARTUP] Starting uvicorn at t={time.time() - _module_start_time:.3f}s - listening on 0.0.0.0:{port}", file=sys.stderr, flush=True)
     uvicorn.run(app, host="0.0.0.0", port=port)
