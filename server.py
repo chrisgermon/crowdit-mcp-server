@@ -13334,14 +13334,17 @@ if __name__ == "__main__":
     # Add custom routes via Starlette mounting
     print(f"[STARTUP] Creating Starlette app at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
-    # Use minimal lifespan without mcp_app.lifespan - speeds up startup significantly
-    # FastMCP works fine without lifespan in stateless_http mode
+    # Initialize FastMCP's lifespan to start its async session manager task group
+    # This is required for FastMCP 2.x - without it, all MCP requests fail with
+    # "Task group is not initialized" RuntimeError
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
     async def minimal_lifespan(app):
         print(f"[STARTUP] Lifespan startup at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
-        yield
+        # Initialize FastMCP's session manager via its lifespan handler
+        async with mcp_app.lifespan(app):
+            yield
         print(f"[STARTUP] Lifespan shutdown", file=sys.stderr, flush=True)
 
     app = Starlette(
