@@ -4,9 +4,48 @@ Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter,
 """
 
 import sys
-print("[STARTUP] Python starting...", file=sys.stderr, flush=True)
-
 import os
+
+# CRITICAL: Start a minimal health check server IMMEDIATELY to satisfy Cloud Run
+# The full MCP server will be initialized after this basic server is running
+if __name__ == "__main__" and os.getenv("PORT"):
+    print("[STARTUP] Quick-starting minimal health server...", file=sys.stderr, flush=True)
+
+    import threading
+    import time
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    class QuickHealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path in ("/health", "/"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"OK - initializing")
+            else:
+                self.send_response(503)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"Initializing...")
+
+        def log_message(self, format, *args):
+            pass  # Suppress logs
+
+    port = int(os.getenv("PORT", 8080))
+    quick_server = HTTPServer(("0.0.0.0", port), QuickHealthHandler)
+
+    def run_quick_server():
+        print(f"[STARTUP] Quick health server listening on port {port}", file=sys.stderr, flush=True)
+        quick_server.serve_forever()
+
+    # Start quick server in background thread
+    quick_thread = threading.Thread(target=run_quick_server, daemon=True)
+    quick_thread.start()
+    print("[STARTUP] Quick health server started, continuing with full initialization...", file=sys.stderr, flush=True)
+
+# Now continue with normal imports
+print("[STARTUP] Python starting full initialization...", file=sys.stderr, flush=True)
+
 import time
 _module_start_time = time.time()
 
@@ -12741,6 +12780,17 @@ if __name__ == "__main__":
 
     # Mount MCP app to handle all other paths (including /mcp, /sse)
     app.mount("/", mcp_app)
+
+    # Shut down the quick health server so uvicorn can bind to the port
+    print(f"[STARTUP] Shutting down quick health server at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+    try:
+        quick_server.shutdown()
+        print(f"[STARTUP] Quick health server stopped at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+    except Exception as e:
+        print(f"[STARTUP] Quick server shutdown error (may be ok): {e}", file=sys.stderr, flush=True)
+
+    import time as time_module
+    time_module.sleep(0.5)  # Brief pause to ensure port is released
 
     print(f"[STARTUP] Starting uvicorn at t={time.time() - _module_start_time:.3f}s - listening on 0.0.0.0:{port}", file=sys.stderr, flush=True)
     uvicorn.run(app, host="0.0.0.0", port=port)
