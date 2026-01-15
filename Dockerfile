@@ -13,6 +13,8 @@ RUN uv pip install --system --no-cache \
     "google-cloud-secret-manager>=2.20.0" \
     "google-cloud-bigquery>=3.25.0" \
     "google-auth>=2.29.0" \
-    "asyncssh>=2.14.0"
+    "asyncssh>=2.14.0" \
+    "pymysql>=1.1.0" \
+    "google-cloud-build>=3.20.0"
 ENV PORT=8080
 CMD ["python", "server.py"]
