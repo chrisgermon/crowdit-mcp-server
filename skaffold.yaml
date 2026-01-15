@@ -1,0 +1,24 @@
+apiVersion: skaffold/v4beta6
+kind: Config
+metadata:
+  name: crowdit-mcp-server
+
+# Build configuration
+build:
+  artifacts:
+    - image: crowdit-mcp-server
+      docker:
+        dockerfile: Dockerfile
+
+# Deploy to Cloud Run
+deploy:
+  cloudrun:
+    projectId: crowdmcp
+    region: australia-southeast1
+
+# Port forwarding for local development
+portForward:
+  - resourceType: service
+    resourceName: crowdit-mcp-server
+    port: 8080
+    localPort: 8080

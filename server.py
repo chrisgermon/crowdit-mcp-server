@@ -10,56 +10,8 @@ print("[STARTUP] sys imported", file=sys.stderr, flush=True)
 import os
 print(f"[STARTUP] os imported, PORT={os.getenv('PORT')}, __name__={__name__}", file=sys.stderr, flush=True)
 
-# CRITICAL: Start a minimal health check server IMMEDIATELY to satisfy Cloud Run
-# Using raw socket for fastest possible startup
-_quick_server_socket = None
-_quick_server_running = False
-if __name__ == "__main__" and os.getenv("PORT"):
-    print("[STARTUP] Condition met, starting quick server...", file=sys.stderr, flush=True)
-    try:
-        import socket
-        import threading
-
-        port = int(os.getenv("PORT", 8080))
-        _quick_server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        _quick_server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        _quick_server_socket.bind(("0.0.0.0", port))
-        _quick_server_socket.listen(5)
-        print(f"[STARTUP] Socket bound and listening on port {port}", file=sys.stderr, flush=True)
-        sys.stderr.flush()
-        sys.stdout.flush()
-
-        _quick_server_running = True
-
-        def handle_quick_requests():
-            while _quick_server_running:
-                try:
-                    _quick_server_socket.settimeout(1.0)
-                    client, addr = _quick_server_socket.accept()
-                    print(f"[STARTUP] Health check from {addr}", file=sys.stderr, flush=True)
-                    response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"
-                    client.sendall(response)
-                    client.close()
-                except socket.timeout:
-                    continue
-                except Exception as e:
-                    if _quick_server_running:
-                        print(f"[STARTUP] Quick server error: {e}", file=sys.stderr, flush=True)
-                    break
-
-        quick_thread = threading.Thread(target=handle_quick_requests, daemon=True)
-        quick_thread.start()
-
-        # Give thread a moment to start
-        import time as _time
-        _time.sleep(0.1)
-        print("[STARTUP] Quick health server running, continuing initialization...", file=sys.stderr, flush=True)
-
-    except Exception as e:
-        import traceback
-        print(f"[STARTUP] FATAL: Failed to start quick server: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc()
-        sys.exit(1)
+# Note: Removed quick socket server that was causing Cloud Run health check failures
+# uvicorn with /health route will handle health checks properly
 
 # Now continue with normal imports
 print("[STARTUP] Python starting full initialization...", file=sys.stderr, flush=True)
@@ -12799,19 +12751,21 @@ if __name__ == "__main__":
     # Mount MCP app to handle all other paths (including /mcp, /sse)
     app.mount("/", mcp_app)
 
-    # Shut down the quick socket server so uvicorn can bind to the port
-    print(f"[STARTUP] Shutting down quick socket server at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
-    try:
-        global _quick_server_running, _quick_server_socket
-        _quick_server_running = False
-        if _quick_server_socket:
-            _quick_server_socket.close()
-        print(f"[STARTUP] Quick socket server stopped at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
-    except Exception as e:
-        print(f"[STARTUP] Quick server shutdown error (may be ok): {e}", file=sys.stderr, flush=True)
-
-    import time as time_module
-    time_module.sleep(0.5)  # Brief pause to ensure port is released
+    # Shut down the quick socket server if it was started
+    # (This should no longer be needed with the refactored approach above)
+    print(f"[STARTUP] Skipping quick socket server shutdown at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
     print(f"[STARTUP] Starting uvicorn at t={time.time() - _module_start_time:.3f}s - listening on 0.0.0.0:{port}", file=sys.stderr, flush=True)
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    sys.stderr.flush()
+    sys.stdout.flush()
+    
+    # Cloud Run optimized uvicorn configuration
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=port,
+        timeout_keep_alive=5,  # Reduce keep-alive timeout
+        timeout_notify=30,     # Timeout for ASGI startup notification
+        access_log=True,       # Enable access logs for debugging
+        log_level="info"       # Set appropriate log level
+    )

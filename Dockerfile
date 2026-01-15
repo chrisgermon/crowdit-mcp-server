@@ -17,4 +17,6 @@ RUN uv pip install --system --no-cache \
     "pymysql>=1.1.0" \
     "google-cloud-build>=3.20.0"
 ENV PORT=8080
-CMD ["python", "server.py"]
+# Set startup timeout for uvicorn
+ENV UVICORN_TIMEOUT_KEEP_ALIVE=5
+CMD ["python", "-u", "server.py"]
