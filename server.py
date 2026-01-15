@@ -4950,6 +4950,19 @@ class QuoterOAuthClient:
         """Check if OAuth credentials are configured."""
         return bool(self.client_id and self.client_secret)
 
+    @property
+    def _token_expiry(self) -> Optional[datetime]:
+        """Alias for token_expires_at for status page compatibility."""
+        return self.token_expires_at
+
+    async def get_access_token(self) -> str:
+        """Get a valid access token, refreshing if necessary.
+
+        This method is used by the status page to verify connectivity.
+        """
+        await self._ensure_authenticated()
+        return self.access_token
+
     async def _ensure_authenticated(self):
         """Get or refresh OAuth token as needed."""
         # Check if we have a valid token
