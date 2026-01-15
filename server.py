@@ -3,45 +3,63 @@ Crowd IT Unified MCP Server
 Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), and Salesforce integration.
 """
 
+# Absolute first thing - print to both stdout and stderr
+print("[STARTUP] Python interpreter starting")
 import sys
+print("[STARTUP] sys imported", file=sys.stderr, flush=True)
 import os
+print(f"[STARTUP] os imported, PORT={os.getenv('PORT')}, __name__={__name__}", file=sys.stderr, flush=True)
 
 # CRITICAL: Start a minimal health check server IMMEDIATELY to satisfy Cloud Run
-# The full MCP server will be initialized after this basic server is running
+# Using raw socket for fastest possible startup
+_quick_server_socket = None
+_quick_server_running = False
 if __name__ == "__main__" and os.getenv("PORT"):
-    print("[STARTUP] Quick-starting minimal health server...", file=sys.stderr, flush=True)
+    print("[STARTUP] Condition met, starting quick server...", file=sys.stderr, flush=True)
+    try:
+        import socket
+        import threading
 
-    import threading
-    import time
-    from http.server import HTTPServer, BaseHTTPRequestHandler
+        port = int(os.getenv("PORT", 8080))
+        _quick_server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        _quick_server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        _quick_server_socket.bind(("0.0.0.0", port))
+        _quick_server_socket.listen(5)
+        print(f"[STARTUP] Socket bound and listening on port {port}", file=sys.stderr, flush=True)
+        sys.stderr.flush()
+        sys.stdout.flush()
 
-    class QuickHealthHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            if self.path in ("/health", "/"):
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain")
-                self.end_headers()
-                self.wfile.write(b"OK - initializing")
-            else:
-                self.send_response(503)
-                self.send_header("Content-Type", "text/plain")
-                self.end_headers()
-                self.wfile.write(b"Initializing...")
+        _quick_server_running = True
 
-        def log_message(self, format, *args):
-            pass  # Suppress logs
+        def handle_quick_requests():
+            while _quick_server_running:
+                try:
+                    _quick_server_socket.settimeout(1.0)
+                    client, addr = _quick_server_socket.accept()
+                    print(f"[STARTUP] Health check from {addr}", file=sys.stderr, flush=True)
+                    response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"
+                    client.sendall(response)
+                    client.close()
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    if _quick_server_running:
+                        print(f"[STARTUP] Quick server error: {e}", file=sys.stderr, flush=True)
+                    break
 
-    port = int(os.getenv("PORT", 8080))
-    quick_server = HTTPServer(("0.0.0.0", port), QuickHealthHandler)
+        quick_thread = threading.Thread(target=handle_quick_requests, daemon=True)
+        quick_thread.start()
 
-    def run_quick_server():
-        print(f"[STARTUP] Quick health server listening on port {port}", file=sys.stderr, flush=True)
-        quick_server.serve_forever()
+        # Give thread a moment to start
+        import time as _time
+        _time.sleep(0.1)
+        print("[STARTUP] Quick health server running, continuing initialization...", file=sys.stderr, flush=True)
 
-    # Start quick server in background thread
-    quick_thread = threading.Thread(target=run_quick_server, daemon=True)
-    quick_thread.start()
-    print("[STARTUP] Quick health server started, continuing with full initialization...", file=sys.stderr, flush=True)
+    except Exception as e:
+        import traceback
+        print(f"[STARTUP] FATAL: Failed to start quick server: {e}", file=sys.stderr, flush=True)
+        traceback.print_exc()
+        sys.exit(1)
 
 # Now continue with normal imports
 print("[STARTUP] Python starting full initialization...", file=sys.stderr, flush=True)
@@ -12781,11 +12799,14 @@ if __name__ == "__main__":
     # Mount MCP app to handle all other paths (including /mcp, /sse)
     app.mount("/", mcp_app)
 
-    # Shut down the quick health server so uvicorn can bind to the port
-    print(f"[STARTUP] Shutting down quick health server at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+    # Shut down the quick socket server so uvicorn can bind to the port
+    print(f"[STARTUP] Shutting down quick socket server at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
     try:
-        quick_server.shutdown()
-        print(f"[STARTUP] Quick health server stopped at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+        global _quick_server_running, _quick_server_socket
+        _quick_server_running = False
+        if _quick_server_socket:
+            _quick_server_socket.close()
+        print(f"[STARTUP] Quick socket server stopped at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
     except Exception as e:
         print(f"[STARTUP] Quick server shutdown error (may be ok): {e}", file=sys.stderr, flush=True)
 
