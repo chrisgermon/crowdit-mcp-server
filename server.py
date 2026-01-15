@@ -17,8 +17,6 @@ _quick_server_running = False
 if __name__ == "__main__" and os.getenv("PORT"):
     print("[STARTUP] Condition met, starting quick server...", file=sys.stderr, flush=True)
     try:
-        print("[STARTUP] Quick-starting socket health server...", file=sys.stderr, flush=True)
-
         import socket
         import threading
 
@@ -27,7 +25,9 @@ if __name__ == "__main__" and os.getenv("PORT"):
         _quick_server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         _quick_server_socket.bind(("0.0.0.0", port))
         _quick_server_socket.listen(5)
-        print(f"[STARTUP] Socket bound to port {port}", file=sys.stderr, flush=True)
+        print(f"[STARTUP] Socket bound and listening on port {port}", file=sys.stderr, flush=True)
+        sys.stderr.flush()
+        sys.stdout.flush()
 
         _quick_server_running = True
 
@@ -36,8 +36,8 @@ if __name__ == "__main__" and os.getenv("PORT"):
                 try:
                     _quick_server_socket.settimeout(1.0)
                     client, addr = _quick_server_socket.accept()
-                    # Send minimal HTTP response
-                    response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK"
+                    print(f"[STARTUP] Health check from {addr}", file=sys.stderr, flush=True)
+                    response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"
                     client.sendall(response)
                     client.close()
                 except socket.timeout:
@@ -49,10 +49,17 @@ if __name__ == "__main__" and os.getenv("PORT"):
 
         quick_thread = threading.Thread(target=handle_quick_requests, daemon=True)
         quick_thread.start()
-        print("[STARTUP] Quick health server started, continuing initialization...", file=sys.stderr, flush=True)
+
+        # Give thread a moment to start
+        import time as _time
+        _time.sleep(0.1)
+        print("[STARTUP] Quick health server running, continuing initialization...", file=sys.stderr, flush=True)
 
     except Exception as e:
-        print(f"[STARTUP] Failed to start quick server: {e}", file=sys.stderr, flush=True)
+        import traceback
+        print(f"[STARTUP] FATAL: Failed to start quick server: {e}", file=sys.stderr, flush=True)
+        traceback.print_exc()
+        sys.exit(1)
 
 # Now continue with normal imports
 print("[STARTUP] Python starting full initialization...", file=sys.stderr, flush=True)
