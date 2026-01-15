@@ -16,8 +16,9 @@ echo "2) Update Xero client secret"
 echo "3) Update Xero tokens (after auth via Claude)"
 echo "4) Update CIPP client secret (M365 Management)"
 echo "5) Update Salesforce credentials"
+echo "6) Update n8n credentials (Workflow Automation)"
 echo ""
-read -p "Select option (1-5): " OPTION
+read -p "Select option (1-6): " OPTION
 
 case $OPTION in
     1)
@@ -118,6 +119,30 @@ case $OPTION in
         echo -n "$SF_REFRESH_TOKEN" | gcloud secrets versions add SALESFORCE_REFRESH_TOKEN --project=$PROJECT_ID --data-file=-
         echo "   ✓ Updated SALESFORCE_REFRESH_TOKEN"
         ;;
+    6)
+        echo ""
+        echo "Enter n8n credentials:"
+        read -p "API URL (e.g., https://n8n.example.com/api/v1): " N8N_API_URL
+        read -sp "API Key: " N8N_API_KEY
+        echo ""
+
+        if [ -z "$N8N_API_URL" ] || [ -z "$N8N_API_KEY" ]; then
+            echo "❌ Both API URL and API Key are required."
+            exit 1
+        fi
+
+        # Create secrets if they don't exist, then add versions
+        for SECRET in N8N_API_URL N8N_API_KEY; do
+            gcloud secrets describe $SECRET --project=$PROJECT_ID 2>/dev/null || \
+                gcloud secrets create $SECRET --project=$PROJECT_ID --replication-policy=automatic
+        done
+
+        echo -n "$N8N_API_URL" | gcloud secrets versions add N8N_API_URL --project=$PROJECT_ID --data-file=-
+        echo "   ✓ Updated N8N_API_URL"
+
+        echo -n "$N8N_API_KEY" | gcloud secrets versions add N8N_API_KEY --project=$PROJECT_ID --data-file=-
+        echo "   ✓ Updated N8N_API_KEY"
+        ;;
     *)
         echo "Invalid option"
         exit 1
@@ -130,7 +155,7 @@ echo "🔄 Redeploying service to pick up new secrets..."
 gcloud run services update $SERVICE_NAME \
     --project=$PROJECT_ID \
     --region=$REGION \
-    --update-secrets="HALOPSA_RESOURCE_SERVER=HALOPSA_RESOURCE_SERVER:latest,HALOPSA_AUTH_SERVER=HALOPSA_AUTH_SERVER:latest,HALOPSA_CLIENT_ID=HALOPSA_CLIENT_ID:latest,HALOPSA_CLIENT_SECRET=HALOPSA_CLIENT_SECRET:latest,HALOPSA_TENANT=HALOPSA_TENANT:latest,XERO_CLIENT_ID=XERO_CLIENT_ID:latest,XERO_CLIENT_SECRET=XERO_CLIENT_SECRET:latest,XERO_TENANT_ID=XERO_TENANT_ID:latest,XERO_REFRESH_TOKEN=XERO_REFRESH_TOKEN:latest,SHAREPOINT_CLIENT_ID=SHAREPOINT_CLIENT_ID:latest,SHAREPOINT_CLIENT_SECRET=SHAREPOINT_CLIENT_SECRET:latest,SHAREPOINT_TENANT_ID=SHAREPOINT_TENANT_ID:latest,SHAREPOINT_REFRESH_TOKEN=SHAREPOINT_REFRESH_TOKEN:latest,QUOTER_API_KEY=QUOTER_API_KEY:latest,FORTICLOUD_API_KEY=FORTICLOUD_API_KEY:latest,FORTICLOUD_API_SECRET=FORTICLOUD_API_SECRET:latest,FORTICLOUD_CLIENT_ID=FORTICLOUD_CLIENT_ID:latest,CIPP_CLIENT_SECRET=CIPP_CLIENT_SECRET:latest,SALESFORCE_INSTANCE_URL=SALESFORCE_INSTANCE_URL:latest,SALESFORCE_CLIENT_ID=SALESFORCE_CLIENT_ID:latest,SALESFORCE_CLIENT_SECRET=SALESFORCE_CLIENT_SECRET:latest,SALESFORCE_REFRESH_TOKEN=SALESFORCE_REFRESH_TOKEN:latest"
+    --update-secrets="HALOPSA_RESOURCE_SERVER=HALOPSA_RESOURCE_SERVER:latest,HALOPSA_AUTH_SERVER=HALOPSA_AUTH_SERVER:latest,HALOPSA_CLIENT_ID=HALOPSA_CLIENT_ID:latest,HALOPSA_CLIENT_SECRET=HALOPSA_CLIENT_SECRET:latest,HALOPSA_TENANT=HALOPSA_TENANT:latest,XERO_CLIENT_ID=XERO_CLIENT_ID:latest,XERO_CLIENT_SECRET=XERO_CLIENT_SECRET:latest,XERO_TENANT_ID=XERO_TENANT_ID:latest,XERO_REFRESH_TOKEN=XERO_REFRESH_TOKEN:latest,SHAREPOINT_CLIENT_ID=SHAREPOINT_CLIENT_ID:latest,SHAREPOINT_CLIENT_SECRET=SHAREPOINT_CLIENT_SECRET:latest,SHAREPOINT_TENANT_ID=SHAREPOINT_TENANT_ID:latest,SHAREPOINT_REFRESH_TOKEN=SHAREPOINT_REFRESH_TOKEN:latest,QUOTER_API_KEY=QUOTER_API_KEY:latest,FORTICLOUD_API_KEY=FORTICLOUD_API_KEY:latest,FORTICLOUD_API_SECRET=FORTICLOUD_API_SECRET:latest,FORTICLOUD_CLIENT_ID=FORTICLOUD_CLIENT_ID:latest,CIPP_CLIENT_SECRET=CIPP_CLIENT_SECRET:latest,SALESFORCE_INSTANCE_URL=SALESFORCE_INSTANCE_URL:latest,SALESFORCE_CLIENT_ID=SALESFORCE_CLIENT_ID:latest,SALESFORCE_CLIENT_SECRET=SALESFORCE_CLIENT_SECRET:latest,SALESFORCE_REFRESH_TOKEN=SALESFORCE_REFRESH_TOKEN:latest,N8N_API_URL=N8N_API_URL:latest,N8N_API_KEY=N8N_API_KEY:latest"
 
 echo ""
 echo "✅ Secrets updated and service redeployed!"

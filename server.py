@@ -1,6 +1,6 @@
 """
 Crowd IT Unified MCP Server
-Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), and Salesforce integration.
+Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, and n8n (Workflow Automation) integration.
 """
 
 # Absolute first thing - print to both stdout and stderr
@@ -47,7 +47,7 @@ CLOUD_RUN_URL = os.getenv("CLOUD_RUN_URL", "https://crowdit-mcp-server-lypf4vkh4
 
 mcp = FastMCP(
     name="crowdit-mcp-server",
-    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), and Salesforce integration for MSP operations.",
+    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, and n8n (Workflow Automation) integration for MSP operations.",
     stateless_http=True  # Required for Cloud Run - enables stateless sessions
 )
 print(f"[STARTUP] FastMCP instance created at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
@@ -4396,6 +4396,222 @@ async def front_list_tags() -> str:
         if not tags:
             return "No tags found."
         return "## Front Tags\n\n" + "\n".join([f"- **{t.get('name', 'Unknown')}** (ID: `{t.get('id', 'N/A')}`)" for t in tags])
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+# ============================================================================
+# n8n Integration (Workflow Automation)
+# ============================================================================
+
+class N8NConfig:
+    def __init__(self):
+        # Try Secret Manager first, then fall back to environment variables
+        self.api_url = (get_secret_sync("N8N_API_URL") or os.getenv("N8N_API_URL", "")).rstrip("/")
+        self.api_key = get_secret_sync("N8N_API_KEY") or os.getenv("N8N_API_KEY", "")
+
+    @property
+    def is_configured(self) -> bool:
+        return all([self.api_url, self.api_key])
+
+    def headers(self):
+        return {"X-N8N-API-KEY": self.api_key, "Content-Type": "application/json", "Accept": "application/json"}
+
+n8n_config = N8NConfig()
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def n8n_list_workflows(
+    active_only: bool = Field(False, description="Only show active workflows"),
+    limit: int = Field(50, description="Max results (1-100)")
+) -> str:
+    """List all n8n workflows."""
+    if not n8n_config.is_configured:
+        return "Error: n8n not configured (missing N8N_API_URL or N8N_API_KEY)."
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{n8n_config.api_url}/workflows",
+                headers=n8n_config.headers(),
+                params={"limit": min(max(1, limit), 100)}
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        workflows = data.get("data", [])
+        if not workflows:
+            return "No workflows found."
+
+        if active_only:
+            workflows = [w for w in workflows if w.get("active")]
+
+        results = [f"Found {len(workflows)} workflow(s):\n"]
+        for w in workflows[:limit]:
+            status = "Active" if w.get("active") else "Inactive"
+            results.append(f"- **{w.get('name', 'Unnamed')}** (ID: `{w.get('id')}`) - {status}")
+
+        return "\n".join(results)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def n8n_get_workflow(
+    workflow_id: str = Field(..., description="Workflow ID")
+) -> str:
+    """Get details of a specific n8n workflow."""
+    if not n8n_config.is_configured:
+        return "Error: n8n not configured."
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{n8n_config.api_url}/workflows/{workflow_id}",
+                headers=n8n_config.headers()
+            )
+            response.raise_for_status()
+            w = response.json()
+
+        status = "Active" if w.get("active") else "Inactive"
+        nodes = w.get("nodes", [])
+        node_names = [n.get("name", "Unknown") for n in nodes]
+
+        return f"""# {w.get('name', 'Unnamed Workflow')}
+
+**ID:** `{w.get('id')}`
+**Status:** {status}
+**Created:** {w.get('createdAt', 'N/A')}
+**Updated:** {w.get('updatedAt', 'N/A')}
+
+## Nodes ({len(nodes)})
+{chr(10).join([f'- {name}' for name in node_names]) if node_names else 'No nodes'}
+"""
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False})
+async def n8n_execute_workflow(
+    workflow_id: str = Field(..., description="Workflow ID to execute")
+) -> str:
+    """Execute/trigger an n8n workflow."""
+    if not n8n_config.is_configured:
+        return "Error: n8n not configured."
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{n8n_config.api_url}/workflows/{workflow_id}/execute",
+                headers=n8n_config.headers(),
+                json={}
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        execution_id = data.get("data", {}).get("executionId", data.get("executionId", "N/A"))
+        return f"Workflow triggered successfully!\n\n**Execution ID:** `{execution_id}`"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def n8n_list_executions(
+    workflow_id: Optional[str] = Field(None, description="Filter by workflow ID"),
+    status: Optional[str] = Field(None, description="Filter: 'waiting', 'running', 'success', 'error'"),
+    limit: int = Field(20, description="Max results (1-100)")
+) -> str:
+    """List recent n8n workflow executions."""
+    if not n8n_config.is_configured:
+        return "Error: n8n not configured."
+    try:
+        params = {"limit": min(max(1, limit), 100)}
+        if workflow_id:
+            params["workflowId"] = workflow_id
+        if status:
+            params["status"] = status
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{n8n_config.api_url}/executions",
+                headers=n8n_config.headers(),
+                params=params
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        executions = data.get("data", [])
+        if not executions:
+            return "No executions found."
+
+        results = [f"Found {len(executions)} execution(s):\n"]
+        for e in executions[:limit]:
+            status_str = e.get("status", "unknown")
+            finished = e.get("stoppedAt", "In progress")
+            results.append(f"- **Execution {e.get('id')}** - Status: {status_str} | Workflow: {e.get('workflowId', 'N/A')} | Finished: {finished}")
+
+        return "\n".join(results)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def n8n_get_execution(
+    execution_id: str = Field(..., description="Execution ID")
+) -> str:
+    """Get details of a specific n8n execution."""
+    if not n8n_config.is_configured:
+        return "Error: n8n not configured."
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{n8n_config.api_url}/executions/{execution_id}",
+                headers=n8n_config.headers()
+            )
+            response.raise_for_status()
+            e = response.json()
+
+        return f"""# Execution {e.get('id')}
+
+**Workflow ID:** `{e.get('workflowId', 'N/A')}`
+**Status:** {e.get('status', 'unknown')}
+**Mode:** {e.get('mode', 'N/A')}
+**Started:** {e.get('startedAt', 'N/A')}
+**Finished:** {e.get('stoppedAt', 'In progress')}
+**Retried From:** {e.get('retriedFrom', 'N/A')}
+"""
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False})
+async def n8n_activate_workflow(
+    workflow_id: str = Field(..., description="Workflow ID to activate")
+) -> str:
+    """Activate an n8n workflow."""
+    if not n8n_config.is_configured:
+        return "Error: n8n not configured."
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{n8n_config.api_url}/workflows/{workflow_id}/activate",
+                headers=n8n_config.headers()
+            )
+            response.raise_for_status()
+            w = response.json()
+
+        return f"Workflow **{w.get('name', workflow_id)}** activated successfully!"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False})
+async def n8n_deactivate_workflow(
+    workflow_id: str = Field(..., description="Workflow ID to deactivate")
+) -> str:
+    """Deactivate an n8n workflow."""
+    if not n8n_config.is_configured:
+        return "Error: n8n not configured."
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{n8n_config.api_url}/workflows/{workflow_id}/deactivate",
+                headers=n8n_config.headers()
+            )
+            response.raise_for_status()
+            w = response.json()
+
+        return f"Workflow **{w.get('name', workflow_id)}** deactivated successfully!"
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -11305,6 +11521,13 @@ if __name__ == "__main__":
             "category": "Email & Communications",
             "check_type": "api_key",
             "env_vars": []
+        },
+        {
+            "name": "n8n",
+            "config": n8n_config,
+            "category": "Workflow Automation",
+            "check_type": "api_key",
+            "env_vars": ["N8N_API_URL", "N8N_API_KEY"]
         },
         {
             "name": "Quoter",
