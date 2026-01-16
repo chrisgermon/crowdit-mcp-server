@@ -10,7 +10,7 @@ This module provides comprehensive Azure management capabilities including:
 - Azure AD (basic directory operations)
 
 Requirements:
-    pip install azure-identity azure-mgmt-resource azure-mgmt-network
+    pip install azure-identity azure-mgmt-resource azure-mgmt-network 
     pip install azure-mgmt-compute azure-mgmt-storage azure-mgmt-costmanagement
     pip install azure-mgmt-subscription
 
@@ -47,7 +47,7 @@ def get_azure_credentials():
     tenant_id = os.environ.get("AZURE_TENANT_ID")
     client_id = os.environ.get("AZURE_CLIENT_ID")
     client_secret = os.environ.get("AZURE_CLIENT_SECRET")
-
+    
     if not all([tenant_id, client_id, client_secret]):
         missing = []
         if not tenant_id:
@@ -57,7 +57,7 @@ def get_azure_credentials():
         if not client_secret:
             missing.append("AZURE_CLIENT_SECRET")
         raise ValueError(f"Missing Azure credentials: {', '.join(missing)}")
-
+    
     return ClientSecretCredential(
         tenant_id=tenant_id,
         client_id=client_id,
@@ -147,11 +147,11 @@ def handle_azure_error(e: Exception) -> str:
 
 def register_azure_tools(mcp):
     """Register all Azure tools with the MCP server."""
-
+    
     # =========================================================================
     # Subscription & Resource Group Tools
     # =========================================================================
-
+    
     @mcp.tool(
         name="azure_list_subscriptions",
         annotations={
@@ -164,14 +164,14 @@ def register_azure_tools(mcp):
     )
     async def azure_list_subscriptions() -> str:
         """List all Azure subscriptions accessible to the service principal.
-
+        
         Returns subscription IDs, names, and states for all subscriptions
         the authenticated service principal can access.
         """
         try:
             credential = get_azure_credentials()
             client = SubscriptionClient(credential)
-
+            
             subscriptions = []
             for sub in client.subscriptions.list():
                 subscriptions.append({
@@ -180,19 +180,19 @@ def register_azure_tools(mcp):
                     "state": sub.state,
                     "tenant_id": sub.tenant_id,
                 })
-
+            
             if not subscriptions:
                 return "No subscriptions found. Verify the service principal has appropriate access."
-
+            
             result = "# Azure Subscriptions\n\n"
             for sub in subscriptions:
                 result += f"**{sub['name']}**\n"
                 result += f"- ID: `{sub['id']}`\n"
                 result += f"- State: {sub['state']}\n"
                 result += f"- Tenant: {sub['tenant_id']}\n\n"
-
+            
             return result
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -216,9 +216,9 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = ResourceManagementClient(credential, sub_id)
-
+            
             groups = []
             for rg in client.resource_groups.list():
                 if location_filter and rg.location != location_filter:
@@ -229,19 +229,19 @@ def register_azure_tools(mcp):
                     "provisioning_state": rg.properties.provisioning_state if rg.properties else None,
                     "tags": rg.tags or {},
                 })
-
+            
             if not groups:
                 return f"No resource groups found in subscription {sub_id}"
-
+            
             result = f"# Resource Groups ({sub_id})\n\n"
             result += f"| Name | Location | State | Tags |\n"
             result += f"|------|----------|-------|------|\n"
             for rg in groups:
                 tags = ", ".join(f"{k}={v}" for k, v in (rg['tags'] or {}).items())[:50]
                 result += f"| {rg['name']} | {rg['location']} | {rg['provisioning_state']} | {tags or '-'} |\n"
-
+            
             return result
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -267,21 +267,21 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = ResourceManagementClient(credential, sub_id)
-
+            
             rg_params = {"location": location}
             if tags:
                 rg_params["tags"] = json.loads(tags)
-
+            
             result = client.resource_groups.create_or_update(name, rg_params)
-
+            
             return f"✅ Resource group created successfully\n\n" \
                    f"**Name:** {result.name}\n" \
                    f"**Location:** {result.location}\n" \
                    f"**ID:** `{result.id}`\n" \
                    f"**Tags:** {result.tags or 'None'}"
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -301,27 +301,27 @@ def register_azure_tools(mcp):
         force: bool = Field(default=False, description="Skip confirmation (DANGEROUS)")
     ) -> str:
         """Delete a resource group and ALL resources within it.
-
+        
         ⚠️ WARNING: This is a destructive operation that cannot be undone.
         """
         try:
             if not force:
                 return f"⚠️ WARNING: This will delete resource group '{name}' and ALL resources within it.\n\n" \
                        f"To proceed, call this function again with force=True"
-
+            
             credential = get_azure_credentials()
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = ResourceManagementClient(credential, sub_id)
             poller = client.resource_groups.begin_delete(name)
-
+            
             return f"🗑️ Resource group deletion initiated\n\n" \
                    f"**Resource Group:** {name}\n" \
                    f"**Status:** Deletion in progress\n\n" \
                    f"Note: Deletion may take several minutes."
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -346,27 +346,27 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = ResourceManagementClient(credential, sub_id)
             filter_str = f"resourceType eq '{resource_type}'" if resource_type else None
-
+            
             resources = []
             for res in client.resources.list_by_resource_group(resource_group, filter=filter_str):
                 resources.append(format_resource(res))
-
+            
             if not resources:
                 return f"No resources found in resource group '{resource_group}'"
-
+            
             result = f"# Resources in {resource_group}\n\n"
             result += f"| Type | Name | Location |\n"
             result += f"|------|------|----------|\n"
             for res in resources:
                 short_type = res['type'].split('/')[-1] if res['type'] else 'Unknown'
                 result += f"| {short_type} | {res['name']} | {res['location'] or '-'} |\n"
-
+            
             result += f"\n**Total:** {len(resources)} resources"
             return result
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -394,9 +394,9 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = NetworkManagementClient(credential, sub_id)
-
+            
             vnets = []
             if resource_group:
                 for vnet in client.virtual_networks.list(resource_group):
@@ -404,10 +404,10 @@ def register_azure_tools(mcp):
             else:
                 for vnet in client.virtual_networks.list_all():
                     vnets.append(format_vnet(vnet))
-
+            
             if not vnets:
                 return "No virtual networks found"
-
+            
             result = "# Virtual Networks\n\n"
             for vnet in vnets:
                 result += f"## {vnet['name']}\n"
@@ -417,9 +417,9 @@ def register_azure_tools(mcp):
                 for subnet in vnet['subnets']:
                     result += f"  - {subnet['name']}: {subnet['address_prefix']}\n"
                 result += "\n"
-
+            
             return result
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -448,28 +448,28 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = NetworkManagementClient(credential, sub_id)
-
+            
             vnet_params = {
                 "location": location,
                 "address_space": {"address_prefixes": [address_space]}
             }
-
+            
             if dns_servers:
                 vnet_params["dhcp_options"] = {"dns_servers": [s.strip() for s in dns_servers.split(",")]}
             if tags:
                 vnet_params["tags"] = json.loads(tags)
-
+            
             poller = client.virtual_networks.begin_create_or_update(resource_group, name, vnet_params)
             result = poller.result()
-
+            
             return f"✅ Virtual network created successfully\n\n" \
                    f"**Name:** {result.name}\n" \
                    f"**Location:** {result.location}\n" \
                    f"**Address Space:** {', '.join(result.address_space.address_prefixes)}\n" \
                    f"**ID:** `{result.id}`"
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -497,21 +497,21 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = NetworkManagementClient(credential, sub_id)
-
+            
             subnet_params = {"address_prefix": address_prefix}
             if nsg_id:
                 subnet_params["network_security_group"] = {"id": nsg_id}
-
+            
             poller = client.subnets.begin_create_or_update(resource_group, vnet_name, name, subnet_params)
             result = poller.result()
-
+            
             return f"✅ Subnet created successfully\n\n" \
                    f"**Name:** {result.name}\n" \
                    f"**Address Prefix:** {result.address_prefix}\n" \
                    f"**ID:** `{result.id}`"
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -539,9 +539,9 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = NetworkManagementClient(credential, sub_id)
-
+            
             nsgs = []
             if resource_group:
                 for nsg in client.network_security_groups.list(resource_group):
@@ -549,10 +549,10 @@ def register_azure_tools(mcp):
             else:
                 for nsg in client.network_security_groups.list_all():
                     nsgs.append(format_nsg(nsg))
-
+            
             if not nsgs:
                 return "No Network Security Groups found"
-
+            
             result = "# Network Security Groups\n\n"
             for nsg in nsgs:
                 result += f"## {nsg['name']} ({nsg['location']})\n\n"
@@ -564,9 +564,9 @@ def register_azure_tools(mcp):
                 else:
                     result += "*No custom rules*\n"
                 result += "\n"
-
+            
             return result
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -593,21 +593,21 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = NetworkManagementClient(credential, sub_id)
-
+            
             nsg_params = {"location": location}
             if tags:
                 nsg_params["tags"] = json.loads(tags)
-
+            
             poller = client.network_security_groups.begin_create_or_update(resource_group, name, nsg_params)
             result = poller.result()
-
+            
             return f"✅ Network Security Group created\n\n" \
                    f"**Name:** {result.name}\n" \
                    f"**Location:** {result.location}\n" \
                    f"**ID:** `{result.id}`"
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -642,9 +642,9 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = NetworkManagementClient(credential, sub_id)
-
+            
             rule_params = {
                 "priority": priority,
                 "direction": direction,
@@ -657,16 +657,16 @@ def register_azure_tools(mcp):
             }
             if description:
                 rule_params["description"] = description
-
+            
             poller = client.security_rules.begin_create_or_update(resource_group, nsg_name, rule_name, rule_params)
             result = poller.result()
-
+            
             return f"✅ Security rule added\n\n" \
                    f"**Rule:** {result.name}\n" \
                    f"**Priority:** {result.priority}\n" \
                    f"**Direction:** {result.direction}\n" \
                    f"**Access:** {result.access}"
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -694,9 +694,9 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = ComputeManagementClient(credential, sub_id)
-
+            
             vms = []
             if resource_group:
                 for vm in client.virtual_machines.list(resource_group):
@@ -704,19 +704,19 @@ def register_azure_tools(mcp):
             else:
                 for vm in client.virtual_machines.list_all():
                     vms.append(format_vm(vm))
-
+            
             if not vms:
                 return "No virtual machines found"
-
+            
             result = "# Virtual Machines\n\n"
             result += "| Name | Location | Size | OS | State |\n"
             result += "|------|----------|------|-------|-------|\n"
             for vm in vms:
                 result += f"| {vm['name']} | {vm['location']} | {vm['vm_size']} | {vm['os_type']} | {vm['provisioning_state']} |\n"
-
+            
             result += f"\n**Total:** {len(vms)} VMs"
             return result
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -742,22 +742,22 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = ComputeManagementClient(credential, sub_id)
             expand = "instanceView" if include_instance_view else None
             vm = client.virtual_machines.get(resource_group, vm_name, expand=expand)
-
+            
             result = f"# VM: {vm.name}\n\n"
             result += f"**Location:** {vm.location}\n"
             result += f"**Size:** {vm.hardware_profile.vm_size}\n"
             result += f"**Provisioning State:** {vm.provisioning_state}\n"
-
+            
             if vm.instance_view:
                 statuses = vm.instance_view.statuses or []
                 for status in statuses:
                     if status.code.startswith("PowerState"):
                         result += f"**Power State:** {status.display_status}\n"
-
+            
             if vm.storage_profile and vm.storage_profile.os_disk:
                 od = vm.storage_profile.os_disk
                 result += f"\n## OS Disk\n"
@@ -765,19 +765,19 @@ def register_azure_tools(mcp):
                 result += f"- **OS Type:** {od.os_type}\n"
                 if od.disk_size_gb:
                     result += f"- **Size:** {od.disk_size_gb} GB\n"
-
+            
             if vm.storage_profile and vm.storage_profile.data_disks:
                 result += f"\n## Data Disks\n"
                 for disk in vm.storage_profile.data_disks:
                     result += f"- **{disk.name}:** {disk.disk_size_gb} GB (LUN {disk.lun})\n"
-
+            
             if vm.tags:
                 result += f"\n## Tags\n"
                 for k, v in vm.tags.items():
                     result += f"- **{k}:** {v}\n"
-
+            
             return result
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -803,9 +803,9 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = ComputeManagementClient(credential, sub_id)
-
+            
             action_lower = action.lower()
             if action_lower == "start":
                 poller = client.virtual_machines.begin_start(resource_group, vm_name)
@@ -821,9 +821,9 @@ def register_azure_tools(mcp):
                 action_desc = "Deallocating"
             else:
                 return f"Error: Invalid action '{action}'. Use: start, stop, restart, deallocate"
-
+            
             return f"✅ {action_desc} VM '{vm_name}'\n\nOperation initiated. Use azure_get_vm to check status."
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -851,9 +851,9 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = StorageManagementClient(credential, sub_id)
-
+            
             accounts = []
             if resource_group:
                 for sa in client.storage_accounts.list_by_resource_group(resource_group):
@@ -861,10 +861,10 @@ def register_azure_tools(mcp):
             else:
                 for sa in client.storage_accounts.list():
                     accounts.append(sa)
-
+            
             if not accounts:
                 return "No storage accounts found"
-
+            
             result = "# Storage Accounts\n\n"
             result += "| Name | Location | SKU | Kind | Access Tier |\n"
             result += "|------|----------|-----|------|-------------|\n"
@@ -872,9 +872,9 @@ def register_azure_tools(mcp):
                 sku = sa.sku.name if sa.sku else "-"
                 tier = sa.access_tier if sa.access_tier else "-"
                 result += f"| {sa.name} | {sa.location} | {sku} | {sa.kind} | {tier} |\n"
-
+            
             return result
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -904,9 +904,9 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = StorageManagementClient(credential, sub_id)
-
+            
             sa_params = {
                 "location": location,
                 "sku": {"name": sku},
@@ -915,16 +915,16 @@ def register_azure_tools(mcp):
             }
             if tags:
                 sa_params["tags"] = json.loads(tags)
-
+            
             poller = client.storage_accounts.begin_create(resource_group, name, sa_params)
             result = poller.result()
-
+            
             return f"✅ Storage account created\n\n" \
                    f"**Name:** {result.name}\n" \
                    f"**Location:** {result.location}\n" \
                    f"**SKU:** {result.sku.name}\n" \
                    f"**Kind:** {result.kind}"
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -952,9 +952,9 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = NetworkManagementClient(credential, sub_id)
-
+            
             gateways = []
             if resource_group:
                 for gw in client.virtual_network_gateways.list(resource_group):
@@ -967,10 +967,10 @@ def register_azure_tools(mcp):
                             gateways.append(gw)
                     except:
                         continue
-
+            
             if not gateways:
                 return "No VPN gateways found"
-
+            
             result = "# VPN Gateways\n\n"
             for gw in gateways:
                 result += f"## {gw.name}\n"
@@ -979,9 +979,9 @@ def register_azure_tools(mcp):
                 result += f"- **VPN Type:** {gw.vpn_type}\n"
                 result += f"- **SKU:** {gw.sku.name if gw.sku else 'N/A'}\n"
                 result += f"- **State:** {gw.provisioning_state}\n\n"
-
+            
             return result
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -1005,16 +1005,16 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = NetworkManagementClient(credential, sub_id)
-
+            
             connections = []
             for conn in client.virtual_network_gateway_connections.list(resource_group):
                 connections.append(conn)
-
+            
             if not connections:
                 return f"No VPN connections found in '{resource_group}'"
-
+            
             result = "# VPN Connections\n\n"
             result += "| Name | Type | Status | Egress | Ingress |\n"
             result += "|------|------|--------|--------|----------|\n"
@@ -1022,9 +1022,9 @@ def register_azure_tools(mcp):
                 egress = conn.egress_bytes_transferred or 0
                 ingress = conn.ingress_bytes_transferred or 0
                 result += f"| {conn.name} | {conn.connection_type} | {conn.connection_status or conn.provisioning_state} | {egress:,} | {ingress:,} |\n"
-
+            
             return result
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -1048,16 +1048,16 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = NetworkManagementClient(credential, sub_id)
-
+            
             gateways = []
             for lgw in client.local_network_gateways.list(resource_group):
                 gateways.append(lgw)
-
+            
             if not gateways:
                 return f"No local network gateways found in '{resource_group}'"
-
+            
             result = "# Local Network Gateways\n\n"
             for lgw in gateways:
                 result += f"## {lgw.name}\n"
@@ -1067,9 +1067,9 @@ def register_azure_tools(mcp):
                 if lgw.bgp_settings:
                     result += f"- **BGP ASN:** {lgw.bgp_settings.asn}\n"
                 result += "\n"
-
+            
             return result
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -1098,17 +1098,17 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = CostManagementClient(credential)
-
+            
             end_date = datetime.utcnow()
             start_date = end_date - timedelta(days=days)
-
+            
             if resource_group:
                 scope = f"/subscriptions/{sub_id}/resourceGroups/{resource_group}"
             else:
                 scope = f"/subscriptions/{sub_id}"
-
+            
             query = {
                 "type": "ActualCost",
                 "timeframe": "Custom",
@@ -1124,13 +1124,13 @@ def register_azure_tools(mcp):
                     "grouping": [{"type": "Dimension", "name": "ServiceName"}]
                 }
             }
-
+            
             result_data = client.query.usage(scope, query)
-
+            
             result = f"# Azure Cost Summary\n\n"
             result += f"**Period:** {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')} ({days} days)\n"
             result += f"**Scope:** {resource_group or 'Full Subscription'}\n\n"
-
+            
             if result_data.rows:
                 result += "| Service | Cost |\n|---------|------|\n"
                 total = 0
@@ -1142,9 +1142,9 @@ def register_azure_tools(mcp):
                 result += f"| **TOTAL** | **${total:,.2f}** |\n"
             else:
                 result += "No cost data available."
-
+            
             return result
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -1172,9 +1172,9 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = NetworkManagementClient(credential, sub_id)
-
+            
             ips = []
             if resource_group:
                 for ip in client.public_ip_addresses.list(resource_group):
@@ -1182,10 +1182,10 @@ def register_azure_tools(mcp):
             else:
                 for ip in client.public_ip_addresses.list_all():
                     ips.append(ip)
-
+            
             if not ips:
                 return "No public IP addresses found"
-
+            
             result = "# Public IP Addresses\n\n"
             result += "| Name | IP Address | Location | Allocation | SKU |\n"
             result += "|------|------------|----------|------------|-----|\n"
@@ -1193,9 +1193,9 @@ def register_azure_tools(mcp):
                 addr = ip.ip_address or "Not assigned"
                 sku = ip.sku.name if ip.sku else "-"
                 result += f"| {ip.name} | {addr} | {ip.location} | {ip.public_ip_allocation_method} | {sku} |\n"
-
+            
             return result
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -1225,9 +1225,9 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = NetworkManagementClient(credential, sub_id)
-
+            
             ip_params = {
                 "location": location,
                 "public_ip_allocation_method": allocation_method,
@@ -1237,15 +1237,15 @@ def register_azure_tools(mcp):
                 ip_params["dns_settings"] = {"domain_name_label": dns_label}
             if tags:
                 ip_params["tags"] = json.loads(tags)
-
+            
             poller = client.public_ip_addresses.begin_create_or_update(resource_group, name, ip_params)
             result = poller.result()
-
+            
             return f"✅ Public IP created\n\n" \
                    f"**Name:** {result.name}\n" \
                    f"**IP:** {result.ip_address or 'Pending'}\n" \
                    f"**Allocation:** {result.public_ip_allocation_method}"
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -1274,16 +1274,16 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = NetworkManagementClient(credential, sub_id)
-
+            
             peerings = []
             for peering in client.virtual_network_peerings.list(resource_group, vnet_name):
                 peerings.append(peering)
-
+            
             if not peerings:
                 return f"No peerings found for VNet '{vnet_name}'"
-
+            
             result = f"# VNet Peerings for {vnet_name}\n\n"
             for p in peerings:
                 result += f"## {p.name}\n"
@@ -1293,9 +1293,9 @@ def register_azure_tools(mcp):
                 result += f"- **Allow Forwarded Traffic:** {p.allow_forwarded_traffic}\n"
                 result += f"- **Allow Gateway Transit:** {p.allow_gateway_transit}\n"
                 result += f"- **Use Remote Gateways:** {p.use_remote_gateways}\n\n"
-
+            
             return result
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
@@ -1321,7 +1321,7 @@ def register_azure_tools(mcp):
         use_remote_gateways: bool = Field(default=False, description="Use remote gateways")
     ) -> str:
         """Create a VNet peering connection.
-
+        
         Note: Create peering from both VNets for bidirectional connectivity.
         """
         try:
@@ -1329,9 +1329,9 @@ def register_azure_tools(mcp):
             sub_id = subscription_id or get_default_subscription()
             if not sub_id:
                 return "Error: No subscription ID provided and no default configured."
-
+            
             client = NetworkManagementClient(credential, sub_id)
-
+            
             peering_params = {
                 "remote_virtual_network": {"id": remote_vnet_id},
                 "allow_virtual_network_access": allow_vnet_access,
@@ -1339,17 +1339,17 @@ def register_azure_tools(mcp):
                 "allow_gateway_transit": allow_gateway_transit,
                 "use_remote_gateways": use_remote_gateways
             }
-
+            
             poller = client.virtual_network_peerings.begin_create_or_update(
                 resource_group, vnet_name, peering_name, peering_params
             )
             result = poller.result()
-
+            
             return f"✅ VNet peering created\n\n" \
                    f"**Name:** {result.name}\n" \
                    f"**State:** {result.peering_state}\n\n" \
                    f"⚠️ Remember to create the reciprocal peering from the remote VNet."
-
+            
         except Exception as e:
             return handle_azure_error(e)
 
