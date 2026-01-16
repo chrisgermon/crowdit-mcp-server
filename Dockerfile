@@ -28,7 +28,8 @@ RUN uv pip install --system --no-cache \
     "azure-mgmt-compute>=30.0.0" \
     "azure-mgmt-storage>=21.0.0" \
     "azure-mgmt-subscription>=3.1.0" \
-    "azure-mgmt-monitor>=6.0.0"
+    "azure-mgmt-monitor>=6.0.0" \
+    "azure-mgmt-costmanagement>=4.0.0"
 ENV PORT=8080
 # Set startup timeout for uvicorn
 ENV UVICORN_TIMEOUT_KEEP_ALIVE=5
