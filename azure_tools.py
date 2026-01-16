@@ -628,11 +628,11 @@ def register_azure_tools(mcp):
         priority: int = Field(..., description="Rule priority (100-4096)", ge=100, le=4096),
         direction: str = Field(..., description="Direction: 'Inbound' or 'Outbound'"),
         access: str = Field(..., description="Access: 'Allow' or 'Deny'"),
+        destination_port: str = Field(..., description="Destination port range (e.g., '443', '80-443', '*')"),
         protocol: str = Field(default="*", description="Protocol: 'Tcp', 'Udp', 'Icmp', '*'"),
         source_address: str = Field(default="*", description="Source address prefix or '*'"),
         source_port: str = Field(default="*", description="Source port range or '*'"),
         destination_address: str = Field(default="*", description="Destination address prefix or '*'"),
-        destination_port: str = Field(..., description="Destination port range (e.g., '443', '80-443', '*')"),
         subscription_id: Optional[str] = Field(default=None, description="Subscription ID"),
         description: Optional[str] = Field(default=None, description="Rule description")
     ) -> str:
