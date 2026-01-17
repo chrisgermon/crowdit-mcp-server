@@ -14297,6 +14297,397 @@ async def carbon_get_nbn_connection(
 
 
 # ============================================================================
+# Cross-Platform Context Tools
+# These tools provide unified views across multiple connected platforms,
+# enabling dashboards and AI assistants to correlate data across systems.
+# ============================================================================
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def crowdit_platform_status() -> str:
+    """Get connection status for all configured platforms. Use this to check which integrations are available."""
+    results = ["# Crowd IT Platform Status\n"]
+
+    platforms = [
+        ("HaloPSA", halopsa_config, "Ticketing & PSA"),
+        ("Xero", xero_config, "Accounting"),
+        ("SharePoint", sharepoint_config, "Documents"),
+        ("Front", front_config, "Email"),
+        ("n8n", n8n_config, "Automation"),
+        ("Pax8", pax8_config, "Cloud Subscriptions"),
+        ("Salesforce", salesforce_config, "CRM"),
+        ("FortiCloud", forticloud_config, "Network Security"),
+        ("BigQuery", bigquery_config, "Data Warehouse"),
+        ("Carbon (Aussie BB)", carbon_config, "ISP"),
+        ("Ingram Micro", ingram_config, "IT Distribution"),
+        ("Dicker Data", dicker_config, "IT Distribution"),
+        ("NinjaOne", ninjaone_config, "RMM / Endpoint Management"),
+        ("Auvik", auvik_config, "Network Management"),
+    ]
+
+    configured = []
+    not_configured = []
+
+    for name, config, category in platforms:
+        if config.is_configured:
+            configured.append(f"- ✅ **{name}** ({category})")
+        else:
+            not_configured.append(f"- ❌ **{name}** ({category})")
+
+    results.append(f"## Connected Platforms ({len(configured)})")
+    results.extend(configured if configured else ["- None configured"])
+
+    if not_configured:
+        results.append(f"\n## Not Configured ({len(not_configured)})")
+        results.extend(not_configured)
+
+    results.append(f"\n---\n**Tip:** Use specific platform tools to interact with connected systems.")
+
+    return "\n".join(results)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def crowdit_client_overview(
+    client_name: str = Field(..., description="Client/company name to search across platforms")
+) -> str:
+    """Get a unified view of a client across all connected platforms (HaloPSA, Xero, Salesforce, Pax8)."""
+    results = [f"# Client Overview: {client_name}\n"]
+    found_data = False
+
+    # Search HaloPSA for client and recent tickets
+    if halopsa_config.is_configured:
+        try:
+            token = await halopsa_config.get_access_token()
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # Search clients
+                response = await client.get(
+                    f"{halopsa_config.resource_server}/Client",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    params={"search": client_name, "count": 5}
+                )
+                if response.status_code == 200:
+                    clients = response.json().get("clients", [])
+                    if clients:
+                        found_data = True
+                        results.append("## HaloPSA")
+                        for c in clients[:3]:
+                            results.append(f"- **{c.get('name', 'Unknown')}** (ID: `{c.get('id', 'N/A')}`)")
+
+                        # Get recent tickets for first matching client
+                        client_id = clients[0].get('id')
+                        if client_id:
+                            ticket_response = await client.get(
+                                f"{halopsa_config.resource_server}/Tickets",
+                                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                                params={"client_id": client_id, "count": 5, "order": "dateoccurred", "orderdesc": "true"}
+                            )
+                            if ticket_response.status_code == 200:
+                                tickets = ticket_response.json().get("tickets", [])
+                                if tickets:
+                                    results.append(f"\n**Recent Tickets:** {len(tickets)} found")
+                                    for t in tickets[:3]:
+                                        status = t.get('status_name', t.get('status', 'Unknown'))
+                                        results.append(f"  - #{t.get('id')} {t.get('summary', 'No summary')[:50]} [{status}]")
+        except Exception as e:
+            results.append(f"## HaloPSA\n⚠️ Error: {str(e)[:50]}")
+
+    # Search Xero for contacts and invoices
+    if xero_config.is_configured:
+        try:
+            token = await xero_config.get_access_token()
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    "https://api.xero.com/api.xro/2.0/Contacts",
+                    headers={"Authorization": f"Bearer {token}", "xero-tenant-id": xero_config.tenant_id, "Accept": "application/json"},
+                    params={"where": f'Name.Contains("{client_name}")'}
+                )
+                if response.status_code == 200:
+                    contacts = response.json().get("Contacts", [])
+                    if contacts:
+                        found_data = True
+                        results.append("\n## Xero")
+                        contact = contacts[0]
+                        results.append(f"- **{contact.get('Name', 'Unknown')}**")
+                        balance = contact.get('AccountsReceivable', {}).get('Outstanding', 0)
+                        overdue = contact.get('AccountsReceivable', {}).get('Overdue', 0)
+                        if balance or overdue:
+                            results.append(f"  - Outstanding: ${balance:,.2f} | Overdue: ${overdue:,.2f}")
+        except Exception as e:
+            results.append(f"\n## Xero\n⚠️ Error: {str(e)[:50]}")
+
+    # Search Salesforce
+    if salesforce_config.is_configured:
+        try:
+            token = await salesforce_config.get_access_token()
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                query = f"SELECT Id, Name, Industry, Website, Phone FROM Account WHERE Name LIKE '%{client_name}%' LIMIT 3"
+                response = await client.get(
+                    f"{salesforce_config.instance_url}/services/data/v59.0/query",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    params={"q": query}
+                )
+                if response.status_code == 200:
+                    records = response.json().get("records", [])
+                    if records:
+                        found_data = True
+                        results.append("\n## Salesforce")
+                        for acc in records[:3]:
+                            results.append(f"- **{acc.get('Name', 'Unknown')}** ({acc.get('Industry', 'N/A')})")
+                            if acc.get('Website'):
+                                results.append(f"  - Website: {acc.get('Website')}")
+        except Exception as e:
+            results.append(f"\n## Salesforce\n⚠️ Error: {str(e)[:50]}")
+
+    # Search Pax8 for subscriptions
+    if pax8_config.is_configured:
+        try:
+            token = await pax8_config.get_access_token()
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"{pax8_config.base_url}/companies",
+                    headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                    params={"filter[name]": client_name}
+                )
+                if response.status_code == 200:
+                    companies = response.json().get("content", [])
+                    if companies:
+                        found_data = True
+                        results.append("\n## Pax8 Subscriptions")
+                        company = companies[0]
+                        results.append(f"- **{company.get('name', 'Unknown')}**")
+
+                        # Get subscriptions for this company
+                        sub_response = await client.get(
+                            f"{pax8_config.base_url}/subscriptions",
+                            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                            params={"companyId": company.get('id')}
+                        )
+                        if sub_response.status_code == 200:
+                            subs = sub_response.json().get("content", [])
+                            if subs:
+                                results.append(f"  - **Active Subscriptions:** {len(subs)}")
+                                for sub in subs[:5]:
+                                    results.append(f"    - {sub.get('productName', 'Unknown')} (Qty: {sub.get('quantity', 0)})")
+        except Exception as e:
+            results.append(f"\n## Pax8\n⚠️ Error: {str(e)[:50]}")
+
+    # Search NinjaOne for devices
+    if ninjaone_config.is_configured:
+        try:
+            result = await ninjaone_config.api_request("GET", "organizations", params={"pageSize": 100})
+            if result:
+                orgs = result if isinstance(result, list) else result.get("organizations", result.get("results", []))
+                matching_orgs = [o for o in orgs if client_name.lower() in o.get("name", "").lower()]
+                if matching_orgs:
+                    found_data = True
+                    results.append("\n## NinjaOne")
+                    for org in matching_orgs[:3]:
+                        results.append(f"- **{org.get('name', 'Unknown')}** (ID: `{org.get('id', 'N/A')}`)")
+                        # Get device count for this org
+                        devices_result = await ninjaone_config.api_request("GET", f"organization/{org.get('id')}/devices", params={"pageSize": 1})
+                        if devices_result:
+                            device_count = len(devices_result) if isinstance(devices_result, list) else devices_result.get("totalCount", "?")
+                            results.append(f"  - Devices: {device_count}")
+        except Exception as e:
+            results.append(f"\n## NinjaOne\n⚠️ Error: {str(e)[:50]}")
+
+    # Search Auvik for devices
+    if auvik_config.is_configured:
+        try:
+            result = await auvik_config.api_request("GET", "v1/tenants")
+            if result:
+                tenants = result.get("data", [])
+                matching_tenants = [t for t in tenants if client_name.lower() in t.get("attributes", {}).get("domainPrefix", "").lower()]
+                if matching_tenants:
+                    found_data = True
+                    results.append("\n## Auvik")
+                    for tenant in matching_tenants[:3]:
+                        attrs = tenant.get("attributes", {})
+                        results.append(f"- **{attrs.get('domainPrefix', 'Unknown')}** (ID: `{tenant.get('id', 'N/A')}`)")
+        except Exception as e:
+            results.append(f"\n## Auvik\n⚠️ Error: {str(e)[:50]}")
+
+    if not found_data:
+        results.append(f"\nNo data found for '{client_name}' across connected platforms.")
+        results.append("\n**Suggestions:**")
+        results.append("- Check the exact spelling of the client name")
+        results.append("- Use `crowdit_platform_status` to see which platforms are connected")
+
+    return "\n".join(results)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def crowdit_distributor_search(
+    query: str = Field(..., description="Product search query (SKU, name, or keyword)"),
+    include_ingram: bool = Field(True, description="Search Ingram Micro catalog"),
+    include_dicker: bool = Field(True, description="Search Dicker Data catalog")
+) -> str:
+    """Search multiple IT distributors (Ingram Micro, Dicker Data) simultaneously for product comparison."""
+    results = [f"# Distributor Search: {query}\n"]
+    found_any = False
+
+    # Search Ingram Micro
+    if include_ingram and ingram_config.is_configured:
+        try:
+            headers = await ingram_config.headers()
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.get(
+                    f"{ingram_config.api_url}/resellers/v6/catalog",
+                    headers=headers,
+                    params={"keyword": query, "pageSize": 5}
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    catalog = data.get("catalog", data.get("products", []))
+                    if catalog:
+                        found_any = True
+                        results.append("## Ingram Micro")
+                        for p in catalog[:5]:
+                            results.append(f"- **{p.get('description', 'N/A')[:60]}**")
+                            results.append(f"  - Ingram PN: `{p.get('ingramPartNumber', 'N/A')}` | Vendor: {p.get('vendorName', 'N/A')}")
+                    else:
+                        results.append("## Ingram Micro\nNo products found.")
+        except Exception as e:
+            results.append(f"## Ingram Micro\n⚠️ Error: {str(e)[:50]}")
+    elif include_ingram:
+        results.append("## Ingram Micro\n❌ Not configured")
+
+    # Search Dicker Data
+    if include_dicker and dicker_config.is_configured:
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"{dicker_config.api_url}/api/products/search",
+                    headers=dicker_config.headers(),
+                    params={"search": query, "pageSize": 5}
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    products = data.get("products", data.get("items", data if isinstance(data, list) else []))
+                    if products:
+                        found_any = True
+                        results.append("\n## Dicker Data")
+                        for p in products[:5]:
+                            name = p.get("name", p.get("description", "N/A"))[:60]
+                            sku = p.get("sku", p.get("partNumber", "N/A"))
+                            vendor = p.get("vendor", p.get("manufacturer", "N/A"))
+                            cost = p.get("cost", p.get("dealerPrice", 0))
+                            stock = p.get("stock", p.get("quantity", "N/A"))
+                            results.append(f"- **{name}**")
+                            cost_str = f"${cost:,.2f}" if isinstance(cost, (int, float)) else str(cost)
+                            results.append(f"  - SKU: `{sku}` | Vendor: {vendor} | Cost: {cost_str} | Stock: {stock}")
+                    else:
+                        results.append("\n## Dicker Data\nNo products found.")
+        except Exception as e:
+            results.append(f"\n## Dicker Data\n⚠️ Error: {str(e)[:50]}")
+    elif include_dicker:
+        results.append("\n## Dicker Data\n❌ Not configured")
+
+    if not found_any:
+        results.append("\nNo products found across distributors.")
+        results.append("\n**Tips:**")
+        results.append("- Try different keywords or SKUs")
+        results.append("- Use `ingram_search_catalog` for detailed Ingram search")
+        results.append("- Use `dicker_search_products` for detailed Dicker search")
+
+    return "\n".join(results)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def crowdit_support_summary(
+    client_name: Optional[str] = Field(None, description="Filter by client name (optional)")
+) -> str:
+    """Get a summary of open support tickets and alerts across HaloPSA, NinjaOne, and Auvik."""
+    results = ["# Support Summary\n"]
+    total_open = 0
+
+    # Get HaloPSA tickets
+    if halopsa_config.is_configured:
+        try:
+            token = await halopsa_config.get_access_token()
+            params = {"count": 20, "order": "dateoccurred", "orderdesc": "true"}
+            if client_name:
+                params["clientsearch"] = client_name
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"{halopsa_config.resource_server}/Tickets",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    params=params
+                )
+                if response.status_code == 200:
+                    tickets = response.json().get("tickets", [])
+                    open_tickets = [t for t in tickets if t.get('status_name', '').lower() not in ['closed', 'completed', 'resolved']]
+                    total_open += len(open_tickets)
+
+                    results.append(f"## HaloPSA ({len(open_tickets)} open)")
+                    if open_tickets:
+                        # Group by status
+                        by_status = {}
+                        for t in open_tickets:
+                            status = t.get('status_name', 'Unknown')
+                            by_status.setdefault(status, []).append(t)
+
+                        for status, tix in by_status.items():
+                            results.append(f"\n### {status} ({len(tix)})")
+                            for t in tix[:3]:
+                                client_name_display = t.get('client_name', 'Unknown')[:30]
+                                results.append(f"- #{t.get('id')} **{client_name_display}**: {t.get('summary', 'No summary')[:50]}")
+                    else:
+                        results.append("No open tickets.")
+        except Exception as e:
+            results.append(f"## HaloPSA\n⚠️ Error: {str(e)[:50]}")
+    else:
+        results.append("## HaloPSA\n❌ Not configured")
+
+    # Get NinjaOne alerts
+    if ninjaone_config.is_configured:
+        try:
+            result = await ninjaone_config.api_request("GET", "alerts", params={"pageSize": 20})
+            if result:
+                alerts = result if isinstance(result, list) else result.get("alerts", result.get("results", []))
+                total_open += len(alerts)
+
+                results.append(f"\n## NinjaOne Alerts ({len(alerts)} active)")
+                if alerts:
+                    for alert in alerts[:5]:
+                        severity = alert.get("severity", "NONE").upper()
+                        message = alert.get("message", alert.get("subject", "No message"))[:50]
+                        device = alert.get("deviceName", alert.get("device", {}).get("systemName", "Unknown"))
+                        results.append(f"- **[{severity}]** {device}: {message}")
+                else:
+                    results.append("No active alerts.")
+        except Exception as e:
+            results.append(f"\n## NinjaOne\n⚠️ Error: {str(e)[:50]}")
+
+    # Get Auvik alerts
+    if auvik_config.is_configured:
+        try:
+            result = await auvik_config.api_request("GET", "v1/alert/history/info", params={"page[first]": 20})
+            if result:
+                alerts = result.get("data", [])
+                # Count only non-resolved alerts
+                active_alerts = [a for a in alerts if a.get("attributes", {}).get("status", "").lower() != "resolved"]
+                total_open += len(active_alerts)
+
+                results.append(f"\n## Auvik Alerts ({len(active_alerts)} active)")
+                if active_alerts:
+                    for alert in active_alerts[:5]:
+                        attrs = alert.get("attributes", {})
+                        severity = attrs.get("severity", "unknown").upper()
+                        name = attrs.get("name", "Unknown Alert")[:50]
+                        entity = attrs.get("entityName", "Unknown")
+                        results.append(f"- **[{severity}]** {entity}: {name}")
+                else:
+                    results.append("No active alerts.")
+        except Exception as e:
+            results.append(f"\n## Auvik\n⚠️ Error: {str(e)[:50]}")
+
+    results.insert(1, f"**Total Open Issues:** {total_open}\n")
+
+    return "\n".join(results)
+
+
+# ============================================================================
 # Auvik Network Management Integration
 # ============================================================================
 
