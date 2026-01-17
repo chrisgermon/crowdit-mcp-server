@@ -1,6 +1,13 @@
 """
 Crowd IT Unified MCP Server
-Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, Dicker Data, Ingram Micro, and Aussie Broadband Carbon integration.
+Centralized MCP server for Cloud Run providing 220+ tools across 20+ platforms for MSP operations.
+
+Platforms: HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH),
+CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, Dicker Data, Ingram Micro,
+and Aussie Broadband Carbon integration.
+
+Cross-Platform Tools: crowdit_platform_status, crowdit_client_overview, crowdit_distributor_search,
+crowdit_support_summary - for unified views across connected platforms.
 """
 
 # Absolute first thing - print to both stdout and stderr
@@ -25,7 +32,7 @@ import asyncio
 import logging
 import json
 import re
-from datetime import datetime, timedelta, date, timezone
+from datetime import datetime, timedelta, date
 from typing import Optional, Dict, Any
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -50,7 +57,25 @@ CLOUD_RUN_URL = os.getenv("CLOUD_RUN_URL", "https://crowdit-mcp-server-lypf4vkh4
 
 mcp = FastMCP(
     name="crowdit-mcp-server",
-    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, Dicker Data, Ingram Micro, and Aussie Broadband Carbon integration for MSP operations.",
+    instructions="""Crowd IT Unified MCP Server for MSP operations. Provides cross-platform context and 220+ tools across:
+
+**Ticketing & PSA:** HaloPSA (tickets, clients, assets, time tracking)
+**Accounting:** Xero (invoices, payments, contacts, reports)
+**CRM:** Salesforce (accounts, contacts, opportunities)
+**Cloud Subscriptions:** Pax8 (subscriptions, companies, products)
+**IT Distribution:** Ingram Micro (catalog, pricing, orders, quotes), Dicker Data (products, pricing, stock)
+**Workflow Automation:** n8n (workflows, executions, variables)
+**Document Management:** SharePoint (files, sites, lists)
+**Email & Communications:** Front (conversations, tags)
+**Network Security:** FortiCloud (devices, VPN, alerts)
+**ISP Services:** Carbon/Aussie Broadband (services, NBN, usage)
+**M365 Management:** CIPP (tenants, users, licensing)
+**Data Warehouse:** BigQuery (queries, datasets)
+**Remote Servers:** Ubuntu/VisionRad (SSH commands, file access)
+**Cloud Infrastructure:** Azure (VMs, networking, storage, costs), GCP (VMs, gcloud CLI)
+**VoIP:** Maxotel (CDR, billing, customers)
+
+**Cross-Platform Tools:** Use crowdit_platform_status, crowdit_client_overview, crowdit_distributor_search, crowdit_support_summary for unified views across connected platforms.""",
     stateless_http=True  # Required for Cloud Run - enables stateless sessions
 )
 print(f"[STARTUP] FastMCP instance created at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
@@ -4409,6 +4434,18 @@ async def front_list_tags() -> str:
 
 # ============================================================================
 # n8n Integration (Workflow Automation)
+# Required API Key Scopes:
+#   - workflow:read   - List and view workflows
+#   - workflow:create - Create new workflows
+#   - workflow:update - Update existing workflows (activate, deactivate, modify)
+#   - workflow:delete - Delete workflows
+#   - workflow:execute - Execute/trigger workflows
+#   - execution:read  - List and view executions
+#   - execution:delete - Delete execution history
+#   - tag:read/create/update/delete - Manage tags
+#   - variable:read/create - Manage variables
+#   - project:read - List projects
+#   - auditLogs:read - Generate audit reports
 # ============================================================================
 
 class N8NConfig:
@@ -4670,9 +4707,9 @@ async def n8n_update_workflow(
     connections: Optional[str] = Field(None, description="JSON string of connections object"),
     active: Optional[bool] = Field(None, description="Set workflow active state")
 ) -> str:
-    """Update an existing n8n workflow."""
+    """Update an existing n8n workflow. Requires API key with 'workflow:update' scope."""
     if not n8n_config.is_configured:
-        return "Error: n8n not configured."
+        return "Error: n8n not configured. Requires N8N_API_URL and N8N_API_KEY with 'workflow:update' scope."
     try:
         import json as json_module
 
@@ -4714,6 +4751,12 @@ async def n8n_update_workflow(
 """
     except json_module.JSONDecodeError as e:
         return f"Error: Invalid JSON in nodes or connections - {str(e)}"
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            return "Error: Authentication failed. Check N8N_API_KEY."
+        if e.response.status_code == 403:
+            return "Error: Permission denied. Ensure API key has 'workflow:update' scope."
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -6426,13 +6469,13 @@ async def pax8_get_subscription(
             f"**Company:** {s.get('companyName', s.get('companyId', 'N/A'))}",
             f"**Product ID:** `{s.get('productId', 'N/A')}`",
             f"**Vendor Subscription ID:** `{s.get('vendorSubscriptionId', 'N/A')}`",
-            f"\n## Billing Details",
+            "\n## Billing Details",
             f"- **Status:** {s.get('status', 'N/A')}",
             f"- **Quantity:** {s.get('quantity', 0)}",
             f"- **Price:** ${s.get('price', 0):,.2f}",
             f"- **Billing Term:** {s.get('billingTerm', 'N/A')}",
             f"- **Commitment Term:** {s.get('commitmentTerm', 'N/A')}",
-            f"\n## Dates",
+            "\n## Dates",
             f"- **Start Date:** {s.get('startDate', 'N/A')}",
             f"- **End Date:** {s.get('endDate', 'N/A')}",
             f"- **Created:** {s.get('createdDate', 'N/A')}",
@@ -11725,62 +11768,69 @@ async def dicker_search_by_vendor(
 
 # ============================================================================
 # Ingram Micro Reseller API Integration (Australia)
+# API Documentation: https://developer.ingrammicro.com/
+# Features: Product Catalog, Price & Availability, Orders, Quotes, Invoices
 # ============================================================================
 
 class IngramMicroConfig:
-    """Configuration for Ingram Micro Reseller API v6 integration (Australia)."""
+    """Configuration for Ingram Micro Reseller API integration."""
 
     def __init__(self):
-        # Try Secret Manager first, then fall back to environment variables
+        # OAuth 2.0 credentials - Try Secret Manager first, then environment
         self.client_id = get_secret_sync("INGRAM_CLIENT_ID") or os.getenv("INGRAM_CLIENT_ID", "")
         self.client_secret = get_secret_sync("INGRAM_CLIENT_SECRET") or os.getenv("INGRAM_CLIENT_SECRET", "")
         self.customer_number = get_secret_sync("INGRAM_CUSTOMER_NUMBER") or os.getenv("INGRAM_CUSTOMER_NUMBER", "")
+        self.country_code = os.getenv("INGRAM_COUNTRY_CODE", "AU")  # Default to Australia
+        self.sender_id = os.getenv("INGRAM_SENDER_ID", "CrowdIT")
         self.api_url = os.getenv("INGRAM_API_URL", "https://api.ingrammicro.com:443").rstrip("/")
-        self.country_code = os.getenv("INGRAM_COUNTRY_CODE", "AU")  # Australia by default
+        self.token_url = os.getenv("INGRAM_TOKEN_URL", "https://api.ingrammicro.com:443/oauth/oauth20/token")
+
+        # Token caching
         self._access_token: Optional[str] = None
         self._token_expiry: Optional[datetime] = None
 
     @property
     def is_configured(self) -> bool:
-        return bool(self.client_id and self.client_secret)
+        return all([self.client_id, self.client_secret, self.customer_number])
 
     async def get_access_token(self) -> str:
-        """Get OAuth2 access token using client credentials flow."""
+        """Get a valid access token, refreshing if necessary."""
         # Check if we have a valid cached token
         if self._access_token and self._token_expiry:
-            if datetime.now(timezone.utc) < self._token_expiry - timedelta(minutes=5):
+            if datetime.now() < self._token_expiry - timedelta(minutes=5):
                 return self._access_token
 
         # Request new token
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
-                f"{self.api_url}/oauth/oauth20/token",
+                self.token_url,
                 data={
                     "grant_type": "client_credentials",
                     "client_id": self.client_id,
-                    "client_secret": self.client_secret,
+                    "client_secret": self.client_secret
                 },
                 headers={"Content-Type": "application/x-www-form-urlencoded"}
             )
             response.raise_for_status()
-            data = response.json()
+            token_data = response.json()
 
-        self._access_token = data.get("access_token")
-        expires_in = data.get("expires_in", 86400)  # Default 24 hours
-        self._token_expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+        self._access_token = token_data["access_token"]
+        expires_in = token_data.get("expires_in", 3600)
+        self._token_expiry = datetime.now() + timedelta(seconds=expires_in)
 
         return self._access_token
 
-    async def headers(self) -> Dict[str, str]:
-        """Get headers for API requests with Bearer token."""
-        token = await self.get_access_token()
+    def headers(self, token: str, correlation_id: Optional[str] = None) -> Dict[str, str]:
+        """Get headers for API requests."""
+        import uuid
         return {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
             "IM-CustomerNumber": self.customer_number,
             "IM-CountryCode": self.country_code,
-            "IM-CorrelationID": f"crowdit-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            "IM-CorrelationID": correlation_id or str(uuid.uuid4())[:32],
+            "IM-SenderID": self.sender_id
         }
 
 
@@ -11790,858 +11840,503 @@ ingram_config = IngramMicroConfig()
 def _format_ingram_product(product: Dict[str, Any]) -> str:
     """Format an Ingram Micro product for display."""
     ingram_pn = product.get("ingramPartNumber", "N/A")
-    vendor_pn = product.get("vendorPartNumber", product.get("vendorNumber", "N/A"))
-    description = product.get("description", product.get("productDescription", "Unknown"))
-    vendor = product.get("vendorName", product.get("vendor", "N/A"))
-    category = product.get("category", product.get("productCategory", ""))
-    subcategory = product.get("subCategory", "")
-    product_type = product.get("productType", "")
-    upc = product.get("upc", product.get("upcCode", ""))
+    vendor_pn = product.get("vendorPartNumber", "N/A")
+    vendor = product.get("vendorName", product.get("vendorNumber", "Unknown"))
+    description = product.get("description", "No description")
+    upc = product.get("upc", "")
 
     lines = [f"### {description}"]
-    lines.append(f"**Ingram PN:** `{ingram_pn}` | **Vendor PN:** `{vendor_pn}`")
-    lines.append(f"**Vendor:** {vendor}")
-
-    if category:
-        cat_line = f"**Category:** {category}"
-        if subcategory:
-            cat_line += f" > {subcategory}"
-        lines.append(cat_line)
-
-    if product_type:
-        lines.append(f"**Type:** {product_type}")
+    lines.append(f"**Ingram PN:** `{ingram_pn}` | **Vendor PN:** `{vendor_pn}` | **Vendor:** {vendor}")
 
     if upc:
         lines.append(f"**UPC:** {upc}")
 
-    # Pricing info if available
-    customer_price = product.get("customerPrice", product.get("unitPrice", 0))
-    retail_price = product.get("retailPrice", product.get("msrp", 0))
-    if customer_price:
-        lines.append(f"**Your Price:** ${customer_price:,.2f}" if isinstance(customer_price, (int, float)) else f"**Your Price:** {customer_price}")
-    if retail_price:
-        lines.append(f"**MSRP:** ${retail_price:,.2f}" if isinstance(retail_price, (int, float)) else f"**MSRP:** {retail_price}")
-
-    # Availability info if present
+    # Availability info
     availability = product.get("availability", {})
     if availability:
-        available = availability.get("available", availability.get("availableQuantity", "N/A"))
-        lines.append(f"**Available:** {available}")
+        total_avail = availability.get("totalAvailability", 0)
+        available = availability.get("available", False)
+        lines.append(f"**Available:** {'Yes' if available else 'No'} | **Total Stock:** {total_avail}")
 
-    return "\n".join(lines)
+        # Warehouse details
+        warehouses = availability.get("availabilityByWarehouse", [])
+        if warehouses:
+            warehouse_info = []
+            for wh in warehouses[:3]:  # Limit to first 3 warehouses
+                loc = wh.get("location", f"WH-{wh.get('warehouseId', '?')}")
+                qty = wh.get("quantityAvailable", 0)
+                if qty > 0:
+                    warehouse_info.append(f"{loc}: {qty}")
+            if warehouse_info:
+                lines.append(f"**Warehouse Stock:** {', '.join(warehouse_info)}")
 
-
-def _format_ingram_price_availability(item: Dict[str, Any]) -> str:
-    """Format Ingram Micro price and availability response."""
-    ingram_pn = item.get("ingramPartNumber", "N/A")
-    description = item.get("description", "")
-    vendor = item.get("vendorName", "N/A")
-
-    lines = [f"### {description or ingram_pn}"]
-    lines.append(f"**Ingram PN:** `{ingram_pn}` | **Vendor:** {vendor}")
-
-    # Pricing
-    pricing = item.get("pricing", {})
+    # Pricing info
+    pricing = product.get("pricing", {})
     if pricing:
-        customer_price = pricing.get("customerPrice", 0)
-        msrp = pricing.get("retailPrice", pricing.get("msrp", 0))
-        map_price = pricing.get("mapPrice", 0)
-        if customer_price:
-            lines.append(f"**Your Price:** ${customer_price:,.2f}")
-        if msrp:
-            lines.append(f"**MSRP:** ${msrp:,.2f}")
-        if map_price:
-            lines.append(f"**MAP:** ${map_price:,.2f}")
-    else:
-        # Flat pricing structure
-        customer_price = item.get("customerPrice", item.get("unitPrice", 0))
-        if customer_price:
-            lines.append(f"**Your Price:** ${customer_price:,.2f}" if isinstance(customer_price, (int, float)) else f"**Your Price:** {customer_price}")
+        currency = pricing.get("currencyCode", "AUD")
+        retail = pricing.get("retailPrice", 0)
+        customer = pricing.get("customerPrice", 0)
 
-    # Availability by warehouse
-    availability = item.get("availability", {})
-    if isinstance(availability, dict):
-        available = availability.get("available", availability.get("totalAvailability", 0))
-        lines.append(f"**Total Available:** {available}")
+        if customer:
+            lines.append(f"**Your Price:** ${customer:,.2f} {currency}")
+        if retail:
+            lines.append(f"**Retail Price:** ${retail:,.2f} {currency}")
 
-        # Branch/warehouse details
-        availability_by_warehouse = availability.get("availabilityByWarehouse", [])
-        if availability_by_warehouse:
-            lines.append("**By Warehouse:**")
-            for wh in availability_by_warehouse[:5]:  # Limit to 5 warehouses
-                wh_name = wh.get("warehouseId", wh.get("location", "Unknown"))
-                wh_qty = wh.get("quantityAvailable", wh.get("available", 0))
-                wh_eta = wh.get("quantityBackordered", "")
-                line = f"  - {wh_name}: {wh_qty}"
-                if wh_eta:
-                    line += f" (B/O: {wh_eta})"
-                lines.append(line)
-    elif isinstance(availability, list):
-        lines.append("**Availability:**")
-        for avail in availability[:5]:
-            wh = avail.get("warehouseId", avail.get("location", "Unknown"))
-            qty = avail.get("quantityAvailable", avail.get("available", 0))
-            lines.append(f"  - {wh}: {qty}")
+    # Product attributes
+    if product.get("productAuthorized"):
+        lines.append("✓ Authorized Product")
+    if product.get("returnableProduct"):
+        lines.append("✓ Returnable")
 
     return "\n".join(lines)
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
-async def ingram_search_products(
-    query: str = Field(..., description="Search query (product name, SKU, keyword, or vendor part number)"),
-    vendor_name: Optional[str] = Field(None, description="Filter by vendor/manufacturer name"),
-    category: Optional[str] = Field(None, description="Filter by product category"),
-    page_size: int = Field(25, description="Number of results per page (1-100)"),
-    page_number: int = Field(1, description="Page number for pagination")
+async def ingram_price_availability(
+    ingram_part_numbers: Optional[str] = Field(None, description="Comma-separated Ingram part numbers"),
+    vendor_part_numbers: Optional[str] = Field(None, description="Comma-separated vendor part numbers"),
+    include_availability: bool = Field(True, description="Include warehouse availability details"),
+    include_pricing: bool = Field(True, description="Include pricing details"),
+    include_attributes: bool = Field(False, description="Include detailed product attributes")
 ) -> str:
-    """Search Ingram Micro product catalog (Australia). Returns product details and basic information."""
+    """Get price and availability for up to 50 products from Ingram Micro Australia."""
     if not ingram_config.is_configured:
-        return "Error: Ingram Micro not configured. Set INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET environment variables or secrets."
+        return "Error: Ingram Micro not configured. Set INGRAM_CLIENT_ID, INGRAM_CLIENT_SECRET, and INGRAM_CUSTOMER_NUMBER."
+
+    if not ingram_part_numbers and not vendor_part_numbers:
+        return "Error: Provide at least one ingram_part_numbers or vendor_part_numbers."
 
     try:
-        headers = await ingram_config.headers()
+        token = await ingram_config.get_access_token()
 
-        # Build query parameters
-        params = {
-            "pageSize": min(max(1, page_size), 100),
-            "pageNumber": page_number,
-        }
+        # Build products list
+        products = []
+        if ingram_part_numbers:
+            for pn in ingram_part_numbers.split(","):
+                pn = pn.strip()
+                if pn:
+                    products.append({"ingramPartNumber": pn})
+        if vendor_part_numbers:
+            for pn in vendor_part_numbers.split(","):
+                pn = pn.strip()
+                if pn:
+                    products.append({"vendorPartNumber": pn})
 
-        # Ingram uses different params - check API docs
-        if query:
-            params["keyword"] = query
-        if vendor_name:
-            params["vendorName"] = vendor_name
-        if category:
-            params["category"] = category
-
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                f"{ingram_config.api_url}/resellers/v6/catalog",
-                headers=headers,
-                params=params
-            )
-
-            if response.status_code == 401:
-                # Token might be expired, clear cache and retry
-                ingram_config._access_token = None
-                headers = await ingram_config.headers()
-                response = await client.get(
-                    f"{ingram_config.api_url}/resellers/v6/catalog",
-                    headers=headers,
-                    params=params
-                )
-
-            if response.status_code == 401:
-                return "Error: Authentication failed. Check INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET."
-            if response.status_code == 403:
-                return "Error: Access denied. Verify API credentials and permissions."
-
-            response.raise_for_status()
-            data = response.json()
-
-        # Handle response
-        products = data.get("catalog", data.get("products", data.get("items", [])))
-        if not products:
-            return f"No products found for '{query}'."
-
-        records_found = data.get("recordsFound", data.get("totalCount", len(products)))
-        page_info = f"Page {page_number} | Showing {len(products)} of {records_found} results"
-
-        results = ["# Ingram Micro Product Search\n"]
-        results.append(f"**Query:** {query}")
-        results.append(f"**{page_info}**\n")
-
-        for product in products:
-            results.append(_format_ingram_product(product))
-            results.append("---")
-
-        if len(products) < records_found:
-            results.append(f"\n*More results available. Use page_number={page_number + 1} to see next page.*")
-
-        return "\n".join(results)
-
-    except httpx.HTTPStatusError as e:
-        return f"Error: API returned {e.response.status_code} - {e.response.text[:300]}"
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
-async def ingram_get_product_details(
-    ingram_part_number: str = Field(..., description="Ingram Micro part number to look up")
-) -> str:
-    """Get detailed information for a specific product by Ingram Micro part number."""
-    if not ingram_config.is_configured:
-        return "Error: Ingram Micro not configured. Set INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET environment variables or secrets."
-
-    try:
-        headers = await ingram_config.headers()
-
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                f"{ingram_config.api_url}/resellers/v6/catalog/details/{ingram_part_number}",
-                headers=headers
-            )
-
-            if response.status_code == 404:
-                return f"Product not found: {ingram_part_number}"
-            if response.status_code == 401:
-                ingram_config._access_token = None
-                headers = await ingram_config.headers()
-                response = await client.get(
-                    f"{ingram_config.api_url}/resellers/v6/catalog/details/{ingram_part_number}",
-                    headers=headers
-                )
-
-            if response.status_code == 401:
-                return "Error: Authentication failed. Check INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET."
-
-            response.raise_for_status()
-            product = response.json()
-
-        # Format detailed product view
-        result = [f"# Ingram Micro Product Details\n"]
-
-        ingram_pn = product.get("ingramPartNumber", ingram_part_number)
-        vendor_pn = product.get("vendorPartNumber", "N/A")
-        description = product.get("description", "Unknown")
-        vendor = product.get("vendorName", "N/A")
-
-        result.append(f"## {description}")
-        result.append(f"**Ingram PN:** `{ingram_pn}`")
-        result.append(f"**Vendor PN:** `{vendor_pn}`")
-        result.append(f"**Vendor:** {vendor}")
-
-        # Categories
-        category = product.get("category", "")
-        subcategory = product.get("subCategory", "")
-        if category:
-            cat_line = f"**Category:** {category}"
-            if subcategory:
-                cat_line += f" > {subcategory}"
-            result.append(cat_line)
-
-        # Product identifiers
-        upc = product.get("upc", "")
-        if upc:
-            result.append(f"**UPC:** {upc}")
-
-        product_type = product.get("productType", "")
-        if product_type:
-            result.append(f"**Type:** {product_type}")
-
-        # Technical specs if available
-        technical_specs = product.get("technicalSpecifications", product.get("specifications", []))
-        if technical_specs:
-            result.append("\n## Technical Specifications")
-            if isinstance(technical_specs, list):
-                for spec in technical_specs[:20]:  # Limit specs displayed
-                    spec_name = spec.get("name", spec.get("attributeName", ""))
-                    spec_value = spec.get("value", spec.get("attributeValue", ""))
-                    if spec_name and spec_value:
-                        result.append(f"- **{spec_name}:** {spec_value}")
-            elif isinstance(technical_specs, dict):
-                for key, value in list(technical_specs.items())[:20]:
-                    result.append(f"- **{key}:** {value}")
-
-        # Additional info
-        warranty = product.get("warrantyInformation", product.get("warranty", ""))
-        if warranty:
-            result.append(f"\n**Warranty:** {warranty}")
-
-        indicators = product.get("indicators", {})
-        if indicators:
-            result.append("\n## Product Indicators")
-            if indicators.get("hasWarranty"):
-                result.append("- Has Warranty")
-            if indicators.get("isNewProduct"):
-                result.append("- New Product")
-            if indicators.get("isEndOfLife"):
-                result.append("- End of Life")
-            if indicators.get("hasSpecialBid"):
-                result.append("- Special Bid Available")
-
-        return "\n".join(result)
-
-    except httpx.HTTPStatusError as e:
-        return f"Error: API returned {e.response.status_code} - {e.response.text[:300]}"
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
-async def ingram_price_and_availability(
-    ingram_part_numbers: str = Field(..., description="Comma-separated list of Ingram Micro part numbers (max 50)")
-) -> str:
-    """Get real-time pricing and availability for Ingram Micro products. Returns your price, MSRP, and stock by warehouse."""
-    if not ingram_config.is_configured:
-        return "Error: Ingram Micro not configured. Set INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET environment variables or secrets."
-
-    try:
-        # Parse part numbers
-        part_numbers = [p.strip() for p in ingram_part_numbers.split(",") if p.strip()]
-        if not part_numbers:
-            return "Error: No valid part numbers provided."
-        if len(part_numbers) > 50:
-            return "Error: Maximum 50 part numbers per request."
-
-        headers = await ingram_config.headers()
-
-        # Build request body
-        products_request = [{"ingramPartNumber": pn} for pn in part_numbers]
+        if len(products) > 50:
+            return "Error: Maximum 50 products per request."
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 f"{ingram_config.api_url}/resellers/v6/catalog/priceandavailability",
-                headers=headers,
-                json={"products": products_request}
+                headers=ingram_config.headers(token),
+                params={
+                    "includeAvailability": str(include_availability).lower(),
+                    "includePricing": str(include_pricing).lower(),
+                    "includeProductAttributes": str(include_attributes).lower()
+                },
+                json={"products": products}
             )
 
             if response.status_code == 401:
-                ingram_config._access_token = None
-                headers = await ingram_config.headers()
-                response = await client.post(
-                    f"{ingram_config.api_url}/resellers/v6/catalog/priceandavailability",
-                    headers=headers,
-                    json={"products": products_request}
-                )
-
-            if response.status_code == 401:
-                return "Error: Authentication failed. Check INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET."
+                return "Error: Authentication failed. Check Ingram Micro credentials."
+            if response.status_code == 400:
+                error_detail = response.json() if response.content else {}
+                return f"Error: Bad request - {error_detail.get('message', response.text[:200])}"
 
             response.raise_for_status()
             data = response.json()
 
-        # Handle response - can be list or have nested structure
-        items = data if isinstance(data, list) else data.get("products", data.get("items", []))
+        # Handle response (can be list or object)
+        products_data = data if isinstance(data, list) else data.get("products", [data])
 
-        if not items:
-            return "No pricing/availability data returned."
+        if not products_data:
+            return "No products found."
 
-        output = ["# Ingram Micro Price & Availability\n"]
-        output.append(f"**Products Requested:** {len(part_numbers)}\n")
+        results = ["# Ingram Micro Price & Availability\n"]
+        results.append(f"**Products Found:** {len(products_data)}\n")
 
-        for item in items:
-            output.append(_format_ingram_price_availability(item))
-            output.append("---")
+        for product in products_data:
+            # Check for errors on individual products
+            status_msg = product.get("productStatusMessage", "")
+            if "error" in status_msg.lower() or "not found" in status_msg.lower():
+                pn = product.get("ingramPartNumber", product.get("vendorPartNumber", "Unknown"))
+                results.append(f"### ⚠️ {pn}\n{status_msg}\n---")
+            else:
+                results.append(_format_ingram_product(product))
+                results.append("---")
 
-        return "\n".join(output)
+        return "\n".join(results)
 
     except httpx.HTTPStatusError as e:
-        return f"Error: API returned {e.response.status_code} - {e.response.text[:300]}"
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
     except Exception as e:
         return f"Error: {str(e)}"
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
-async def ingram_search_quotes(
-    quote_number: Optional[str] = Field(None, description="Specific quote number to search for"),
-    status: Optional[str] = Field(None, description="Filter by quote status (e.g., 'OPEN', 'EXPIRED', 'CLOSED')"),
-    page_size: int = Field(25, description="Number of results per page (1-100)"),
-    page_number: int = Field(1, description="Page number for pagination")
+async def ingram_search_products(
+    keyword: str = Field(..., description="Search keyword (product name, SKU, or description)"),
+    vendor: Optional[str] = Field(None, description="Filter by vendor name"),
+    category: Optional[str] = Field(None, description="Filter by category"),
+    page_number: int = Field(1, description="Page number (1-based)"),
+    page_size: int = Field(25, description="Results per page (1-100)")
 ) -> str:
-    """Search Ingram Micro quotes. Returns quote summaries with status and totals."""
+    """Search Ingram Micro product catalog."""
     if not ingram_config.is_configured:
-        return "Error: Ingram Micro not configured. Set INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET environment variables or secrets."
+        return "Error: Ingram Micro not configured. Set INGRAM_CLIENT_ID, INGRAM_CLIENT_SECRET, and INGRAM_CUSTOMER_NUMBER."
 
     try:
-        headers = await ingram_config.headers()
+        token = await ingram_config.get_access_token()
 
         params = {
-            "pageSize": min(max(1, page_size), 100),
-            "pageNumber": page_number,
+            "keyword": keyword,
+            "pageNumber": max(1, page_number),
+            "pageSize": min(max(1, page_size), 100)
         }
-        if quote_number:
-            params["quoteNumber"] = quote_number
-        if status:
-            params["status"] = status
+        if vendor:
+            params["vendorName"] = vendor
+        if category:
+            params["category"] = category
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.get(
-                f"{ingram_config.api_url}/resellers/v6/quotes/search",
-                headers=headers,
+                f"{ingram_config.api_url}/resellers/v6/catalog",
+                headers=ingram_config.headers(token),
                 params=params
             )
 
             if response.status_code == 401:
-                ingram_config._access_token = None
-                headers = await ingram_config.headers()
-                response = await client.get(
-                    f"{ingram_config.api_url}/resellers/v6/quotes/search",
-                    headers=headers,
-                    params=params
-                )
-
-            if response.status_code == 401:
-                return "Error: Authentication failed."
+                return "Error: Authentication failed. Check Ingram Micro credentials."
 
             response.raise_for_status()
             data = response.json()
 
-        quotes = data.get("quotes", data.get("items", []))
-        records_found = data.get("recordsFound", len(quotes))
+        catalog = data.get("catalog", data.get("products", []))
+        record_count = data.get("recordsFound", len(catalog))
 
-        if not quotes:
-            return "No quotes found matching your criteria."
+        if not catalog:
+            return f"No products found for '{keyword}'."
 
-        output = ["# Ingram Micro Quotes\n"]
-        output.append(f"**Found:** {records_found} quotes | Page {page_number}\n")
+        results = ["# Ingram Micro Product Search\n"]
+        results.append(f"**Query:** {keyword} | **Results:** {len(catalog)} of {record_count}")
+        if vendor:
+            results.append(f" | **Vendor:** {vendor}")
+        results.append("\n")
 
-        for quote in quotes:
-            quote_num = quote.get("quoteNumber", "N/A")
-            quote_name = quote.get("quoteName", quote.get("description", ""))
-            status = quote.get("quoteStatus", quote.get("status", "N/A"))
-            created_date = quote.get("createdDate", quote.get("dateCreated", ""))
-            expiry_date = quote.get("expiryDate", quote.get("validUntil", ""))
-            total = quote.get("totalAmount", quote.get("quoteTotal", 0))
-            currency = quote.get("currencyCode", "AUD")
+        for product in catalog:
+            ingram_pn = product.get("ingramPartNumber", "N/A")
+            vendor_pn = product.get("vendorPartNumber", "N/A")
+            vendor_name = product.get("vendorName", "Unknown")
+            desc = product.get("description", "No description")
 
-            output.append(f"### Quote: {quote_num}")
-            if quote_name:
-                output.append(f"**Name:** {quote_name}")
-            output.append(f"**Status:** {status}")
-            if total:
-                output.append(f"**Total:** ${total:,.2f} {currency}" if isinstance(total, (int, float)) else f"**Total:** {total}")
-            if created_date:
-                output.append(f"**Created:** {created_date}")
-            if expiry_date:
-                output.append(f"**Expires:** {expiry_date}")
-            output.append("---")
+            results.append(f"### {desc}")
+            results.append(f"**Ingram PN:** `{ingram_pn}` | **Vendor PN:** `{vendor_pn}` | **Vendor:** {vendor_name}")
+            results.append("---")
 
-        return "\n".join(output)
+        return "\n".join(results)
 
     except httpx.HTTPStatusError as e:
-        return f"Error: API returned {e.response.status_code} - {e.response.text[:300]}"
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
     except Exception as e:
         return f"Error: {str(e)}"
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
-async def ingram_get_quote_details(
-    quote_number: str = Field(..., description="The quote number to retrieve details for")
+async def ingram_get_orders(
+    order_number: Optional[str] = Field(None, description="Specific Ingram order number"),
+    customer_order_number: Optional[str] = Field(None, description="Your PO/order number"),
+    order_status: Optional[str] = Field(None, description="Filter by status: OPEN, SHIPPED, CANCELLED, BACKORDERED"),
+    from_date: Optional[str] = Field(None, description="Start date (YYYY-MM-DD)"),
+    to_date: Optional[str] = Field(None, description="End date (YYYY-MM-DD)"),
+    page_size: int = Field(25, description="Results per page (1-100)")
 ) -> str:
-    """Get detailed information for a specific Ingram Micro quote including line items."""
+    """Search and retrieve Ingram Micro orders."""
     if not ingram_config.is_configured:
-        return "Error: Ingram Micro not configured. Set INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET environment variables or secrets."
+        return "Error: Ingram Micro not configured."
 
     try:
-        headers = await ingram_config.headers()
+        token = await ingram_config.get_access_token()
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                f"{ingram_config.api_url}/resellers/v6/quotes/{quote_number}",
-                headers=headers
-            )
-
-            if response.status_code == 404:
-                return f"Quote not found: {quote_number}"
-            if response.status_code == 401:
-                ingram_config._access_token = None
-                headers = await ingram_config.headers()
-                response = await client.get(
-                    f"{ingram_config.api_url}/resellers/v6/quotes/{quote_number}",
-                    headers=headers
-                )
-
-            if response.status_code == 401:
-                return "Error: Authentication failed."
-
-            response.raise_for_status()
-            quote = response.json()
-
-        output = [f"# Ingram Micro Quote: {quote_number}\n"]
-
-        # Quote header info
-        quote_name = quote.get("quoteName", "")
-        status = quote.get("quoteStatus", quote.get("status", "N/A"))
-        created = quote.get("createdDate", "")
-        expiry = quote.get("expiryDate", "")
-        total = quote.get("totalAmount", 0)
-        currency = quote.get("currencyCode", "AUD")
-
-        if quote_name:
-            output.append(f"**Name:** {quote_name}")
-        output.append(f"**Status:** {status}")
-        if created:
-            output.append(f"**Created:** {created}")
-        if expiry:
-            output.append(f"**Expires:** {expiry}")
-        if total:
-            output.append(f"**Total:** ${total:,.2f} {currency}" if isinstance(total, (int, float)) else f"**Total:** {total}")
-
-        # End user info
-        end_user = quote.get("endUser", quote.get("endUserInfo", {}))
-        if end_user:
-            output.append(f"\n## End User")
-            eu_name = end_user.get("name", end_user.get("companyName", ""))
-            if eu_name:
-                output.append(f"**Name:** {eu_name}")
-
-        # Line items
-        lines = quote.get("lines", quote.get("products", quote.get("items", [])))
-        if lines:
-            output.append(f"\n## Line Items ({len(lines)} items)")
-            output.append("| # | Ingram PN | Description | Qty | Unit Price | Total |")
-            output.append("|---|-----------|-------------|-----|------------|-------|")
-
-            for i, line in enumerate(lines, 1):
-                pn = line.get("ingramPartNumber", line.get("partNumber", "N/A"))
-                desc = line.get("description", "")[:40]
-                qty = line.get("quantity", line.get("quantityOrdered", 1))
-                unit_price = line.get("unitPrice", line.get("customerPrice", 0))
-                line_total = line.get("lineTotal", line.get("extendedPrice", 0))
-
-                unit_str = f"${unit_price:,.2f}" if isinstance(unit_price, (int, float)) else str(unit_price)
-                total_str = f"${line_total:,.2f}" if isinstance(line_total, (int, float)) else str(line_total)
-
-                output.append(f"| {i} | {pn} | {desc} | {qty} | {unit_str} | {total_str} |")
-
-        return "\n".join(output)
-
-    except httpx.HTTPStatusError as e:
-        return f"Error: API returned {e.response.status_code} - {e.response.text[:300]}"
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
-async def ingram_search_orders(
-    order_number: Optional[str] = Field(None, description="Specific Ingram order number to search for"),
-    customer_order_number: Optional[str] = Field(None, description="Your PO/customer order number"),
-    status: Optional[str] = Field(None, description="Filter by order status"),
-    page_size: int = Field(25, description="Number of results per page (1-100)"),
-    page_number: int = Field(1, description="Page number for pagination")
-) -> str:
-    """Search Ingram Micro orders. Returns order summaries with status and tracking."""
-    if not ingram_config.is_configured:
-        return "Error: Ingram Micro not configured. Set INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET environment variables or secrets."
-
-    try:
-        headers = await ingram_config.headers()
-
-        params = {
-            "pageSize": min(max(1, page_size), 100),
-            "pageNumber": page_number,
-        }
+        # If specific order number provided, get order details
         if order_number:
-            params["orderNumber"] = order_number
-        if customer_order_number:
-            params["customerOrderNumber"] = customer_order_number
-        if status:
-            params["orderStatus"] = status
-
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                f"{ingram_config.api_url}/resellers/v6/orders/search",
-                headers=headers,
-                params=params
-            )
-
-            if response.status_code == 401:
-                ingram_config._access_token = None
-                headers = await ingram_config.headers()
-                response = await client.get(
-                    f"{ingram_config.api_url}/resellers/v6/orders/search",
-                    headers=headers,
-                    params=params
-                )
-
-            if response.status_code == 401:
-                return "Error: Authentication failed."
-
-            response.raise_for_status()
-            data = response.json()
-
-        orders = data.get("orders", data.get("items", []))
-        records_found = data.get("recordsFound", len(orders))
-
-        if not orders:
-            return "No orders found matching your criteria."
-
-        output = ["# Ingram Micro Orders\n"]
-        output.append(f"**Found:** {records_found} orders | Page {page_number}\n")
-
-        for order in orders:
-            order_num = order.get("ingramOrderNumber", order.get("orderNumber", "N/A"))
-            customer_order = order.get("customerOrderNumber", "")
-            status = order.get("orderStatus", order.get("status", "N/A"))
-            order_date = order.get("orderDate", order.get("dateCreated", ""))
-            total = order.get("orderTotal", order.get("totalAmount", 0))
-            currency = order.get("currencyCode", "AUD")
-
-            output.append(f"### Order: {order_num}")
-            if customer_order:
-                output.append(f"**Your PO:** {customer_order}")
-            output.append(f"**Status:** {status}")
-            if order_date:
-                output.append(f"**Date:** {order_date}")
-            if total:
-                output.append(f"**Total:** ${total:,.2f} {currency}" if isinstance(total, (int, float)) else f"**Total:** {total}")
-
-            # Shipment info if available
-            shipments = order.get("shipments", [])
-            if shipments:
-                for ship in shipments[:2]:  # Show first 2 shipments
-                    carrier = ship.get("carrierName", ship.get("carrier", ""))
-                    tracking = ship.get("trackingNumber", "")
-                    ship_date = ship.get("shipDate", "")
-                    if carrier or tracking:
-                        ship_info = f"**Shipped:** {carrier}"
-                        if tracking:
-                            ship_info += f" | Tracking: {tracking}"
-                        if ship_date:
-                            ship_info += f" | {ship_date}"
-                        output.append(ship_info)
-
-            output.append("---")
-
-        return "\n".join(output)
-
-    except httpx.HTTPStatusError as e:
-        return f"Error: API returned {e.response.status_code} - {e.response.text[:300]}"
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
-async def ingram_get_order_details(
-    order_number: str = Field(..., description="The Ingram Micro order number to retrieve")
-) -> str:
-    """Get detailed information for a specific Ingram Micro order including line items and shipping."""
-    if not ingram_config.is_configured:
-        return "Error: Ingram Micro not configured. Set INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET environment variables or secrets."
-
-    try:
-        headers = await ingram_config.headers()
-
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                f"{ingram_config.api_url}/resellers/v6/orders/{order_number}",
-                headers=headers
-            )
-
-            if response.status_code == 404:
-                return f"Order not found: {order_number}"
-            if response.status_code == 401:
-                ingram_config._access_token = None
-                headers = await ingram_config.headers()
+            async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.get(
                     f"{ingram_config.api_url}/resellers/v6/orders/{order_number}",
-                    headers=headers
+                    headers=ingram_config.headers(token)
                 )
 
-            if response.status_code == 401:
-                return "Error: Authentication failed."
+                if response.status_code == 404:
+                    return f"Order not found: {order_number}"
+                response.raise_for_status()
+                order = response.json()
 
+            # Format single order details
+            lines = [f"# Order: {order.get('ingramOrderNumber', order_number)}\n"]
+            lines.append(f"**Customer PO:** {order.get('customerOrderNumber', 'N/A')}")
+            lines.append(f"**Status:** {order.get('orderStatus', 'N/A')}")
+            lines.append(f"**Order Date:** {order.get('ingramOrderDate', 'N/A')}")
+            lines.append(f"**Total:** ${order.get('orderTotal', 0):,.2f}")
+
+            # Order lines
+            order_lines = order.get("lines", order.get("orderLines", []))
+            if order_lines:
+                lines.append("\n## Order Lines")
+                for line in order_lines[:20]:
+                    desc = line.get("description", "N/A")
+                    qty = line.get("quantity", line.get("quantityOrdered", 0))
+                    price = line.get("unitPrice", 0)
+                    status = line.get("lineStatus", "")
+                    lines.append(f"- **{desc}** - Qty: {qty} @ ${price:,.2f} [{status}]")
+
+            return "\n".join(lines)
+
+        # Search orders
+        params = {"pageSize": min(max(1, page_size), 100)}
+        if customer_order_number:
+            params["customerOrderNumber"] = customer_order_number
+        if order_status:
+            params["orderStatus"] = order_status.upper()
+        if from_date:
+            params["ingramOrderDateFrom"] = from_date
+        if to_date:
+            params["ingramOrderDateTo"] = to_date
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(
+                f"{ingram_config.api_url}/resellers/v6/orders/search",
+                headers=ingram_config.headers(token),
+                params=params
+            )
             response.raise_for_status()
-            order = response.json()
+            data = response.json()
 
-        output = [f"# Ingram Micro Order: {order_number}\n"]
+        orders = data.get("orders", [])
+        if not orders:
+            return "No orders found matching criteria."
 
-        # Order header
-        customer_order = order.get("customerOrderNumber", "")
-        status = order.get("orderStatus", "N/A")
-        order_date = order.get("orderDate", "")
-        total = order.get("orderTotal", 0)
-        currency = order.get("currencyCode", "AUD")
+        results = ["# Ingram Micro Orders\n"]
+        results.append(f"**Orders Found:** {len(orders)}\n")
+        results.append("| Order # | Customer PO | Status | Date | Total |")
+        results.append("|---------|-------------|--------|------|-------|")
 
-        if customer_order:
-            output.append(f"**Your PO:** {customer_order}")
-        output.append(f"**Status:** {status}")
-        if order_date:
-            output.append(f"**Order Date:** {order_date}")
-        if total:
-            output.append(f"**Order Total:** ${total:,.2f} {currency}" if isinstance(total, (int, float)) else f"**Order Total:** {total}")
+        for order in orders:
+            order_num = order.get("ingramOrderNumber", "N/A")
+            cust_po = order.get("customerOrderNumber", "N/A")
+            status = order.get("orderStatus", "N/A")
+            date = order.get("ingramOrderDate", "N/A")
+            total = order.get("orderTotal", 0)
+            results.append(f"| {order_num} | {cust_po} | {status} | {date} | ${total:,.2f} |")
 
-        # Shipping address
-        ship_to = order.get("shipToInfo", order.get("shippingAddress", {}))
-        if ship_to:
-            output.append("\n## Ship To")
-            name = ship_to.get("name", ship_to.get("companyName", ""))
-            if name:
-                output.append(f"**Name:** {name}")
-            addr1 = ship_to.get("addressLine1", ship_to.get("address1", ""))
-            addr2 = ship_to.get("addressLine2", ship_to.get("address2", ""))
-            city = ship_to.get("city", "")
-            state = ship_to.get("state", ship_to.get("stateOrProvince", ""))
-            postal = ship_to.get("postalCode", ship_to.get("zipCode", ""))
-            if addr1:
-                output.append(f"{addr1}")
-            if addr2:
-                output.append(f"{addr2}")
-            if city or state or postal:
-                output.append(f"{city}, {state} {postal}".strip(", "))
-
-        # Line items
-        lines = order.get("lines", order.get("products", []))
-        if lines:
-            output.append(f"\n## Line Items ({len(lines)} items)")
-            output.append("| # | Ingram PN | Description | Qty | Unit Price | Status |")
-            output.append("|---|-----------|-------------|-----|------------|--------|")
-
-            for i, line in enumerate(lines, 1):
-                pn = line.get("ingramPartNumber", "N/A")
-                desc = line.get("description", "")[:35]
-                qty = line.get("quantityOrdered", line.get("quantity", 1))
-                unit_price = line.get("unitPrice", 0)
-                line_status = line.get("lineStatus", line.get("status", ""))
-
-                unit_str = f"${unit_price:,.2f}" if isinstance(unit_price, (int, float)) else str(unit_price)
-                output.append(f"| {i} | {pn} | {desc} | {qty} | {unit_str} | {line_status} |")
-
-        # Shipments
-        shipments = order.get("shipments", [])
-        if shipments:
-            output.append(f"\n## Shipments ({len(shipments)})")
-            for ship in shipments:
-                carrier = ship.get("carrierName", ship.get("carrier", "N/A"))
-                tracking = ship.get("trackingNumber", "")
-                ship_date = ship.get("shipDate", "")
-                ship_items = ship.get("items", ship.get("lines", []))
-
-                output.append(f"### {carrier}")
-                if tracking:
-                    output.append(f"**Tracking:** {tracking}")
-                if ship_date:
-                    output.append(f"**Ship Date:** {ship_date}")
-                if ship_items:
-                    output.append(f"**Items:** {len(ship_items)}")
-
-        return "\n".join(output)
+        return "\n".join(results)
 
     except httpx.HTTPStatusError as e:
-        return f"Error: API returned {e.response.status_code} - {e.response.text[:300]}"
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
     except Exception as e:
         return f"Error: {str(e)}"
 
 
-@mcp.tool(annotations={"destructiveHint": True})
-async def ingram_create_order(
-    customer_order_number: str = Field(..., description="Your PO number for this order"),
-    end_user_name: str = Field(..., description="End user/customer company name"),
-    ship_to_name: str = Field(..., description="Shipping recipient name"),
-    ship_to_address1: str = Field(..., description="Shipping address line 1"),
-    ship_to_city: str = Field(..., description="Shipping city"),
-    ship_to_state: str = Field(..., description="Shipping state/province"),
-    ship_to_postal_code: str = Field(..., description="Shipping postal/ZIP code"),
-    ship_to_country: str = Field("AU", description="Shipping country code (default: AU)"),
-    lines_json: str = Field(..., description="JSON array of line items: [{\"ingramPartNumber\": \"ABC123\", \"quantity\": 1}, ...]"),
-    ship_to_address2: Optional[str] = Field(None, description="Shipping address line 2"),
-    special_instructions: Optional[str] = Field(None, description="Special order instructions"),
-    notes: Optional[str] = Field(None, description="Order notes")
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def ingram_get_quotes(
+    quote_number: Optional[str] = Field(None, description="Specific quote number"),
+    status: Optional[str] = Field(None, description="Quote status filter"),
+    from_date: Optional[str] = Field(None, description="Start date (YYYY-MM-DD)"),
+    to_date: Optional[str] = Field(None, description="End date (YYYY-MM-DD)"),
+    page_size: int = Field(25, description="Results per page")
 ) -> str:
-    """Create a new order in Ingram Micro. Requires product part numbers and quantities."""
+    """Search and retrieve Ingram Micro quotes."""
     if not ingram_config.is_configured:
-        return "Error: Ingram Micro not configured. Set INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET environment variables or secrets."
+        return "Error: Ingram Micro not configured."
 
     try:
-        # Parse line items
-        import json
-        try:
-            lines = json.loads(lines_json)
-        except json.JSONDecodeError as e:
-            return f"Error: Invalid lines_json format. Expected JSON array. Error: {e}"
+        token = await ingram_config.get_access_token()
 
-        if not lines or not isinstance(lines, list):
-            return "Error: lines_json must be a non-empty JSON array of line items."
+        # Get quote details if specific quote number provided
+        if quote_number:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.get(
+                    f"{ingram_config.api_url}/resellers/v6/quotes/{quote_number}",
+                    headers=ingram_config.headers(token)
+                )
 
-        headers = await ingram_config.headers()
+                if response.status_code == 404:
+                    return f"Quote not found: {quote_number}"
+                response.raise_for_status()
+                quote = response.json()
 
-        # Build order request
-        order_request = {
+            lines = [f"# Quote: {quote.get('quoteNumber', quote_number)}\n"]
+            lines.append(f"**Status:** {quote.get('quoteStatus', 'N/A')}")
+            lines.append(f"**Created:** {quote.get('createdDate', 'N/A')}")
+            lines.append(f"**Expires:** {quote.get('expiryDate', 'N/A')}")
+            lines.append(f"**Total:** ${quote.get('totalAmount', 0):,.2f}")
+
+            # Quote lines
+            quote_lines = quote.get("products", quote.get("lines", []))
+            if quote_lines:
+                lines.append("\n## Quote Lines")
+                for line in quote_lines[:20]:
+                    desc = line.get("description", line.get("productDescription", "N/A"))
+                    qty = line.get("quantity", 0)
+                    price = line.get("quotePrice", line.get("unitPrice", 0))
+                    lines.append(f"- **{desc}** - Qty: {qty} @ ${price:,.2f}")
+
+            return "\n".join(lines)
+
+        # Search quotes
+        params = {"pageSize": min(max(1, page_size), 100)}
+        if status:
+            params["quoteStatus"] = status
+        if from_date:
+            params["fromDate"] = from_date
+        if to_date:
+            params["toDate"] = to_date
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(
+                f"{ingram_config.api_url}/resellers/v6/quotes/search",
+                headers=ingram_config.headers(token),
+                params=params
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        quotes = data.get("quotes", [])
+        if not quotes:
+            return "No quotes found matching criteria."
+
+        results = ["# Ingram Micro Quotes\n"]
+        results.append(f"**Quotes Found:** {len(quotes)}\n")
+        results.append("| Quote # | Status | Created | Expires | Total |")
+        results.append("|---------|--------|---------|---------|-------|")
+
+        for quote in quotes:
+            num = quote.get("quoteNumber", "N/A")
+            stat = quote.get("quoteStatus", "N/A")
+            created = quote.get("createdDate", "N/A")
+            expires = quote.get("expiryDate", "N/A")
+            total = quote.get("totalAmount", 0)
+            results.append(f"| {num} | {stat} | {created} | {expires} | ${total:,.2f} |")
+
+        return "\n".join(results)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def ingram_get_invoice(
+    invoice_number: str = Field(..., description="Invoice number to retrieve")
+) -> str:
+    """Get details of a specific Ingram Micro invoice."""
+    if not ingram_config.is_configured:
+        return "Error: Ingram Micro not configured."
+
+    try:
+        token = await ingram_config.get_access_token()
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(
+                f"{ingram_config.api_url}/resellers/v6/invoices/{invoice_number}",
+                headers=ingram_config.headers(token)
+            )
+
+            if response.status_code == 404:
+                return f"Invoice not found: {invoice_number}"
+            response.raise_for_status()
+            invoice = response.json()
+
+        lines = [f"# Invoice: {invoice.get('invoiceNumber', invoice_number)}\n"]
+        lines.append(f"**Order Number:** {invoice.get('ingramOrderNumber', 'N/A')}")
+        lines.append(f"**Customer PO:** {invoice.get('customerOrderNumber', 'N/A')}")
+        lines.append(f"**Invoice Date:** {invoice.get('invoiceDate', 'N/A')}")
+        lines.append(f"**Due Date:** {invoice.get('dueDate', 'N/A')}")
+        lines.append(f"**Status:** {invoice.get('paymentStatus', invoice.get('status', 'N/A'))}")
+
+        # Totals
+        lines.append("\n## Totals")
+        lines.append(f"- **Subtotal:** ${invoice.get('invoicedAmountDue', invoice.get('totalAmount', 0)):,.2f}")
+        lines.append(f"- **Tax:** ${invoice.get('totalTax', 0):,.2f}")
+        lines.append(f"- **Freight:** ${invoice.get('totalFreight', 0):,.2f}")
+
+        # Invoice lines
+        inv_lines = invoice.get("lines", invoice.get("invoiceLines", []))
+        if inv_lines:
+            lines.append("\n## Invoice Lines")
+            for line in inv_lines[:20]:
+                desc = line.get("description", "N/A")
+                qty = line.get("quantity", line.get("quantityShipped", 0))
+                price = line.get("unitPrice", 0)
+                lines.append(f"- **{desc}** - Qty: {qty} @ ${price:,.2f}")
+
+        return "\n".join(lines)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False})
+async def ingram_create_order(
+    customer_order_number: str = Field(..., description="Your PO/reference number"),
+    lines: str = Field(..., description="JSON array of order lines: [{\"ingramPartNumber\": \"XXX\", \"quantity\": 1}, ...]"),
+    end_customer_name: Optional[str] = Field(None, description="End customer/company name"),
+    notes: Optional[str] = Field(None, description="Order notes/special instructions")
+) -> str:
+    """Create a new order with Ingram Micro. Use ingram_price_availability first to verify stock."""
+    if not ingram_config.is_configured:
+        return "Error: Ingram Micro not configured."
+
+    try:
+        import json as json_module
+        order_lines = json_module.loads(lines)
+
+        if not order_lines:
+            return "Error: At least one order line is required."
+
+        token = await ingram_config.get_access_token()
+
+        # Build order payload
+        order_data = {
             "customerOrderNumber": customer_order_number,
-            "endUserInfo": {
-                "name": end_user_name,
-                "countryCode": ship_to_country
-            },
-            "shipToInfo": {
-                "name": ship_to_name,
-                "addressLine1": ship_to_address1,
-                "city": ship_to_city,
-                "state": ship_to_state,
-                "postalCode": ship_to_postal_code,
-                "countryCode": ship_to_country
-            },
-            "lines": []
+            "lines": order_lines
         }
 
-        if ship_to_address2:
-            order_request["shipToInfo"]["addressLine2"] = ship_to_address2
-
-        if special_instructions:
-            order_request["specialInstructions"] = special_instructions
-
+        if end_customer_name:
+            order_data["endCustomerOrderNumber"] = end_customer_name
         if notes:
-            order_request["notes"] = notes
-
-        # Add line items
-        for i, line in enumerate(lines, 1):
-            ingram_pn = line.get("ingramPartNumber", line.get("partNumber", ""))
-            qty = line.get("quantity", 1)
-
-            if not ingram_pn:
-                return f"Error: Line {i} missing 'ingramPartNumber'."
-
-            order_request["lines"].append({
-                "customerLineNumber": str(i),
-                "ingramPartNumber": ingram_pn,
-                "quantity": qty
-            })
+            order_data["notes"] = notes
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 f"{ingram_config.api_url}/resellers/v6/orders",
-                headers=headers,
-                json=order_request
+                headers=ingram_config.headers(token),
+                json=order_data
             )
 
-            if response.status_code == 401:
-                ingram_config._access_token = None
-                headers = await ingram_config.headers()
-                response = await client.post(
-                    f"{ingram_config.api_url}/resellers/v6/orders",
-                    headers=headers,
-                    json=order_request
-                )
-
-            if response.status_code == 401:
-                return "Error: Authentication failed."
             if response.status_code == 400:
-                error_data = response.json()
-                return f"Error: Bad request - {error_data}"
+                error = response.json() if response.content else {}
+                return f"Error: Order validation failed - {error.get('message', response.text[:300])}"
 
             response.raise_for_status()
             result = response.json()
 
-        # Format success response
-        order_number = result.get("ingramOrderNumber", result.get("orderNumber", "N/A"))
-        order_status = result.get("orderStatus", result.get("status", "Submitted"))
-        order_total = result.get("orderTotal", result.get("totalAmount", 0))
+        order_num = result.get("ingramOrderNumber", "N/A")
+        return f"""# Order Created Successfully!
 
-        output = ["# Order Created Successfully\n"]
-        output.append(f"**Ingram Order #:** {order_number}")
-        output.append(f"**Your PO #:** {customer_order_number}")
-        output.append(f"**Status:** {order_status}")
-        if order_total:
-            output.append(f"**Total:** ${order_total:,.2f}" if isinstance(order_total, (int, float)) else f"**Total:** {order_total}")
+**Ingram Order #:** `{order_num}`
+**Customer PO:** {customer_order_number}
+**Status:** {result.get('orderStatus', 'Submitted')}
+**Lines:** {len(order_lines)} items
 
-        output.append(f"\n**Lines Ordered:** {len(lines)}")
+Use `ingram_get_orders` with order_number='{order_num}' to check status.
+"""
 
-        # Show any warnings or messages
-        messages = result.get("messages", result.get("warnings", []))
-        if messages:
-            output.append("\n## Messages")
-            for msg in messages:
-                if isinstance(msg, dict):
-                    output.append(f"- {msg.get('message', msg.get('text', str(msg)))}")
-                else:
-                    output.append(f"- {msg}")
-
-        return "\n".join(output)
-
+    except json.JSONDecodeError as e:
+        return f"Error: Invalid JSON in lines parameter - {str(e)}"
     except httpx.HTTPStatusError as e:
-        return f"Error: API returned {e.response.status_code} - {e.response.text[:500]}"
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -13656,6 +13351,341 @@ async def carbon_get_nbn_connection(
 
 
 # ============================================================================
+# Cross-Platform Context Aggregation Tools
+# These tools provide unified views across multiple connected platforms,
+# enabling dashboards and AI assistants to correlate data across systems.
+# ============================================================================
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def crowdit_platform_status() -> str:
+    """Get connection status for all configured platforms. Use this to check which integrations are available."""
+    results = ["# Crowd IT Platform Status\n"]
+
+    platforms = [
+        ("HaloPSA", halopsa_config, "Ticketing"),
+        ("Xero", xero_config, "Accounting"),
+        ("SharePoint", sharepoint_config, "Documents"),
+        ("Front", front_config, "Email"),
+        ("n8n", n8n_config, "Automation"),
+        ("Pax8", pax8_config, "Cloud Subscriptions"),
+        ("Salesforce", salesforce_config, "CRM"),
+        ("FortiCloud", forticloud_config, "Network Security"),
+        ("BigQuery", bigquery_config, "Data Warehouse"),
+        ("Carbon (Aussie BB)", carbon_config, "ISP"),
+        ("Ingram Micro", ingram_config, "IT Distribution"),
+        ("Dicker Data", dicker_config, "IT Distribution"),
+    ]
+
+    configured = []
+    not_configured = []
+
+    for name, config, category in platforms:
+        if config.is_configured:
+            configured.append(f"- ✅ **{name}** ({category})")
+        else:
+            not_configured.append(f"- ❌ **{name}** ({category})")
+
+    results.append(f"## Connected Platforms ({len(configured)})")
+    results.extend(configured if configured else ["- None configured"])
+
+    if not_configured:
+        results.append(f"\n## Not Configured ({len(not_configured)})")
+        results.extend(not_configured)
+
+    results.append(f"\n---\n**Tip:** Use specific platform tools to interact with connected systems.")
+
+    return "\n".join(results)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def crowdit_client_overview(
+    client_name: str = Field(..., description="Client/company name to search across platforms")
+) -> str:
+    """Get a unified view of a client across all connected platforms (HaloPSA, Xero, Salesforce, Pax8)."""
+    results = [f"# Client Overview: {client_name}\n"]
+    found_data = False
+
+    # Search HaloPSA for client and recent tickets
+    if halopsa_config.is_configured:
+        try:
+            token = await halopsa_config.get_access_token()
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # Search clients
+                response = await client.get(
+                    f"{halopsa_config.base_url}/Client",
+                    headers=halopsa_config.headers(token),
+                    params={"search": client_name, "count": 5}
+                )
+                if response.status_code == 200:
+                    clients = response.json().get("clients", [])
+                    if clients:
+                        found_data = True
+                        results.append("## HaloPSA")
+                        for c in clients[:3]:
+                            results.append(f"- **{c.get('name', 'Unknown')}** (ID: `{c.get('id', 'N/A')}`)")
+
+                        # Get recent tickets for first matching client
+                        client_id = clients[0].get('id')
+                        if client_id:
+                            ticket_response = await client.get(
+                                f"{halopsa_config.base_url}/Tickets",
+                                headers=halopsa_config.headers(token),
+                                params={"client_id": client_id, "count": 5, "order": "dateoccurred desc"}
+                            )
+                            if ticket_response.status_code == 200:
+                                tickets = ticket_response.json().get("tickets", [])
+                                if tickets:
+                                    results.append(f"\n**Recent Tickets:** {len(tickets)} found")
+                                    for t in tickets[:3]:
+                                        status = t.get('status_name', t.get('status', 'Unknown'))
+                                        results.append(f"  - #{t.get('id')} {t.get('summary', 'No summary')[:50]} [{status}]")
+        except Exception as e:
+            results.append(f"## HaloPSA\n⚠️ Error: {str(e)[:50]}")
+
+    # Search Xero for invoices
+    if xero_config.is_configured:
+        try:
+            token = await xero_config.get_access_token()
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"https://api.xero.com/api.xro/2.0/Contacts",
+                    headers={"Authorization": f"Bearer {token}", "xero-tenant-id": xero_config.tenant_id, "Accept": "application/json"},
+                    params={"where": f'Name.Contains("{client_name}")'}
+                )
+                if response.status_code == 200:
+                    contacts = response.json().get("Contacts", [])
+                    if contacts:
+                        found_data = True
+                        results.append("\n## Xero")
+                        contact = contacts[0]
+                        results.append(f"- **{contact.get('Name', 'Unknown')}**")
+                        balance = contact.get('AccountsReceivable', {}).get('Outstanding', 0)
+                        overdue = contact.get('AccountsReceivable', {}).get('Overdue', 0)
+                        if balance or overdue:
+                            results.append(f"  - Outstanding: ${balance:,.2f} | Overdue: ${overdue:,.2f}")
+        except Exception as e:
+            results.append(f"\n## Xero\n⚠️ Error: {str(e)[:50]}")
+
+    # Search Salesforce
+    if salesforce_config.is_configured:
+        try:
+            token = await salesforce_config.get_access_token()
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                query = f"SELECT Id, Name, Industry, Website, Phone FROM Account WHERE Name LIKE '%{client_name}%' LIMIT 3"
+                response = await client.get(
+                    f"{salesforce_config.instance_url}/services/data/v59.0/query",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    params={"q": query}
+                )
+                if response.status_code == 200:
+                    records = response.json().get("records", [])
+                    if records:
+                        found_data = True
+                        results.append("\n## Salesforce")
+                        for acc in records[:3]:
+                            results.append(f"- **{acc.get('Name', 'Unknown')}** ({acc.get('Industry', 'N/A')})")
+                            if acc.get('Website'):
+                                results.append(f"  - Website: {acc.get('Website')}")
+        except Exception as e:
+            results.append(f"\n## Salesforce\n⚠️ Error: {str(e)[:50]}")
+
+    # Search Pax8 for subscriptions
+    if pax8_config.is_configured:
+        try:
+            token = await pax8_config.get_access_token()
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"{pax8_config.api_url}/v1/companies",
+                    headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                    params={"filter[name]": client_name}
+                )
+                if response.status_code == 200:
+                    companies = response.json().get("content", [])
+                    if companies:
+                        found_data = True
+                        results.append("\n## Pax8 Subscriptions")
+                        company = companies[0]
+                        results.append(f"- **{company.get('name', 'Unknown')}**")
+
+                        # Get subscriptions for this company
+                        sub_response = await client.get(
+                            f"{pax8_config.api_url}/v1/subscriptions",
+                            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                            params={"companyId": company.get('id')}
+                        )
+                        if sub_response.status_code == 200:
+                            subs = sub_response.json().get("content", [])
+                            if subs:
+                                results.append(f"  - **Active Subscriptions:** {len(subs)}")
+                                for sub in subs[:5]:
+                                    results.append(f"    - {sub.get('productName', 'Unknown')} (Qty: {sub.get('quantity', 0)})")
+        except Exception as e:
+            results.append(f"\n## Pax8\n⚠️ Error: {str(e)[:50]}")
+
+    if not found_data:
+        results.append(f"\nNo data found for '{client_name}' across connected platforms.")
+        results.append("\n**Suggestions:**")
+        results.append("- Check the exact spelling of the client name")
+        results.append("- Use `crowdit_platform_status` to see which platforms are connected")
+
+    return "\n".join(results)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def crowdit_distributor_search(
+    query: str = Field(..., description="Product search query (SKU, name, or keyword)"),
+    include_ingram: bool = Field(True, description="Search Ingram Micro catalog"),
+    include_dicker: bool = Field(True, description="Search Dicker Data catalog")
+) -> str:
+    """Search multiple IT distributors (Ingram Micro, Dicker Data) simultaneously for product comparison."""
+    results = [f"# Distributor Search: {query}\n"]
+    found_any = False
+
+    # Search Ingram Micro
+    if include_ingram and ingram_config.is_configured:
+        try:
+            token = await ingram_config.get_access_token()
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.get(
+                    f"{ingram_config.api_url}/resellers/v6/catalog",
+                    headers=ingram_config.headers(token),
+                    params={"keyword": query, "pageSize": 5}
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    catalog = data.get("catalog", data.get("products", []))
+                    if catalog:
+                        found_any = True
+                        results.append("## Ingram Micro")
+                        for p in catalog[:5]:
+                            results.append(f"- **{p.get('description', 'N/A')[:60]}**")
+                            results.append(f"  - Ingram PN: `{p.get('ingramPartNumber', 'N/A')}` | Vendor: {p.get('vendorName', 'N/A')}")
+                    else:
+                        results.append("## Ingram Micro\nNo products found.")
+        except Exception as e:
+            results.append(f"## Ingram Micro\n⚠️ Error: {str(e)[:50]}")
+    elif include_ingram:
+        results.append("## Ingram Micro\n❌ Not configured")
+
+    # Search Dicker Data
+    if include_dicker and dicker_config.is_configured:
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"{dicker_config.api_url}/api/products/search",
+                    headers=dicker_config.headers(),
+                    params={"search": query, "pageSize": 5}
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    products = data.get("products", data.get("items", data if isinstance(data, list) else []))
+                    if products:
+                        found_any = True
+                        results.append("\n## Dicker Data")
+                        for p in products[:5]:
+                            name = p.get("name", p.get("description", "N/A"))[:60]
+                            sku = p.get("sku", p.get("partNumber", "N/A"))
+                            vendor = p.get("vendor", p.get("manufacturer", "N/A"))
+                            cost = p.get("cost", p.get("dealerPrice", 0))
+                            stock = p.get("stock", p.get("quantity", "N/A"))
+                            results.append(f"- **{name}**")
+                            cost_str = f"${cost:,.2f}" if isinstance(cost, (int, float)) else str(cost)
+                            results.append(f"  - SKU: `{sku}` | Vendor: {vendor} | Cost: {cost_str} | Stock: {stock}")
+                    else:
+                        results.append("\n## Dicker Data\nNo products found.")
+        except Exception as e:
+            results.append(f"\n## Dicker Data\n⚠️ Error: {str(e)[:50]}")
+    elif include_dicker:
+        results.append("\n## Dicker Data\n❌ Not configured")
+
+    if not found_any:
+        results.append("\nNo products found across distributors.")
+        results.append("\n**Tips:**")
+        results.append("- Try different keywords or SKUs")
+        results.append("- Use `ingram_price_availability` for detailed Ingram pricing")
+        results.append("- Use `dicker_get_pricing` for detailed Dicker pricing")
+
+    return "\n".join(results)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def crowdit_support_summary(
+    client_name: Optional[str] = Field(None, description="Filter by client name (optional)")
+) -> str:
+    """Get a summary of open support tickets and issues across HaloPSA and Carbon."""
+    results = ["# Support Summary\n"]
+    total_open = 0
+
+    # Get HaloPSA tickets
+    if halopsa_config.is_configured:
+        try:
+            token = await halopsa_config.get_access_token()
+            params = {"count": 20, "order": "dateoccurred desc"}
+            if client_name:
+                params["clientsearch"] = client_name
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"{halopsa_config.base_url}/Tickets",
+                    headers=halopsa_config.headers(token),
+                    params=params
+                )
+                if response.status_code == 200:
+                    tickets = response.json().get("tickets", [])
+                    open_tickets = [t for t in tickets if t.get('status_name', '').lower() not in ['closed', 'completed', 'resolved']]
+                    total_open += len(open_tickets)
+
+                    results.append(f"## HaloPSA ({len(open_tickets)} open)")
+                    if open_tickets:
+                        # Group by status
+                        by_status = {}
+                        for t in open_tickets:
+                            status = t.get('status_name', 'Unknown')
+                            by_status.setdefault(status, []).append(t)
+
+                        for status, tix in by_status.items():
+                            results.append(f"\n### {status} ({len(tix)})")
+                            for t in tix[:3]:
+                                client_name_display = t.get('client_name', 'Unknown')[:30]
+                                results.append(f"- #{t.get('id')} **{client_name_display}**: {t.get('summary', 'No summary')[:50]}")
+                    else:
+                        results.append("No open tickets.")
+        except Exception as e:
+            results.append(f"## HaloPSA\n⚠️ Error: {str(e)[:50]}")
+    else:
+        results.append("## HaloPSA\n❌ Not configured")
+
+    # Get Carbon tickets (if configured)
+    if carbon_config.is_configured:
+        try:
+            headers = await carbon_config.get_headers()
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"{carbon_config.api_url}/tickets",
+                    headers=headers,
+                    params={"status": "open", "pageSize": 10}
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    tickets = data.get("tickets", data.get("data", []))
+                    total_open += len(tickets)
+
+                    results.append(f"\n## Carbon (Aussie BB) ({len(tickets)} open)")
+                    if tickets:
+                        for t in tickets[:5]:
+                            subject = t.get('subject', t.get('title', 'No subject'))[:50]
+                            results.append(f"- #{t.get('id', 'N/A')} {subject}")
+                    else:
+                        results.append("No open tickets.")
+        except Exception as e:
+            results.append(f"\n## Carbon\n⚠️ Error: {str(e)[:50]}")
+
+    results.insert(1, f"**Total Open Issues:** {total_open}\n")
+
+    return "\n".join(results)
+
+
+# ============================================================================
 # Server Status
 # ============================================================================
 
@@ -13939,17 +13969,6 @@ async def server_status() -> str:
         lines.append(f"✅ **Dicker Data:** Configured ({dicker_config.api_url})")
     else:
         lines.append("⚠️ **Dicker Data:** Missing DICKER_API_KEY")
-
-    # Ingram Micro status
-    if ingram_config.is_configured:
-        lines.append(f"✅ **Ingram Micro:** Configured ({ingram_config.api_url})")
-    else:
-        missing = []
-        if not os.getenv("INGRAM_CLIENT_ID") and not get_secret_sync("INGRAM_CLIENT_ID"):
-            missing.append("CLIENT_ID")
-        if not os.getenv("INGRAM_CLIENT_SECRET") and not get_secret_sync("INGRAM_CLIENT_SECRET"):
-            missing.append("CLIENT_SECRET")
-        lines.append(f"⚠️ **Ingram Micro:** Missing: {', '.join(missing) if missing else 'credentials'}")
 
     lines.append(f"\n**Cloud Run URL:** {CLOUD_RUN_URL}")
     return "\n".join(lines)
@@ -14777,15 +14796,15 @@ if __name__ == "__main__":
         {
             "name": "Ingram Micro",
             "config": ingram_config,
-            "category": "IT Distributor",
+            "category": "IT Distribution",
             "check_type": "oauth",
-            "env_vars": ["INGRAM_CLIENT_ID"],
+            "env_vars": ["INGRAM_CLIENT_ID", "INGRAM_CUSTOMER_NUMBER"],
             "auth_env_vars": ["INGRAM_CLIENT_SECRET"]
         },
         {
             "name": "Dicker Data",
             "config": dicker_config,
-            "category": "IT Distributor",
+            "category": "IT Distribution",
             "check_type": "api_key",
             "env_vars": ["DICKER_API_KEY"]
         },
@@ -14865,12 +14884,6 @@ if __name__ == "__main__":
             result["api_version"] = "v1"
         elif name == "Carbon (Aussie BB)":
             result["endpoint"] = "https://api.carbon.aussiebroadband.com.au"
-            result["api_version"] = "v1"
-        elif name == "Ingram Micro":
-            result["endpoint"] = "https://api.ingrammicro.com"
-            result["api_version"] = "v6"
-        elif name == "Dicker Data":
-            result["endpoint"] = "https://b2b-api.dickerdata.com.au"
             result["api_version"] = "v1"
 
         if not config.is_configured:
