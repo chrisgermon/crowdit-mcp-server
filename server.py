@@ -1,6 +1,6 @@
 """
 Crowd IT Unified MCP Server
-Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, Dicker Data, Ingram Micro, Aussie Broadband Carbon, and NinjaOne (RMM) integration.
+Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), and Auvik (Network Management) integration.
 """
 
 # Absolute first thing - print to both stdout and stderr
@@ -50,7 +50,7 @@ CLOUD_RUN_URL = os.getenv("CLOUD_RUN_URL", "https://crowdit-mcp-server-lypf4vkh4
 
 mcp = FastMCP(
     name="crowdit-mcp-server",
-    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, Dicker Data, Ingram Micro, Aussie Broadband Carbon, and NinjaOne (RMM) integration for MSP operations.",
+    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), and Auvik (Network Management) integration for MSP operations.",
     stateless_http=True  # Required for Cloud Run - enables stateless sessions
 )
 print(f"[STARTUP] FastMCP instance created at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
@@ -14297,6 +14297,689 @@ async def carbon_get_nbn_connection(
 
 
 # ============================================================================
+# Auvik Network Management Integration
+# ============================================================================
+
+class AuvikConfig:
+    """Auvik Network Management API configuration using Basic Authentication.
+
+    Environment variables:
+    - AUVIK_USERNAME: Auvik user email address
+    - AUVIK_API_KEY: Auvik API key (generated in user profile settings)
+    - AUVIK_REGION: API region - 'au1' (Australia), 'us1/us2/us3' (US), 'eu1/eu2' (Europe)
+
+    To set up Auvik API access:
+    1. Log into Auvik and go to User Profile settings
+    2. Generate an API key
+    3. Use your Auvik login email as the username
+    """
+
+    # Region to base URL mapping
+    REGION_URLS = {
+        "au1": "https://auvikapi.au1.my.auvik.com",  # Australia
+        "au": "https://auvikapi.au1.my.auvik.com",   # Australia alias
+        "us1": "https://auvikapi.us1.my.auvik.com",  # US
+        "us2": "https://auvikapi.us2.my.auvik.com",  # US
+        "us3": "https://auvikapi.us3.my.auvik.com",  # US
+        "us": "https://auvikapi.us1.my.auvik.com",   # US default alias
+        "eu1": "https://auvikapi.eu1.my.auvik.com",  # Europe
+        "eu2": "https://auvikapi.eu2.my.auvik.com",  # Europe
+        "eu": "https://auvikapi.eu1.my.auvik.com",   # Europe default alias
+    }
+
+    def __init__(self):
+        self._username: Optional[str] = None
+        self._api_key: Optional[str] = None
+        self.region = os.getenv("AUVIK_REGION", "au1").lower()  # Default to Australia
+
+    @property
+    def username(self) -> str:
+        """Get username from Secret Manager (with env var fallback)."""
+        if self._username:
+            return self._username
+        # Try Secret Manager first
+        secret = get_secret_sync("AUVIK_USERNAME")
+        if secret:
+            self._username = secret
+            return secret
+        # Fallback to environment variable
+        self._username = os.getenv("AUVIK_USERNAME", "")
+        return self._username
+
+    @property
+    def api_key(self) -> str:
+        """Get API key from Secret Manager (with env var fallback)."""
+        if self._api_key:
+            return self._api_key
+        # Try Secret Manager first
+        secret = get_secret_sync("AUVIK_API_KEY")
+        if secret:
+            self._api_key = secret
+            return secret
+        # Fallback to environment variable
+        self._api_key = os.getenv("AUVIK_API_KEY", "")
+        return self._api_key
+
+    @property
+    def base_url(self) -> str:
+        """Get the API base URL based on region."""
+        return self.REGION_URLS.get(self.region, self.REGION_URLS["au1"])
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.username and self.api_key)
+
+    def get_auth_header(self) -> str:
+        """Get the Basic auth header value."""
+        import base64
+        credentials = f"{self.username}:{self.api_key}"
+        encoded = base64.b64encode(credentials.encode()).decode()
+        return f"Basic {encoded}"
+
+    async def api_request(self, method: str, endpoint: str, params: dict = None, json_data: dict = None) -> Any:
+        """Make authenticated request to Auvik API."""
+        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.request(
+                method=method,
+                url=url,
+                params=params,
+                json=json_data,
+                headers={
+                    "Authorization": self.get_auth_header(),
+                    "Content-Type": "application/json",
+                    "Accept": "application/json"
+                },
+                timeout=60.0
+            )
+
+            if response.status_code >= 400:
+                error_text = response.text[:500]
+                logger.error(f"Auvik API error: {response.status_code} - {error_text}")
+                raise Exception(f"Auvik API error: {response.status_code} - {error_text}")
+
+            # Handle empty responses
+            if not response.text.strip():
+                return {}
+
+            return response.json()
+
+    async def verify_credentials(self) -> bool:
+        """Verify credentials are valid."""
+        try:
+            await self.api_request("GET", "authentication/verify")
+            return True
+        except Exception as e:
+            logger.error(f"Auvik credential verification failed: {e}")
+            return False
+
+
+auvik_config = AuvikConfig()
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def auvik_get_tenants(
+    tenant_domain_prefix: Optional[str] = Field(None, description="Filter by tenant domain prefix")
+) -> str:
+    """List all tenants (multi-sites and sites) accessible in Auvik.
+
+    Tenants represent the organizational hierarchy in Auvik - multi-sites contain sites.
+    Use this to get tenant IDs needed for other API calls.
+    """
+    if not auvik_config.is_configured:
+        return "Error: Auvik not configured. Set AUVIK_USERNAME and AUVIK_API_KEY."
+
+    try:
+        params = {}
+        if tenant_domain_prefix:
+            params["filter[tenantDomainPrefix]"] = tenant_domain_prefix
+
+        result = await auvik_config.api_request("GET", "v1/tenants", params=params)
+
+        if not result:
+            return "No tenants found."
+
+        tenants = result.get("data", [])
+
+        if not tenants:
+            return "No tenants found."
+
+        lines = [f"# Auvik Tenants ({len(tenants)} found)\n"]
+
+        for tenant in tenants:
+            tenant_id = tenant.get("id", "N/A")
+            attrs = tenant.get("attributes", {})
+            domain_prefix = attrs.get("domainPrefix", "N/A")
+            tenant_type = attrs.get("tenantType", "N/A")
+
+            lines.append(f"### {domain_prefix}")
+            lines.append(f"**ID:** `{tenant_id}`")
+            lines.append(f"**Type:** {tenant_type}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Auvik get tenants error: {e}")
+        return f"Error listing tenants: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def auvik_get_devices(
+    tenant_id: Optional[str] = Field(None, description="Filter by tenant ID (from auvik_get_tenants)"),
+    device_type: Optional[str] = Field(None, description="Filter by device type: 'switch', 'router', 'firewall', 'accessPoint', 'server', 'workstation', etc."),
+    online_status: Optional[str] = Field(None, description="Filter by status: 'online', 'offline', 'dormant'"),
+    modified_after: Optional[str] = Field(None, description="Filter devices modified after this date (ISO 8601 format)"),
+    page_first: int = Field(100, description="Number of results per page (max 100)")
+) -> str:
+    """List network devices discovered by Auvik.
+
+    Returns device information including name, IP, type, vendor, model, and status.
+    Can filter by tenant, device type, and online status.
+    """
+    if not auvik_config.is_configured:
+        return "Error: Auvik not configured. Set AUVIK_USERNAME and AUVIK_API_KEY."
+
+    try:
+        params = {"page[first]": min(max(1, page_first), 100)}
+
+        if tenant_id:
+            params["tenants"] = tenant_id
+        if device_type:
+            params["filter[deviceType]"] = device_type
+        if online_status:
+            params["filter[onlineStatus]"] = online_status
+        if modified_after:
+            params["filter[modifiedAfter]"] = modified_after
+
+        result = await auvik_config.api_request("GET", "v1/inventory/device/info", params=params)
+
+        if not result:
+            return "No devices found."
+
+        devices = result.get("data", [])
+
+        if not devices:
+            return "No devices found."
+
+        lines = [f"# Auvik Devices ({len(devices)} found)\n"]
+
+        status_icons = {
+            "online": "🟢",
+            "offline": "🔴",
+            "dormant": "🟡"
+        }
+
+        for device in devices:
+            device_id = device.get("id", "N/A")
+            attrs = device.get("attributes", {})
+            device_name = attrs.get("deviceName", "Unknown")
+            device_type_val = attrs.get("deviceType", "Unknown")
+            ip_addresses = attrs.get("ipAddresses", [])
+            make_model = attrs.get("makeModel", "")
+            vendor_name = attrs.get("vendorName", "")
+            software_version = attrs.get("softwareVersion", "")
+            online_status_val = attrs.get("onlineStatus", "unknown").lower()
+            last_seen = attrs.get("lastSeenTime", "")
+
+            status_icon = status_icons.get(online_status_val, "⚪")
+            ip_str = ", ".join(ip_addresses[:3]) if ip_addresses else "No IP"
+
+            lines.append(f"### {status_icon} {device_name}")
+            lines.append(f"**ID:** `{device_id}`")
+            lines.append(f"**Type:** {device_type_val} | **Status:** {online_status_val}")
+            lines.append(f"**IP:** {ip_str}")
+            if vendor_name or make_model:
+                lines.append(f"**Vendor/Model:** {vendor_name} {make_model}".strip())
+            if software_version:
+                lines.append(f"**Software:** {software_version}")
+            if last_seen:
+                lines.append(f"**Last Seen:** {last_seen}")
+            lines.append("")
+
+        # Pagination info
+        meta = result.get("meta", {})
+        total = meta.get("totalCount", len(devices))
+        if total > len(devices):
+            lines.append(f"\n_Showing {len(devices)} of {total} devices_")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Auvik get devices error: {e}")
+        return f"Error listing devices: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def auvik_get_device(
+    device_id: str = Field(..., description="Device ID to get details for")
+) -> str:
+    """Get detailed information about a specific Auvik device.
+
+    Returns comprehensive device details including hardware, software, interfaces, and configuration.
+    """
+    if not auvik_config.is_configured:
+        return "Error: Auvik not configured. Set AUVIK_USERNAME and AUVIK_API_KEY."
+
+    try:
+        result = await auvik_config.api_request("GET", f"v1/inventory/device/info/{device_id}")
+
+        if not result or not result.get("data"):
+            return f"Device {device_id} not found."
+
+        device = result.get("data", {})
+        attrs = device.get("attributes", {})
+
+        device_name = attrs.get("deviceName", "Unknown")
+        device_type = attrs.get("deviceType", "Unknown")
+        ip_addresses = attrs.get("ipAddresses", [])
+        make_model = attrs.get("makeModel", "")
+        vendor_name = attrs.get("vendorName", "")
+        software_version = attrs.get("softwareVersion", "")
+        serial_number = attrs.get("serialNumber", "")
+        firmware_version = attrs.get("firmwareVersion", "")
+        online_status = attrs.get("onlineStatus", "unknown")
+        last_seen = attrs.get("lastSeenTime", "")
+        first_seen = attrs.get("firstSeenTime", "")
+        description = attrs.get("description", "")
+
+        status_icon = "🟢" if online_status.lower() == "online" else "🔴" if online_status.lower() == "offline" else "🟡"
+
+        lines = [f"# {status_icon} {device_name}\n"]
+        lines.append(f"**Device ID:** `{device_id}`")
+        lines.append(f"**Type:** {device_type}")
+        lines.append(f"**Status:** {online_status}")
+
+        if description:
+            lines.append(f"**Description:** {description}")
+
+        lines.append(f"\n## Network")
+        ip_str = ", ".join(ip_addresses) if ip_addresses else "No IP addresses"
+        lines.append(f"**IP Addresses:** {ip_str}")
+
+        lines.append(f"\n## Hardware")
+        if vendor_name:
+            lines.append(f"**Vendor:** {vendor_name}")
+        if make_model:
+            lines.append(f"**Model:** {make_model}")
+        if serial_number:
+            lines.append(f"**Serial Number:** {serial_number}")
+
+        lines.append(f"\n## Software")
+        if software_version:
+            lines.append(f"**Software Version:** {software_version}")
+        if firmware_version:
+            lines.append(f"**Firmware Version:** {firmware_version}")
+
+        lines.append(f"\n## Timeline")
+        if first_seen:
+            lines.append(f"**First Seen:** {first_seen}")
+        if last_seen:
+            lines.append(f"**Last Seen:** {last_seen}")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Auvik get device error: {e}")
+        return f"Error getting device details: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def auvik_get_networks(
+    tenant_id: Optional[str] = Field(None, description="Filter by tenant ID"),
+    network_type: Optional[str] = Field(None, description="Filter by network type: 'routed', 'vlan', 'wifi', 'loopback', 'network', 'layer2'"),
+    scan_status: Optional[str] = Field(None, description="Filter by scan status: 'true', 'false'"),
+    page_first: int = Field(100, description="Number of results per page (max 100)")
+) -> str:
+    """List networks discovered by Auvik.
+
+    Returns network information including name, type, subnets, and associated devices.
+    """
+    if not auvik_config.is_configured:
+        return "Error: Auvik not configured. Set AUVIK_USERNAME and AUVIK_API_KEY."
+
+    try:
+        params = {"page[first]": min(max(1, page_first), 100)}
+
+        if tenant_id:
+            params["tenants"] = tenant_id
+        if network_type:
+            params["filter[networkType]"] = network_type
+        if scan_status:
+            params["filter[scanStatus]"] = scan_status
+
+        result = await auvik_config.api_request("GET", "v1/inventory/network/info", params=params)
+
+        if not result:
+            return "No networks found."
+
+        networks = result.get("data", [])
+
+        if not networks:
+            return "No networks found."
+
+        lines = [f"# Auvik Networks ({len(networks)} found)\n"]
+
+        for network in networks:
+            network_id = network.get("id", "N/A")
+            attrs = network.get("attributes", {})
+            network_name = attrs.get("networkName", "Unknown")
+            network_type_val = attrs.get("networkType", "Unknown")
+            description = attrs.get("description", "")
+            scan_status_val = attrs.get("scanStatus", "")
+            last_modified = attrs.get("lastModified", "")
+
+            lines.append(f"### {network_name}")
+            lines.append(f"**ID:** `{network_id}`")
+            lines.append(f"**Type:** {network_type_val}")
+            if description:
+                lines.append(f"**Description:** {description}")
+            if scan_status_val:
+                lines.append(f"**Scan Status:** {scan_status_val}")
+            if last_modified:
+                lines.append(f"**Last Modified:** {last_modified}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Auvik get networks error: {e}")
+        return f"Error listing networks: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def auvik_get_alerts(
+    tenant_id: Optional[str] = Field(None, description="Filter by tenant ID"),
+    severity: Optional[str] = Field(None, description="Filter by severity: 'emergency', 'critical', 'warning', 'info'"),
+    status: Optional[str] = Field(None, description="Filter by status: 'created', 'resolved', 'paused'"),
+    entity_type: Optional[str] = Field(None, description="Filter by entity type: 'device', 'network', 'interface'"),
+    page_first: int = Field(100, description="Number of results per page (max 100)")
+) -> str:
+    """Get alert history from Auvik.
+
+    Returns alerts with severity, status, affected entity, and timestamps.
+    """
+    if not auvik_config.is_configured:
+        return "Error: Auvik not configured. Set AUVIK_USERNAME and AUVIK_API_KEY."
+
+    try:
+        params = {"page[first]": min(max(1, page_first), 100)}
+
+        if tenant_id:
+            params["tenants"] = tenant_id
+        if severity:
+            params["filter[severity]"] = severity
+        if status:
+            params["filter[status]"] = status
+        if entity_type:
+            params["filter[entityType]"] = entity_type
+
+        result = await auvik_config.api_request("GET", "v1/alert/history/info", params=params)
+
+        if not result:
+            return "No alerts found."
+
+        alerts = result.get("data", [])
+
+        if not alerts:
+            return "No alerts found."
+
+        lines = [f"# Auvik Alerts ({len(alerts)} found)\n"]
+
+        severity_icons = {
+            "emergency": "🔴",
+            "critical": "🟠",
+            "warning": "🟡",
+            "info": "🔵"
+        }
+
+        for alert in alerts:
+            alert_id = alert.get("id", "N/A")
+            attrs = alert.get("attributes", {})
+            name = attrs.get("name", "Unknown Alert")
+            severity_val = attrs.get("severity", "unknown").lower()
+            status_val = attrs.get("status", "unknown")
+            entity_name = attrs.get("entityName", "")
+            entity_type_val = attrs.get("entityType", "")
+            detected_on = attrs.get("detectedOn", "")
+            description = attrs.get("description", "")
+
+            severity_icon = severity_icons.get(severity_val, "⚪")
+
+            lines.append(f"### {severity_icon} {name}")
+            lines.append(f"**ID:** `{alert_id}`")
+            lines.append(f"**Severity:** {severity_val.upper()} | **Status:** {status_val}")
+            if entity_name:
+                lines.append(f"**Entity:** {entity_name} ({entity_type_val})")
+            if description:
+                lines.append(f"**Description:** {description[:200]}")
+            if detected_on:
+                lines.append(f"**Detected:** {detected_on}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Auvik get alerts error: {e}")
+        return f"Error getting alerts: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def auvik_get_device_statistics(
+    device_id: str = Field(..., description="Device ID to get statistics for"),
+    stat_type: str = Field("bandwidth", description="Statistic type: 'bandwidth', 'cpu', 'memory', 'storage'"),
+    from_time: Optional[str] = Field(None, description="Start time (ISO 8601 format, e.g., '2024-01-01T00:00:00Z')"),
+    to_time: Optional[str] = Field(None, description="End time (ISO 8601 format)")
+) -> str:
+    """Get performance statistics for a device.
+
+    Returns time-series statistics for bandwidth, CPU, memory, or storage usage.
+    """
+    if not auvik_config.is_configured:
+        return "Error: Auvik not configured. Set AUVIK_USERNAME and AUVIK_API_KEY."
+
+    try:
+        stat_endpoints = {
+            "bandwidth": "deviceBandwidth",
+            "cpu": "deviceCpu",
+            "memory": "deviceMemory",
+            "storage": "deviceStorage"
+        }
+
+        endpoint_name = stat_endpoints.get(stat_type.lower(), "deviceBandwidth")
+        params = {"filter[deviceId]": device_id}
+
+        if from_time:
+            params["filter[fromTime]"] = from_time
+        if to_time:
+            params["filter[thruTime]"] = to_time
+
+        result = await auvik_config.api_request("GET", f"v1/stat/device/{endpoint_name}", params=params)
+
+        if not result:
+            return f"No {stat_type} statistics found for device {device_id}."
+
+        stats = result.get("data", [])
+
+        if not stats:
+            return f"No {stat_type} statistics found for device {device_id}."
+
+        lines = [f"# Device Statistics: {stat_type.upper()}\n"]
+        lines.append(f"**Device ID:** `{device_id}`\n")
+
+        for stat in stats[:20]:  # Limit to 20 data points
+            stat_id = stat.get("id", "")
+            attrs = stat.get("attributes", {})
+            timestamp = attrs.get("reportTime", "")
+
+            if stat_type.lower() == "bandwidth":
+                tx_bytes = attrs.get("totalBytesSent", 0)
+                rx_bytes = attrs.get("totalBytesReceived", 0)
+                lines.append(f"**{timestamp}**: TX: {tx_bytes:,} bytes | RX: {rx_bytes:,} bytes")
+            elif stat_type.lower() == "cpu":
+                utilization = attrs.get("totalUtilization", 0)
+                lines.append(f"**{timestamp}**: CPU: {utilization}%")
+            elif stat_type.lower() == "memory":
+                utilization = attrs.get("totalUtilization", 0)
+                lines.append(f"**{timestamp}**: Memory: {utilization}%")
+            elif stat_type.lower() == "storage":
+                utilization = attrs.get("totalUtilization", 0)
+                lines.append(f"**{timestamp}**: Storage: {utilization}%")
+
+        if len(stats) > 20:
+            lines.append(f"\n_...and {len(stats) - 20} more data points_")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Auvik get device statistics error: {e}")
+        return f"Error getting device statistics: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def auvik_get_interfaces(
+    device_id: Optional[str] = Field(None, description="Filter by device ID"),
+    interface_type: Optional[str] = Field(None, description="Filter by interface type"),
+    admin_status: Optional[str] = Field(None, description="Filter by admin status: 'up', 'down', 'testing'"),
+    page_first: int = Field(100, description="Number of results per page (max 100)")
+) -> str:
+    """List network interfaces discovered by Auvik.
+
+    Returns interface information including name, type, speed, and status.
+    """
+    if not auvik_config.is_configured:
+        return "Error: Auvik not configured. Set AUVIK_USERNAME and AUVIK_API_KEY."
+
+    try:
+        params = {"page[first]": min(max(1, page_first), 100)}
+
+        if device_id:
+            params["filter[parentDevice]"] = device_id
+        if interface_type:
+            params["filter[interfaceType]"] = interface_type
+        if admin_status:
+            params["filter[adminStatus]"] = admin_status
+
+        result = await auvik_config.api_request("GET", "v1/inventory/interface/info", params=params)
+
+        if not result:
+            return "No interfaces found."
+
+        interfaces = result.get("data", [])
+
+        if not interfaces:
+            return "No interfaces found."
+
+        lines = [f"# Auvik Interfaces ({len(interfaces)} found)\n"]
+
+        for interface in interfaces:
+            interface_id = interface.get("id", "N/A")
+            attrs = interface.get("attributes", {})
+            interface_name = attrs.get("interfaceName", "Unknown")
+            interface_type_val = attrs.get("interfaceType", "Unknown")
+            admin_status_val = attrs.get("adminStatus", "unknown")
+            oper_status = attrs.get("operationalStatus", "unknown")
+            speed = attrs.get("speed", 0)
+            mac_address = attrs.get("macAddress", "")
+            ip_addresses = attrs.get("ipAddresses", [])
+
+            status_icon = "🟢" if oper_status.lower() == "up" else "🔴"
+            speed_str = f"{speed / 1000000:.0f} Mbps" if speed else "Unknown"
+            ip_str = ", ".join(ip_addresses[:2]) if ip_addresses else "No IP"
+
+            lines.append(f"### {status_icon} {interface_name}")
+            lines.append(f"**ID:** `{interface_id}`")
+            lines.append(f"**Type:** {interface_type_val} | **Speed:** {speed_str}")
+            lines.append(f"**Admin:** {admin_status_val} | **Operational:** {oper_status}")
+            if mac_address:
+                lines.append(f"**MAC:** {mac_address}")
+            if ip_addresses:
+                lines.append(f"**IP:** {ip_str}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Auvik get interfaces error: {e}")
+        return f"Error listing interfaces: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def auvik_search_devices(
+    query: str = Field(..., description="Search query - matches device name or IP"),
+    tenant_id: Optional[str] = Field(None, description="Filter by tenant ID")
+) -> str:
+    """Search for devices in Auvik by name or IP address.
+
+    Returns matching devices with their details.
+    """
+    if not auvik_config.is_configured:
+        return "Error: Auvik not configured. Set AUVIK_USERNAME and AUVIK_API_KEY."
+
+    try:
+        params = {"page[first]": 100}
+
+        if tenant_id:
+            params["tenants"] = tenant_id
+
+        result = await auvik_config.api_request("GET", "v1/inventory/device/info", params=params)
+
+        if not result:
+            return "No devices found."
+
+        devices = result.get("data", [])
+
+        if not devices:
+            return "No devices found."
+
+        # Filter by query (case-insensitive)
+        query_lower = query.lower()
+        matches = []
+
+        for device in devices:
+            attrs = device.get("attributes", {})
+            device_name = attrs.get("deviceName", "").lower()
+            ip_addresses = [ip.lower() for ip in attrs.get("ipAddresses", [])]
+            description = attrs.get("description", "").lower()
+
+            if (query_lower in device_name or
+                any(query_lower in ip for ip in ip_addresses) or
+                query_lower in description):
+                matches.append(device)
+
+        if not matches:
+            return f"No devices matching '{query}' found."
+
+        lines = [f"# Search Results for '{query}' ({len(matches)} matches)\n"]
+
+        for device in matches[:50]:
+            device_id = device.get("id", "N/A")
+            attrs = device.get("attributes", {})
+            device_name = attrs.get("deviceName", "Unknown")
+            device_type = attrs.get("deviceType", "Unknown")
+            ip_addresses = attrs.get("ipAddresses", [])
+            online_status = attrs.get("onlineStatus", "unknown").lower()
+
+            status_icon = "🟢" if online_status == "online" else "🔴"
+            ip_str = ", ".join(ip_addresses[:2]) if ip_addresses else "No IP"
+
+            lines.append(f"### {status_icon} {device_name}")
+            lines.append(f"**ID:** `{device_id}` | **Type:** {device_type}")
+            lines.append(f"**IP:** {ip_str}")
+            lines.append("")
+
+        if len(matches) > 50:
+            lines.append(f"\n_...and {len(matches) - 50} more matches_")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Auvik search devices error: {e}")
+        return f"Error searching devices: {str(e)}"
+
+
+# ============================================================================
 # Server Status
 # ============================================================================
 
@@ -15453,6 +16136,14 @@ if __name__ == "__main__":
             "env_vars": ["NINJAONE_REGION"],
             "auth_env_vars": ["NINJAONE_CLIENT_ID", "NINJAONE_CLIENT_SECRET"]
         },
+        {
+            "name": "Auvik",
+            "config": auvik_config,
+            "category": "Network Management",
+            "check_type": "api_key",
+            "env_vars": ["AUVIK_REGION"],
+            "auth_env_vars": ["AUVIK_USERNAME", "AUVIK_API_KEY"]
+        },
     ]
 
     async def check_platform_status(platform: dict) -> dict:
@@ -15539,6 +16230,9 @@ if __name__ == "__main__":
         elif name == "NinjaOne":
             result["endpoint"] = getattr(config, 'base_url', 'https://oc.ninjarmm.com')
             result["api_version"] = "v2"
+        elif name == "Auvik":
+            result["endpoint"] = getattr(config, 'base_url', 'https://auvikapi.au1.my.auvik.com')
+            result["api_version"] = "v1"
 
         if not config.is_configured:
             # Build missing env vars message
