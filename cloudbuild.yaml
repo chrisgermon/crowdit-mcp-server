@@ -58,6 +58,7 @@ steps:
       - '--platform'
       - 'managed'
       - '--no-allow-unauthenticated'
+      - '--port=8080'
       - '--memory=1Gi'
       - '--cpu=1'
       - '--timeout=300'
