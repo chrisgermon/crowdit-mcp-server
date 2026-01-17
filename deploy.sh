@@ -135,7 +135,23 @@ echo "   - Salesforce: SALESFORCE_INSTANCE_URL, SALESFORCE_CLIENT_ID, SALESFORCE
 echo "   - NinjaOne: NINJAONE_CLIENT_ID, NINJAONE_CLIENT_SECRET (from NinjaOne API settings)"
 echo ""
 
+# Grant Cloud Run service account access to Secret Manager
+# This allows the server to read secrets directly from Secret Manager at runtime
+echo ""
+echo "🔐 Setting up Secret Manager access for Cloud Run..."
+SERVICE_ACCOUNT="${PROJECT_ID}-compute@developer.gserviceaccount.com"
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --member="serviceAccount:$SERVICE_ACCOUNT" \
+    --role="roles/secretmanager.secretAccessor" \
+    --condition=None \
+    --quiet 2>/dev/null || true
+echo "   ✓ Secret Manager access configured"
+
 # Build and deploy to Cloud Run
+# Secrets are loaded dynamically from Secret Manager at runtime (not via --set-secrets)
+# This prevents deployment failures when secrets don't exist yet
+# Integrations without configured secrets will show as "Not configured" on status page
+echo ""
 echo "🏗️  Building and deploying to Cloud Run..."
 echo "   This may take a few minutes..."
 echo ""
@@ -153,7 +169,6 @@ gcloud run deploy $SERVICE_NAME \
     --min-instances=0 \
     --max-instances=3 \
     --set-env-vars="BIGQUERY_PROJECT_ID=$PROJECT_ID,BIGQUERY_JOB_PROJECT_ID=$PROJECT_ID,BIGQUERY_DATA_PROJECT_ID=vision-radiology,CIPP_TENANT_ID=299ea2a8-99a3-426c-9836-8a5c6eafe007,CIPP_CLIENT_ID=728a6a60-ba98-472f-b06a-3fb726ad8270,CIPP_API_URL=https://cippq7gcl.azurewebsites.net,NINJAONE_REGION=oc" \
-    --set-secrets="HALOPSA_RESOURCE_SERVER=HALOPSA_RESOURCE_SERVER:latest,HALOPSA_AUTH_SERVER=HALOPSA_AUTH_SERVER:latest,HALOPSA_CLIENT_ID=HALOPSA_CLIENT_ID:latest,HALOPSA_CLIENT_SECRET=HALOPSA_CLIENT_SECRET:latest,HALOPSA_TENANT=HALOPSA_TENANT:latest,XERO_CLIENT_ID=XERO_CLIENT_ID:latest,XERO_CLIENT_SECRET=XERO_CLIENT_SECRET:latest,XERO_TENANT_ID=XERO_TENANT_ID:latest,XERO_REFRESH_TOKEN=XERO_REFRESH_TOKEN:latest,SHAREPOINT_CLIENT_ID=SHAREPOINT_CLIENT_ID:latest,SHAREPOINT_CLIENT_SECRET=SHAREPOINT_CLIENT_SECRET:latest,SHAREPOINT_TENANT_ID=SHAREPOINT_TENANT_ID:latest,SHAREPOINT_REFRESH_TOKEN=SHAREPOINT_REFRESH_TOKEN:latest,QUOTER_CLIENT_ID=QUOTER_CLIENT_ID:latest,QUOTER_CLIENT_SECRET=QUOTER_CLIENT_SECRET:latest,FORTICLOUD_USERNAME=FORTICLOUD_USERNAME:latest,FORTICLOUD_PASSWORD=FORTICLOUD_PASSWORD:latest,CIPP_CLIENT_SECRET=CIPP_CLIENT_SECRET:latest,N8N_API_URL=N8N_API_URL:latest,N8N_API_KEY=N8N_API_KEY:latest,VISIONRAD_HOSTNAME=VISIONRAD_HOSTNAME:latest,VISIONRAD_USERNAME=VISIONRAD_USERNAME:latest,VISIONRAD_PRIVATE_KEY=VISIONRAD_PRIVATE_KEY:latest,SALESFORCE_INSTANCE_URL=SALESFORCE_INSTANCE_URL:latest,SALESFORCE_CLIENT_ID=SALESFORCE_CLIENT_ID:latest,SALESFORCE_CLIENT_SECRET=SALESFORCE_CLIENT_SECRET:latest,SALESFORCE_REFRESH_TOKEN=SALESFORCE_REFRESH_TOKEN:latest,NINJAONE_CLIENT_ID=NINJAONE_CLIENT_ID:latest,NINJAONE_CLIENT_SECRET=NINJAONE_CLIENT_SECRET:latest" \
     --startup-cpu-boost
 
 # Get service URL
