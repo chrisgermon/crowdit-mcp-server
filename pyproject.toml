@@ -1,7 +1,7 @@
 [project]
 name = "crowdit-mcp-server"
 version = "2.0.0"
-description = "Crowd IT Unified MCP Server - HaloPSA, Xero, Front, and SharePoint integration"
+description = "Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Azure, and more"
 requires-python = ">=3.11"
 dependencies = [
     "fastmcp>=2.0.0",
@@ -15,6 +15,14 @@ dependencies = [
     "asyncssh>=2.14.0",
     "pymysql>=1.1.0",
     "google-cloud-build>=3.20.0",
+    # Azure SDK dependencies
+    "azure-identity>=1.15.0",
+    "azure-mgmt-resource>=23.0.0",
+    "azure-mgmt-network>=25.0.0",
+    "azure-mgmt-compute>=30.0.0",
+    "azure-mgmt-storage>=21.0.0",
+    "azure-mgmt-subscription>=3.1.0",
+    "azure-mgmt-costmanagement>=4.0.0",
 ]
 
 [build-system]
@@ -22,4 +30,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["server.py"]
+only-include = ["server.py", "azure_tools.py"]

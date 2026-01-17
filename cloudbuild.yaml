@@ -1,4 +1,9 @@
-# Cloud Build configuration for automatic deployment
+# Cloud Build configuration for automatic deployment with optimized caching
+#
+# Key optimizations:
+# 1. Kaniko for Docker layer caching (reuses cached layers across builds)
+# 2. Parallel push operations
+# 3. Combined deploy steps where possible
 #
 # To enable auto-deploy on merge to main, create a trigger in GCP Console:
 #   1. Go to Cloud Build > Triggers
@@ -19,19 +24,28 @@
 #     --name="deploy-on-main-merge"
 
 steps:
-  # Build the container image
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:$BUILD_ID', '-t', 'australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:latest', '.']
+  # Build with Kaniko for layer caching
+  # Kaniko caches layers in Artifact Registry, dramatically speeding up subsequent builds
+  - name: 'gcr.io/kaniko-project/executor:latest'
+    id: 'build'
+    args:
+      - '--dockerfile=Dockerfile'
+      - '--context=dir://.'
+      - '--destination=australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:$BUILD_ID'
+      - '--destination=australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:latest'
+      # Enable layer caching - cache stored in Artifact Registry
+      - '--cache=true'
+      - '--cache-ttl=168h'
+      - '--cache-repo=australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server-cache'
+      # Optimize for faster builds
+      - '--snapshot-mode=redo'
+      - '--use-new-run'
+      # Build args for reproducibility
+      - '--build-arg=BUILDKIT_INLINE_CACHE=1'
 
-  # Push the container image to Artifact Registry
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:$BUILD_ID']
-
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:latest']
-
-  # Remove old secret bindings that are now env vars (separate step due to gcloud flag restrictions)
+  # Remove old secret bindings that are now env vars
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'remove-old-secrets'
     entrypoint: gcloud
     args:
       - 'run'
@@ -41,9 +55,11 @@ steps:
       - '--region'
       - 'australia-southeast1'
       - '--remove-secrets=BIGQUERY_PROJECT_ID,BIGQUERY_JOB_PROJECT_ID,SHAREPOINT_CLIENT_ID,SHAREPOINT_CLIENT_SECRET,SHAREPOINT_TENANT_ID,SHAREPOINT_REFRESH_TOKEN,FORTICLOUD_API_KEY,FORTICLOUD_API_SECRET,FORTICLOUD_CLIENT_ID,QUOTER_API_KEY'
+    waitFor: ['build']
 
   # Deploy to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy'
     entrypoint: gcloud
     args:
       - 'run'
@@ -65,6 +81,7 @@ steps:
       - '--cpu-boost'
       - '--set-env-vars=BIGQUERY_PROJECT_ID=$PROJECT_ID,BIGQUERY_JOB_PROJECT_ID=$PROJECT_ID,BIGQUERY_DATA_PROJECT_ID=vision-radiology'
       - '--set-secrets=HALOPSA_RESOURCE_SERVER=HALOPSA_RESOURCE_SERVER:latest,HALOPSA_AUTH_SERVER=HALOPSA_AUTH_SERVER:latest,HALOPSA_CLIENT_ID=HALOPSA_CLIENT_ID:latest,HALOPSA_CLIENT_SECRET=HALOPSA_CLIENT_SECRET:latest,HALOPSA_TENANT=HALOPSA_TENANT:latest,XERO_CLIENT_ID=XERO_CLIENT_ID:latest,XERO_CLIENT_SECRET=XERO_CLIENT_SECRET:latest,XERO_TENANT_ID=XERO_TENANT_ID:latest,XERO_REFRESH_TOKEN=XERO_REFRESH_TOKEN:latest,QUOTER_CLIENT_ID=QUOTER_CLIENT_ID:latest,QUOTER_CLIENT_SECRET=QUOTER_CLIENT_SECRET:latest,VISIONRAD_HOSTNAME=VISIONRAD_HOSTNAME:latest,VISIONRAD_USERNAME=VISIONRAD_USERNAME:latest,VISIONRAD_PRIVATE_KEY=VISIONRAD_PRIVATE_KEY:latest,SALESFORCE_INSTANCE_URL=SALESFORCE_INSTANCE_URL:latest,SALESFORCE_CLIENT_ID=SALESFORCE_CLIENT_ID:latest,SALESFORCE_CLIENT_SECRET=SALESFORCE_CLIENT_SECRET:latest,SALESFORCE_REFRESH_TOKEN=SALESFORCE_REFRESH_TOKEN:latest,N8N_API_URL=N8N_API_URL:latest,N8N_API_KEY=N8N_API_KEY:latest'
+    waitFor: ['remove-old-secrets']
 
 images:
   - 'australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:$BUILD_ID'
@@ -72,4 +89,5 @@ images:
 
 options:
   logging: CLOUD_LOGGING_ONLY
-
+  # Use higher-spec machine for faster builds
+  machineType: 'E2_HIGHCPU_8'

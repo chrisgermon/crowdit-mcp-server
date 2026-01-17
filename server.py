@@ -1,6 +1,6 @@
 """
 Crowd IT Unified MCP Server
-Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), and GCloud CLI integration.
+Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, Dicker Data, Ingram Micro, and Aussie Broadband Carbon integration.
 """
 
 # Absolute first thing - print to both stdout and stderr
@@ -25,7 +25,7 @@ import asyncio
 import logging
 import json
 import re
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 from typing import Optional, Dict, Any
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -42,15 +42,22 @@ print(f"[STARTUP] FastMCP imported at t={time.time() - _module_start_time:.3f}s"
 from pydantic import BaseModel, Field
 print(f"[STARTUP] pydantic imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
+from azure_tools import register_azure_tools
+print(f"[STARTUP] azure_tools imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+
 # Cloud Run URL for OAuth callback
 CLOUD_RUN_URL = os.getenv("CLOUD_RUN_URL", "https://crowdit-mcp-server-lypf4vkh4q-ts.a.run.app")
 
 mcp = FastMCP(
     name="crowdit-mcp-server",
-    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), and GCloud CLI integration for MSP operations.",
+    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, Dicker Data, Ingram Micro, and Aussie Broadband Carbon integration for MSP operations.",
     stateless_http=True  # Required for Cloud Run - enables stateless sessions
 )
 print(f"[STARTUP] FastMCP instance created at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+
+# Register Azure tools
+register_azure_tools(mcp)
+print(f"[STARTUP] Azure tools registered at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
 # ============================================================================
 # Secret Manager Helper
@@ -4619,10 +4626,9 @@ async def n8n_deactivate_workflow(
 async def n8n_create_workflow(
     name: str = Field(..., description="Name of the new workflow"),
     nodes: Optional[str] = Field(None, description="JSON string of nodes array (optional, creates empty workflow if not provided)"),
-    connections: Optional[str] = Field(None, description="JSON string of connections object (optional)"),
-    active: bool = Field(False, description="Whether to activate the workflow immediately")
+    connections: Optional[str] = Field(None, description="JSON string of connections object (optional)")
 ) -> str:
-    """Create a new n8n workflow."""
+    """Create a new n8n workflow. Workflows are created inactive by default - use n8n_activate_workflow to activate."""
     if not n8n_config.is_configured:
         return "Error: n8n not configured."
     try:
@@ -4632,7 +4638,6 @@ async def n8n_create_workflow(
             "name": name,
             "nodes": json_module.loads(nodes) if nodes else [],
             "connections": json_module.loads(connections) if connections else {},
-            "active": active,
             "settings": {}
         }
 
@@ -11231,6 +11236,2426 @@ async def gcp_logs(
 
 
 # ============================================================================
+# Dicker Data Integration (IT Distributor)
+# ============================================================================
+
+class DickerDataConfig:
+    """Configuration for Dicker Data B2B API integration."""
+
+    def __init__(self):
+        # Try Secret Manager first, then fall back to environment variables
+        self.api_key = get_secret_sync("DICKER_API_KEY") or os.getenv("DICKER_API_KEY", "")
+        self.api_url = os.getenv("DICKER_API_URL", "https://b2b-api.dickerdata.com.au").rstrip("/")
+        self.account_code = os.getenv("DICKER_ACCOUNT_CODE", "")
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.api_key)
+
+    def headers(self) -> Dict[str, str]:
+        """Get headers for API requests."""
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+
+dicker_config = DickerDataConfig()
+
+
+def _format_dicker_product(product: Dict[str, Any]) -> str:
+    """Format a Dicker Data product for display."""
+    sku = product.get("sku", product.get("partNumber", product.get("productCode", "N/A")))
+    name = product.get("name", product.get("description", product.get("productName", "Unknown")))
+    vendor = product.get("vendor", product.get("manufacturer", product.get("brand", "N/A")))
+
+    # Price handling
+    price = product.get("price", product.get("unitPrice", product.get("rrp", 0)))
+    cost = product.get("cost", product.get("dealerPrice", product.get("buyPrice", 0)))
+
+    # Stock handling
+    stock = product.get("stock", product.get("quantity", product.get("qtyAvailable", product.get("availableStock", "N/A"))))
+    stock_status = product.get("stockStatus", product.get("availability", ""))
+
+    # ETA/Lead time
+    eta = product.get("eta", product.get("leadTime", product.get("expectedDate", "")))
+
+    lines = [f"### {name}"]
+    lines.append(f"**SKU:** `{sku}` | **Vendor:** {vendor}")
+
+    if cost:
+        lines.append(f"**Cost:** ${cost:,.2f}" if isinstance(cost, (int, float)) else f"**Cost:** {cost}")
+    if price:
+        lines.append(f"**RRP:** ${price:,.2f}" if isinstance(price, (int, float)) else f"**RRP:** {price}")
+
+    if stock != "N/A":
+        stock_info = f"**Stock:** {stock}"
+        if stock_status:
+            stock_info += f" ({stock_status})"
+        lines.append(stock_info)
+
+    if eta:
+        lines.append(f"**ETA:** {eta}")
+
+    # Additional details
+    category = product.get("category", product.get("productCategory", ""))
+    if category:
+        lines.append(f"**Category:** {category}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def dicker_search_products(
+    query: str = Field(..., description="Search query (product name, SKU, or keyword)"),
+    vendor: Optional[str] = Field(None, description="Filter by vendor/manufacturer name"),
+    category: Optional[str] = Field(None, description="Filter by product category"),
+    in_stock_only: bool = Field(False, description="Only show products in stock"),
+    limit: int = Field(25, description="Max results (1-100)")
+) -> str:
+    """Search Dicker Data product catalog. Returns product details, pricing, and stock availability."""
+    if not dicker_config.is_configured:
+        return "Error: Dicker Data not configured. Set DICKER_API_KEY environment variable or secret."
+
+    try:
+        # Build search parameters
+        params = {
+            "search": query,
+            "pageSize": min(max(1, limit), 100)
+        }
+        if vendor:
+            params["vendor"] = vendor
+        if category:
+            params["category"] = category
+        if in_stock_only:
+            params["inStock"] = "true"
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{dicker_config.api_url}/api/products/search",
+                headers=dicker_config.headers(),
+                params=params
+            )
+
+            if response.status_code == 401:
+                return "Error: Authentication failed. Check DICKER_API_KEY."
+            if response.status_code == 403:
+                return "Error: Access denied. Verify API key permissions."
+
+            response.raise_for_status()
+            data = response.json()
+
+        # Handle different response formats
+        products = data.get("products", data.get("items", data.get("results", data if isinstance(data, list) else [])))
+
+        if not products:
+            return f"No products found for '{query}'."
+
+        total = data.get("total", data.get("totalCount", len(products)))
+
+        results = [f"# Dicker Data Product Search\n"]
+        results.append(f"**Query:** {query} | **Results:** {len(products)} of {total}\n")
+
+        for product in products[:limit]:
+            results.append(_format_dicker_product(product))
+            results.append("---")
+
+        return "\n".join(results)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def dicker_get_product(
+    sku: str = Field(..., description="Product SKU/part number to look up")
+) -> str:
+    """Get detailed information for a specific Dicker Data product by SKU."""
+    if not dicker_config.is_configured:
+        return "Error: Dicker Data not configured. Set DICKER_API_KEY environment variable or secret."
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{dicker_config.api_url}/api/products/{sku}",
+                headers=dicker_config.headers()
+            )
+
+            if response.status_code == 404:
+                return f"Product not found: {sku}"
+            if response.status_code == 401:
+                return "Error: Authentication failed. Check DICKER_API_KEY."
+
+            response.raise_for_status()
+            product = response.json()
+
+        # Format detailed product view
+        result = [f"# Product Details: {sku}\n"]
+        result.append(_format_dicker_product(product))
+
+        # Additional details if available
+        specs = product.get("specifications", product.get("specs", {}))
+        if specs:
+            result.append("\n## Specifications")
+            for key, value in specs.items():
+                result.append(f"- **{key}:** {value}")
+
+        desc = product.get("longDescription", product.get("fullDescription", ""))
+        if desc:
+            result.append(f"\n## Description\n{desc}")
+
+        return "\n".join(result)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def dicker_check_stock(
+    skus: str = Field(..., description="Comma-separated list of SKUs to check stock for")
+) -> str:
+    """Check real-time stock availability for one or more Dicker Data products."""
+    if not dicker_config.is_configured:
+        return "Error: Dicker Data not configured. Set DICKER_API_KEY environment variable or secret."
+
+    try:
+        sku_list = [s.strip() for s in skus.split(",") if s.strip()]
+        if not sku_list:
+            return "Error: No valid SKUs provided."
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Try batch endpoint first
+            response = await client.post(
+                f"{dicker_config.api_url}/api/products/stock",
+                headers=dicker_config.headers(),
+                json={"skus": sku_list}
+            )
+
+            if response.status_code == 404:
+                # Fall back to individual lookups
+                results = []
+                for sku in sku_list:
+                    try:
+                        resp = await client.get(
+                            f"{dicker_config.api_url}/api/products/{sku}/stock",
+                            headers=dicker_config.headers()
+                        )
+                        if resp.status_code == 200:
+                            results.append(resp.json())
+                        else:
+                            results.append({"sku": sku, "error": f"Status {resp.status_code}"})
+                    except Exception as e:
+                        results.append({"sku": sku, "error": str(e)})
+                stock_data = results
+            elif response.status_code == 401:
+                return "Error: Authentication failed. Check DICKER_API_KEY."
+            else:
+                response.raise_for_status()
+                data = response.json()
+                stock_data = data.get("items", data.get("products", data if isinstance(data, list) else [data]))
+
+        output = ["# Dicker Data Stock Check\n"]
+        output.append(f"**SKUs Checked:** {len(sku_list)}\n")
+
+        for item in stock_data:
+            sku = item.get("sku", item.get("partNumber", "Unknown"))
+            qty = item.get("quantity", item.get("stock", item.get("available", "N/A")))
+            status = item.get("status", item.get("stockStatus", item.get("availability", "")))
+            eta = item.get("eta", item.get("expectedDate", item.get("leadTime", "")))
+            warehouse = item.get("warehouse", item.get("location", ""))
+            error = item.get("error", "")
+
+            if error:
+                output.append(f"- **{sku}:** ⚠️ {error}")
+            else:
+                stock_icon = "✅" if (isinstance(qty, int) and qty > 0) or status.lower() in ["in stock", "available"] else "⚠️"
+                line = f"- **{sku}:** {stock_icon} {qty}"
+                if status:
+                    line += f" ({status})"
+                if eta:
+                    line += f" | ETA: {eta}"
+                if warehouse:
+                    line += f" | {warehouse}"
+                output.append(line)
+
+        return "\n".join(output)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def dicker_get_pricing(
+    skus: str = Field(..., description="Comma-separated list of SKUs to get pricing for")
+) -> str:
+    """Get current pricing for one or more Dicker Data products. Returns dealer cost and RRP."""
+    if not dicker_config.is_configured:
+        return "Error: Dicker Data not configured. Set DICKER_API_KEY environment variable or secret."
+
+    try:
+        sku_list = [s.strip() for s in skus.split(",") if s.strip()]
+        if not sku_list:
+            return "Error: No valid SKUs provided."
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Try batch pricing endpoint
+            response = await client.post(
+                f"{dicker_config.api_url}/api/products/pricing",
+                headers=dicker_config.headers(),
+                json={"skus": sku_list}
+            )
+
+            if response.status_code == 404:
+                # Fall back to individual lookups
+                results = []
+                for sku in sku_list:
+                    try:
+                        resp = await client.get(
+                            f"{dicker_config.api_url}/api/products/{sku}/price",
+                            headers=dicker_config.headers()
+                        )
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            data["sku"] = sku
+                            results.append(data)
+                        else:
+                            results.append({"sku": sku, "error": f"Status {resp.status_code}"})
+                    except Exception as e:
+                        results.append({"sku": sku, "error": str(e)})
+                pricing_data = results
+            elif response.status_code == 401:
+                return "Error: Authentication failed. Check DICKER_API_KEY."
+            else:
+                response.raise_for_status()
+                data = response.json()
+                pricing_data = data.get("items", data.get("products", data if isinstance(data, list) else [data]))
+
+        output = ["# Dicker Data Pricing\n"]
+        output.append("| SKU | Cost | RRP | Currency |")
+        output.append("|-----|------|-----|----------|")
+
+        for item in pricing_data:
+            sku = item.get("sku", item.get("partNumber", "Unknown"))
+            cost = item.get("cost", item.get("dealerPrice", item.get("buyPrice", item.get("unitPrice", "N/A"))))
+            rrp = item.get("rrp", item.get("retailPrice", item.get("listPrice", "N/A")))
+            currency = item.get("currency", "AUD")
+            error = item.get("error", "")
+
+            if error:
+                output.append(f"| {sku} | ⚠️ Error | {error} | - |")
+            else:
+                cost_str = f"${cost:,.2f}" if isinstance(cost, (int, float)) else str(cost)
+                rrp_str = f"${rrp:,.2f}" if isinstance(rrp, (int, float)) else str(rrp)
+                output.append(f"| {sku} | {cost_str} | {rrp_str} | {currency} |")
+
+        return "\n".join(output)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def dicker_list_vendors() -> str:
+    """List all available vendors/manufacturers in Dicker Data catalog."""
+    if not dicker_config.is_configured:
+        return "Error: Dicker Data not configured. Set DICKER_API_KEY environment variable or secret."
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{dicker_config.api_url}/api/vendors",
+                headers=dicker_config.headers()
+            )
+
+            if response.status_code == 401:
+                return "Error: Authentication failed. Check DICKER_API_KEY."
+            if response.status_code == 404:
+                # Try alternative endpoint
+                response = await client.get(
+                    f"{dicker_config.api_url}/api/products/vendors",
+                    headers=dicker_config.headers()
+                )
+
+            response.raise_for_status()
+            data = response.json()
+
+        vendors = data.get("vendors", data.get("items", data if isinstance(data, list) else []))
+
+        if not vendors:
+            return "No vendors found."
+
+        output = ["# Dicker Data Vendors\n"]
+        output.append(f"**Total Vendors:** {len(vendors)}\n")
+
+        # Sort vendors alphabetically
+        if vendors and isinstance(vendors[0], dict):
+            vendor_names = sorted([v.get("name", v.get("vendorName", str(v))) for v in vendors])
+        else:
+            vendor_names = sorted(vendors)
+
+        for name in vendor_names:
+            output.append(f"- {name}")
+
+        return "\n".join(output)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def dicker_list_categories() -> str:
+    """List all product categories available in Dicker Data catalog."""
+    if not dicker_config.is_configured:
+        return "Error: Dicker Data not configured. Set DICKER_API_KEY environment variable or secret."
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{dicker_config.api_url}/api/categories",
+                headers=dicker_config.headers()
+            )
+
+            if response.status_code == 401:
+                return "Error: Authentication failed. Check DICKER_API_KEY."
+            if response.status_code == 404:
+                # Try alternative endpoint
+                response = await client.get(
+                    f"{dicker_config.api_url}/api/products/categories",
+                    headers=dicker_config.headers()
+                )
+
+            response.raise_for_status()
+            data = response.json()
+
+        categories = data.get("categories", data.get("items", data if isinstance(data, list) else []))
+
+        if not categories:
+            return "No categories found."
+
+        output = ["# Dicker Data Categories\n"]
+        output.append(f"**Total Categories:** {len(categories)}\n")
+
+        for cat in categories:
+            if isinstance(cat, dict):
+                name = cat.get("name", cat.get("categoryName", str(cat)))
+                count = cat.get("productCount", cat.get("count", ""))
+                if count:
+                    output.append(f"- **{name}** ({count} products)")
+                else:
+                    output.append(f"- {name}")
+            else:
+                output.append(f"- {cat}")
+
+        return "\n".join(output)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def dicker_search_by_vendor(
+    vendor: str = Field(..., description="Vendor/manufacturer name to search"),
+    query: Optional[str] = Field(None, description="Optional additional search term"),
+    in_stock_only: bool = Field(False, description="Only show products in stock"),
+    limit: int = Field(25, description="Max results (1-100)")
+) -> str:
+    """Search products from a specific vendor/manufacturer in Dicker Data."""
+    if not dicker_config.is_configured:
+        return "Error: Dicker Data not configured. Set DICKER_API_KEY environment variable or secret."
+
+    try:
+        params = {
+            "vendor": vendor,
+            "pageSize": min(max(1, limit), 100)
+        }
+        if query:
+            params["search"] = query
+        if in_stock_only:
+            params["inStock"] = "true"
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{dicker_config.api_url}/api/products/search",
+                headers=dicker_config.headers(),
+                params=params
+            )
+
+            if response.status_code == 401:
+                return "Error: Authentication failed. Check DICKER_API_KEY."
+
+            response.raise_for_status()
+            data = response.json()
+
+        products = data.get("products", data.get("items", data.get("results", data if isinstance(data, list) else [])))
+
+        if not products:
+            return f"No products found for vendor '{vendor}'."
+
+        total = data.get("total", data.get("totalCount", len(products)))
+
+        results = [f"# Dicker Data - {vendor} Products\n"]
+        if query:
+            results.append(f"**Search:** {query} | **Results:** {len(products)} of {total}\n")
+        else:
+            results.append(f"**Results:** {len(products)} of {total}\n")
+
+        for product in products[:limit]:
+            results.append(_format_dicker_product(product))
+            results.append("---")
+
+        return "\n".join(results)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+# ============================================================================
+# Ingram Micro Reseller API Integration (Australia)
+# ============================================================================
+
+class IngramMicroConfig:
+    """Configuration for Ingram Micro Reseller API v6 integration (Australia)."""
+
+    def __init__(self):
+        # Try Secret Manager first, then fall back to environment variables
+        self.client_id = get_secret_sync("INGRAM_CLIENT_ID") or os.getenv("INGRAM_CLIENT_ID", "")
+        self.client_secret = get_secret_sync("INGRAM_CLIENT_SECRET") or os.getenv("INGRAM_CLIENT_SECRET", "")
+        self.customer_number = get_secret_sync("INGRAM_CUSTOMER_NUMBER") or os.getenv("INGRAM_CUSTOMER_NUMBER", "")
+        self.api_url = os.getenv("INGRAM_API_URL", "https://api.ingrammicro.com:443").rstrip("/")
+        self.country_code = os.getenv("INGRAM_COUNTRY_CODE", "AU")  # Australia by default
+        self._access_token: Optional[str] = None
+        self._token_expiry: Optional[datetime] = None
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.client_id and self.client_secret)
+
+    async def get_access_token(self) -> str:
+        """Get OAuth2 access token using client credentials flow."""
+        # Check if we have a valid cached token
+        if self._access_token and self._token_expiry:
+            if datetime.now(timezone.utc) < self._token_expiry - timedelta(minutes=5):
+                return self._access_token
+
+        # Request new token
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{self.api_url}/oauth/oauth20/token",
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"}
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        self._access_token = data.get("access_token")
+        expires_in = data.get("expires_in", 86400)  # Default 24 hours
+        self._token_expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+
+        return self._access_token
+
+    async def headers(self) -> Dict[str, str]:
+        """Get headers for API requests with Bearer token."""
+        token = await self.get_access_token()
+        return {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "IM-CustomerNumber": self.customer_number,
+            "IM-CountryCode": self.country_code,
+            "IM-CorrelationID": f"crowdit-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        }
+
+
+ingram_config = IngramMicroConfig()
+
+
+def _format_ingram_product(product: Dict[str, Any]) -> str:
+    """Format an Ingram Micro product for display."""
+    ingram_pn = product.get("ingramPartNumber", "N/A")
+    vendor_pn = product.get("vendorPartNumber", product.get("vendorNumber", "N/A"))
+    description = product.get("description", product.get("productDescription", "Unknown"))
+    vendor = product.get("vendorName", product.get("vendor", "N/A"))
+    category = product.get("category", product.get("productCategory", ""))
+    subcategory = product.get("subCategory", "")
+    product_type = product.get("productType", "")
+    upc = product.get("upc", product.get("upcCode", ""))
+
+    lines = [f"### {description}"]
+    lines.append(f"**Ingram PN:** `{ingram_pn}` | **Vendor PN:** `{vendor_pn}`")
+    lines.append(f"**Vendor:** {vendor}")
+
+    if category:
+        cat_line = f"**Category:** {category}"
+        if subcategory:
+            cat_line += f" > {subcategory}"
+        lines.append(cat_line)
+
+    if product_type:
+        lines.append(f"**Type:** {product_type}")
+
+    if upc:
+        lines.append(f"**UPC:** {upc}")
+
+    # Pricing info if available
+    customer_price = product.get("customerPrice", product.get("unitPrice", 0))
+    retail_price = product.get("retailPrice", product.get("msrp", 0))
+    if customer_price:
+        lines.append(f"**Your Price:** ${customer_price:,.2f}" if isinstance(customer_price, (int, float)) else f"**Your Price:** {customer_price}")
+    if retail_price:
+        lines.append(f"**MSRP:** ${retail_price:,.2f}" if isinstance(retail_price, (int, float)) else f"**MSRP:** {retail_price}")
+
+    # Availability info if present
+    availability = product.get("availability", {})
+    if availability:
+        available = availability.get("available", availability.get("availableQuantity", "N/A"))
+        lines.append(f"**Available:** {available}")
+
+    return "\n".join(lines)
+
+
+def _format_ingram_price_availability(item: Dict[str, Any]) -> str:
+    """Format Ingram Micro price and availability response."""
+    ingram_pn = item.get("ingramPartNumber", "N/A")
+    description = item.get("description", "")
+    vendor = item.get("vendorName", "N/A")
+
+    lines = [f"### {description or ingram_pn}"]
+    lines.append(f"**Ingram PN:** `{ingram_pn}` | **Vendor:** {vendor}")
+
+    # Pricing
+    pricing = item.get("pricing", {})
+    if pricing:
+        customer_price = pricing.get("customerPrice", 0)
+        msrp = pricing.get("retailPrice", pricing.get("msrp", 0))
+        map_price = pricing.get("mapPrice", 0)
+        if customer_price:
+            lines.append(f"**Your Price:** ${customer_price:,.2f}")
+        if msrp:
+            lines.append(f"**MSRP:** ${msrp:,.2f}")
+        if map_price:
+            lines.append(f"**MAP:** ${map_price:,.2f}")
+    else:
+        # Flat pricing structure
+        customer_price = item.get("customerPrice", item.get("unitPrice", 0))
+        if customer_price:
+            lines.append(f"**Your Price:** ${customer_price:,.2f}" if isinstance(customer_price, (int, float)) else f"**Your Price:** {customer_price}")
+
+    # Availability by warehouse
+    availability = item.get("availability", {})
+    if isinstance(availability, dict):
+        available = availability.get("available", availability.get("totalAvailability", 0))
+        lines.append(f"**Total Available:** {available}")
+
+        # Branch/warehouse details
+        availability_by_warehouse = availability.get("availabilityByWarehouse", [])
+        if availability_by_warehouse:
+            lines.append("**By Warehouse:**")
+            for wh in availability_by_warehouse[:5]:  # Limit to 5 warehouses
+                wh_name = wh.get("warehouseId", wh.get("location", "Unknown"))
+                wh_qty = wh.get("quantityAvailable", wh.get("available", 0))
+                wh_eta = wh.get("quantityBackordered", "")
+                line = f"  - {wh_name}: {wh_qty}"
+                if wh_eta:
+                    line += f" (B/O: {wh_eta})"
+                lines.append(line)
+    elif isinstance(availability, list):
+        lines.append("**Availability:**")
+        for avail in availability[:5]:
+            wh = avail.get("warehouseId", avail.get("location", "Unknown"))
+            qty = avail.get("quantityAvailable", avail.get("available", 0))
+            lines.append(f"  - {wh}: {qty}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def ingram_search_products(
+    query: str = Field(..., description="Search query (product name, SKU, keyword, or vendor part number)"),
+    vendor_name: Optional[str] = Field(None, description="Filter by vendor/manufacturer name"),
+    category: Optional[str] = Field(None, description="Filter by product category"),
+    page_size: int = Field(25, description="Number of results per page (1-100)"),
+    page_number: int = Field(1, description="Page number for pagination")
+) -> str:
+    """Search Ingram Micro product catalog (Australia). Returns product details and basic information."""
+    if not ingram_config.is_configured:
+        return "Error: Ingram Micro not configured. Set INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET environment variables or secrets."
+
+    try:
+        headers = await ingram_config.headers()
+
+        # Build query parameters
+        params = {
+            "pageSize": min(max(1, page_size), 100),
+            "pageNumber": page_number,
+        }
+
+        # Ingram uses different params - check API docs
+        if query:
+            params["keyword"] = query
+        if vendor_name:
+            params["vendorName"] = vendor_name
+        if category:
+            params["category"] = category
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{ingram_config.api_url}/resellers/v6/catalog",
+                headers=headers,
+                params=params
+            )
+
+            if response.status_code == 401:
+                # Token might be expired, clear cache and retry
+                ingram_config._access_token = None
+                headers = await ingram_config.headers()
+                response = await client.get(
+                    f"{ingram_config.api_url}/resellers/v6/catalog",
+                    headers=headers,
+                    params=params
+                )
+
+            if response.status_code == 401:
+                return "Error: Authentication failed. Check INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET."
+            if response.status_code == 403:
+                return "Error: Access denied. Verify API credentials and permissions."
+
+            response.raise_for_status()
+            data = response.json()
+
+        # Handle response
+        products = data.get("catalog", data.get("products", data.get("items", [])))
+        if not products:
+            return f"No products found for '{query}'."
+
+        records_found = data.get("recordsFound", data.get("totalCount", len(products)))
+        page_info = f"Page {page_number} | Showing {len(products)} of {records_found} results"
+
+        results = ["# Ingram Micro Product Search\n"]
+        results.append(f"**Query:** {query}")
+        results.append(f"**{page_info}**\n")
+
+        for product in products:
+            results.append(_format_ingram_product(product))
+            results.append("---")
+
+        if len(products) < records_found:
+            results.append(f"\n*More results available. Use page_number={page_number + 1} to see next page.*")
+
+        return "\n".join(results)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:300]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def ingram_get_product_details(
+    ingram_part_number: str = Field(..., description="Ingram Micro part number to look up")
+) -> str:
+    """Get detailed information for a specific product by Ingram Micro part number."""
+    if not ingram_config.is_configured:
+        return "Error: Ingram Micro not configured. Set INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET environment variables or secrets."
+
+    try:
+        headers = await ingram_config.headers()
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{ingram_config.api_url}/resellers/v6/catalog/details/{ingram_part_number}",
+                headers=headers
+            )
+
+            if response.status_code == 404:
+                return f"Product not found: {ingram_part_number}"
+            if response.status_code == 401:
+                ingram_config._access_token = None
+                headers = await ingram_config.headers()
+                response = await client.get(
+                    f"{ingram_config.api_url}/resellers/v6/catalog/details/{ingram_part_number}",
+                    headers=headers
+                )
+
+            if response.status_code == 401:
+                return "Error: Authentication failed. Check INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET."
+
+            response.raise_for_status()
+            product = response.json()
+
+        # Format detailed product view
+        result = [f"# Ingram Micro Product Details\n"]
+
+        ingram_pn = product.get("ingramPartNumber", ingram_part_number)
+        vendor_pn = product.get("vendorPartNumber", "N/A")
+        description = product.get("description", "Unknown")
+        vendor = product.get("vendorName", "N/A")
+
+        result.append(f"## {description}")
+        result.append(f"**Ingram PN:** `{ingram_pn}`")
+        result.append(f"**Vendor PN:** `{vendor_pn}`")
+        result.append(f"**Vendor:** {vendor}")
+
+        # Categories
+        category = product.get("category", "")
+        subcategory = product.get("subCategory", "")
+        if category:
+            cat_line = f"**Category:** {category}"
+            if subcategory:
+                cat_line += f" > {subcategory}"
+            result.append(cat_line)
+
+        # Product identifiers
+        upc = product.get("upc", "")
+        if upc:
+            result.append(f"**UPC:** {upc}")
+
+        product_type = product.get("productType", "")
+        if product_type:
+            result.append(f"**Type:** {product_type}")
+
+        # Technical specs if available
+        technical_specs = product.get("technicalSpecifications", product.get("specifications", []))
+        if technical_specs:
+            result.append("\n## Technical Specifications")
+            if isinstance(technical_specs, list):
+                for spec in technical_specs[:20]:  # Limit specs displayed
+                    spec_name = spec.get("name", spec.get("attributeName", ""))
+                    spec_value = spec.get("value", spec.get("attributeValue", ""))
+                    if spec_name and spec_value:
+                        result.append(f"- **{spec_name}:** {spec_value}")
+            elif isinstance(technical_specs, dict):
+                for key, value in list(technical_specs.items())[:20]:
+                    result.append(f"- **{key}:** {value}")
+
+        # Additional info
+        warranty = product.get("warrantyInformation", product.get("warranty", ""))
+        if warranty:
+            result.append(f"\n**Warranty:** {warranty}")
+
+        indicators = product.get("indicators", {})
+        if indicators:
+            result.append("\n## Product Indicators")
+            if indicators.get("hasWarranty"):
+                result.append("- Has Warranty")
+            if indicators.get("isNewProduct"):
+                result.append("- New Product")
+            if indicators.get("isEndOfLife"):
+                result.append("- End of Life")
+            if indicators.get("hasSpecialBid"):
+                result.append("- Special Bid Available")
+
+        return "\n".join(result)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:300]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def ingram_price_and_availability(
+    ingram_part_numbers: str = Field(..., description="Comma-separated list of Ingram Micro part numbers (max 50)")
+) -> str:
+    """Get real-time pricing and availability for Ingram Micro products. Returns your price, MSRP, and stock by warehouse."""
+    if not ingram_config.is_configured:
+        return "Error: Ingram Micro not configured. Set INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET environment variables or secrets."
+
+    try:
+        # Parse part numbers
+        part_numbers = [p.strip() for p in ingram_part_numbers.split(",") if p.strip()]
+        if not part_numbers:
+            return "Error: No valid part numbers provided."
+        if len(part_numbers) > 50:
+            return "Error: Maximum 50 part numbers per request."
+
+        headers = await ingram_config.headers()
+
+        # Build request body
+        products_request = [{"ingramPartNumber": pn} for pn in part_numbers]
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{ingram_config.api_url}/resellers/v6/catalog/priceandavailability",
+                headers=headers,
+                json={"products": products_request}
+            )
+
+            if response.status_code == 401:
+                ingram_config._access_token = None
+                headers = await ingram_config.headers()
+                response = await client.post(
+                    f"{ingram_config.api_url}/resellers/v6/catalog/priceandavailability",
+                    headers=headers,
+                    json={"products": products_request}
+                )
+
+            if response.status_code == 401:
+                return "Error: Authentication failed. Check INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET."
+
+            response.raise_for_status()
+            data = response.json()
+
+        # Handle response - can be list or have nested structure
+        items = data if isinstance(data, list) else data.get("products", data.get("items", []))
+
+        if not items:
+            return "No pricing/availability data returned."
+
+        output = ["# Ingram Micro Price & Availability\n"]
+        output.append(f"**Products Requested:** {len(part_numbers)}\n")
+
+        for item in items:
+            output.append(_format_ingram_price_availability(item))
+            output.append("---")
+
+        return "\n".join(output)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:300]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def ingram_search_quotes(
+    quote_number: Optional[str] = Field(None, description="Specific quote number to search for"),
+    status: Optional[str] = Field(None, description="Filter by quote status (e.g., 'OPEN', 'EXPIRED', 'CLOSED')"),
+    page_size: int = Field(25, description="Number of results per page (1-100)"),
+    page_number: int = Field(1, description="Page number for pagination")
+) -> str:
+    """Search Ingram Micro quotes. Returns quote summaries with status and totals."""
+    if not ingram_config.is_configured:
+        return "Error: Ingram Micro not configured. Set INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET environment variables or secrets."
+
+    try:
+        headers = await ingram_config.headers()
+
+        params = {
+            "pageSize": min(max(1, page_size), 100),
+            "pageNumber": page_number,
+        }
+        if quote_number:
+            params["quoteNumber"] = quote_number
+        if status:
+            params["status"] = status
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{ingram_config.api_url}/resellers/v6/quotes/search",
+                headers=headers,
+                params=params
+            )
+
+            if response.status_code == 401:
+                ingram_config._access_token = None
+                headers = await ingram_config.headers()
+                response = await client.get(
+                    f"{ingram_config.api_url}/resellers/v6/quotes/search",
+                    headers=headers,
+                    params=params
+                )
+
+            if response.status_code == 401:
+                return "Error: Authentication failed."
+
+            response.raise_for_status()
+            data = response.json()
+
+        quotes = data.get("quotes", data.get("items", []))
+        records_found = data.get("recordsFound", len(quotes))
+
+        if not quotes:
+            return "No quotes found matching your criteria."
+
+        output = ["# Ingram Micro Quotes\n"]
+        output.append(f"**Found:** {records_found} quotes | Page {page_number}\n")
+
+        for quote in quotes:
+            quote_num = quote.get("quoteNumber", "N/A")
+            quote_name = quote.get("quoteName", quote.get("description", ""))
+            status = quote.get("quoteStatus", quote.get("status", "N/A"))
+            created_date = quote.get("createdDate", quote.get("dateCreated", ""))
+            expiry_date = quote.get("expiryDate", quote.get("validUntil", ""))
+            total = quote.get("totalAmount", quote.get("quoteTotal", 0))
+            currency = quote.get("currencyCode", "AUD")
+
+            output.append(f"### Quote: {quote_num}")
+            if quote_name:
+                output.append(f"**Name:** {quote_name}")
+            output.append(f"**Status:** {status}")
+            if total:
+                output.append(f"**Total:** ${total:,.2f} {currency}" if isinstance(total, (int, float)) else f"**Total:** {total}")
+            if created_date:
+                output.append(f"**Created:** {created_date}")
+            if expiry_date:
+                output.append(f"**Expires:** {expiry_date}")
+            output.append("---")
+
+        return "\n".join(output)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:300]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def ingram_get_quote_details(
+    quote_number: str = Field(..., description="The quote number to retrieve details for")
+) -> str:
+    """Get detailed information for a specific Ingram Micro quote including line items."""
+    if not ingram_config.is_configured:
+        return "Error: Ingram Micro not configured. Set INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET environment variables or secrets."
+
+    try:
+        headers = await ingram_config.headers()
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{ingram_config.api_url}/resellers/v6/quotes/{quote_number}",
+                headers=headers
+            )
+
+            if response.status_code == 404:
+                return f"Quote not found: {quote_number}"
+            if response.status_code == 401:
+                ingram_config._access_token = None
+                headers = await ingram_config.headers()
+                response = await client.get(
+                    f"{ingram_config.api_url}/resellers/v6/quotes/{quote_number}",
+                    headers=headers
+                )
+
+            if response.status_code == 401:
+                return "Error: Authentication failed."
+
+            response.raise_for_status()
+            quote = response.json()
+
+        output = [f"# Ingram Micro Quote: {quote_number}\n"]
+
+        # Quote header info
+        quote_name = quote.get("quoteName", "")
+        status = quote.get("quoteStatus", quote.get("status", "N/A"))
+        created = quote.get("createdDate", "")
+        expiry = quote.get("expiryDate", "")
+        total = quote.get("totalAmount", 0)
+        currency = quote.get("currencyCode", "AUD")
+
+        if quote_name:
+            output.append(f"**Name:** {quote_name}")
+        output.append(f"**Status:** {status}")
+        if created:
+            output.append(f"**Created:** {created}")
+        if expiry:
+            output.append(f"**Expires:** {expiry}")
+        if total:
+            output.append(f"**Total:** ${total:,.2f} {currency}" if isinstance(total, (int, float)) else f"**Total:** {total}")
+
+        # End user info
+        end_user = quote.get("endUser", quote.get("endUserInfo", {}))
+        if end_user:
+            output.append(f"\n## End User")
+            eu_name = end_user.get("name", end_user.get("companyName", ""))
+            if eu_name:
+                output.append(f"**Name:** {eu_name}")
+
+        # Line items
+        lines = quote.get("lines", quote.get("products", quote.get("items", [])))
+        if lines:
+            output.append(f"\n## Line Items ({len(lines)} items)")
+            output.append("| # | Ingram PN | Description | Qty | Unit Price | Total |")
+            output.append("|---|-----------|-------------|-----|------------|-------|")
+
+            for i, line in enumerate(lines, 1):
+                pn = line.get("ingramPartNumber", line.get("partNumber", "N/A"))
+                desc = line.get("description", "")[:40]
+                qty = line.get("quantity", line.get("quantityOrdered", 1))
+                unit_price = line.get("unitPrice", line.get("customerPrice", 0))
+                line_total = line.get("lineTotal", line.get("extendedPrice", 0))
+
+                unit_str = f"${unit_price:,.2f}" if isinstance(unit_price, (int, float)) else str(unit_price)
+                total_str = f"${line_total:,.2f}" if isinstance(line_total, (int, float)) else str(line_total)
+
+                output.append(f"| {i} | {pn} | {desc} | {qty} | {unit_str} | {total_str} |")
+
+        return "\n".join(output)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:300]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def ingram_search_orders(
+    order_number: Optional[str] = Field(None, description="Specific Ingram order number to search for"),
+    customer_order_number: Optional[str] = Field(None, description="Your PO/customer order number"),
+    status: Optional[str] = Field(None, description="Filter by order status"),
+    page_size: int = Field(25, description="Number of results per page (1-100)"),
+    page_number: int = Field(1, description="Page number for pagination")
+) -> str:
+    """Search Ingram Micro orders. Returns order summaries with status and tracking."""
+    if not ingram_config.is_configured:
+        return "Error: Ingram Micro not configured. Set INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET environment variables or secrets."
+
+    try:
+        headers = await ingram_config.headers()
+
+        params = {
+            "pageSize": min(max(1, page_size), 100),
+            "pageNumber": page_number,
+        }
+        if order_number:
+            params["orderNumber"] = order_number
+        if customer_order_number:
+            params["customerOrderNumber"] = customer_order_number
+        if status:
+            params["orderStatus"] = status
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{ingram_config.api_url}/resellers/v6/orders/search",
+                headers=headers,
+                params=params
+            )
+
+            if response.status_code == 401:
+                ingram_config._access_token = None
+                headers = await ingram_config.headers()
+                response = await client.get(
+                    f"{ingram_config.api_url}/resellers/v6/orders/search",
+                    headers=headers,
+                    params=params
+                )
+
+            if response.status_code == 401:
+                return "Error: Authentication failed."
+
+            response.raise_for_status()
+            data = response.json()
+
+        orders = data.get("orders", data.get("items", []))
+        records_found = data.get("recordsFound", len(orders))
+
+        if not orders:
+            return "No orders found matching your criteria."
+
+        output = ["# Ingram Micro Orders\n"]
+        output.append(f"**Found:** {records_found} orders | Page {page_number}\n")
+
+        for order in orders:
+            order_num = order.get("ingramOrderNumber", order.get("orderNumber", "N/A"))
+            customer_order = order.get("customerOrderNumber", "")
+            status = order.get("orderStatus", order.get("status", "N/A"))
+            order_date = order.get("orderDate", order.get("dateCreated", ""))
+            total = order.get("orderTotal", order.get("totalAmount", 0))
+            currency = order.get("currencyCode", "AUD")
+
+            output.append(f"### Order: {order_num}")
+            if customer_order:
+                output.append(f"**Your PO:** {customer_order}")
+            output.append(f"**Status:** {status}")
+            if order_date:
+                output.append(f"**Date:** {order_date}")
+            if total:
+                output.append(f"**Total:** ${total:,.2f} {currency}" if isinstance(total, (int, float)) else f"**Total:** {total}")
+
+            # Shipment info if available
+            shipments = order.get("shipments", [])
+            if shipments:
+                for ship in shipments[:2]:  # Show first 2 shipments
+                    carrier = ship.get("carrierName", ship.get("carrier", ""))
+                    tracking = ship.get("trackingNumber", "")
+                    ship_date = ship.get("shipDate", "")
+                    if carrier or tracking:
+                        ship_info = f"**Shipped:** {carrier}"
+                        if tracking:
+                            ship_info += f" | Tracking: {tracking}"
+                        if ship_date:
+                            ship_info += f" | {ship_date}"
+                        output.append(ship_info)
+
+            output.append("---")
+
+        return "\n".join(output)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:300]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def ingram_get_order_details(
+    order_number: str = Field(..., description="The Ingram Micro order number to retrieve")
+) -> str:
+    """Get detailed information for a specific Ingram Micro order including line items and shipping."""
+    if not ingram_config.is_configured:
+        return "Error: Ingram Micro not configured. Set INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET environment variables or secrets."
+
+    try:
+        headers = await ingram_config.headers()
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{ingram_config.api_url}/resellers/v6/orders/{order_number}",
+                headers=headers
+            )
+
+            if response.status_code == 404:
+                return f"Order not found: {order_number}"
+            if response.status_code == 401:
+                ingram_config._access_token = None
+                headers = await ingram_config.headers()
+                response = await client.get(
+                    f"{ingram_config.api_url}/resellers/v6/orders/{order_number}",
+                    headers=headers
+                )
+
+            if response.status_code == 401:
+                return "Error: Authentication failed."
+
+            response.raise_for_status()
+            order = response.json()
+
+        output = [f"# Ingram Micro Order: {order_number}\n"]
+
+        # Order header
+        customer_order = order.get("customerOrderNumber", "")
+        status = order.get("orderStatus", "N/A")
+        order_date = order.get("orderDate", "")
+        total = order.get("orderTotal", 0)
+        currency = order.get("currencyCode", "AUD")
+
+        if customer_order:
+            output.append(f"**Your PO:** {customer_order}")
+        output.append(f"**Status:** {status}")
+        if order_date:
+            output.append(f"**Order Date:** {order_date}")
+        if total:
+            output.append(f"**Order Total:** ${total:,.2f} {currency}" if isinstance(total, (int, float)) else f"**Order Total:** {total}")
+
+        # Shipping address
+        ship_to = order.get("shipToInfo", order.get("shippingAddress", {}))
+        if ship_to:
+            output.append("\n## Ship To")
+            name = ship_to.get("name", ship_to.get("companyName", ""))
+            if name:
+                output.append(f"**Name:** {name}")
+            addr1 = ship_to.get("addressLine1", ship_to.get("address1", ""))
+            addr2 = ship_to.get("addressLine2", ship_to.get("address2", ""))
+            city = ship_to.get("city", "")
+            state = ship_to.get("state", ship_to.get("stateOrProvince", ""))
+            postal = ship_to.get("postalCode", ship_to.get("zipCode", ""))
+            if addr1:
+                output.append(f"{addr1}")
+            if addr2:
+                output.append(f"{addr2}")
+            if city or state or postal:
+                output.append(f"{city}, {state} {postal}".strip(", "))
+
+        # Line items
+        lines = order.get("lines", order.get("products", []))
+        if lines:
+            output.append(f"\n## Line Items ({len(lines)} items)")
+            output.append("| # | Ingram PN | Description | Qty | Unit Price | Status |")
+            output.append("|---|-----------|-------------|-----|------------|--------|")
+
+            for i, line in enumerate(lines, 1):
+                pn = line.get("ingramPartNumber", "N/A")
+                desc = line.get("description", "")[:35]
+                qty = line.get("quantityOrdered", line.get("quantity", 1))
+                unit_price = line.get("unitPrice", 0)
+                line_status = line.get("lineStatus", line.get("status", ""))
+
+                unit_str = f"${unit_price:,.2f}" if isinstance(unit_price, (int, float)) else str(unit_price)
+                output.append(f"| {i} | {pn} | {desc} | {qty} | {unit_str} | {line_status} |")
+
+        # Shipments
+        shipments = order.get("shipments", [])
+        if shipments:
+            output.append(f"\n## Shipments ({len(shipments)})")
+            for ship in shipments:
+                carrier = ship.get("carrierName", ship.get("carrier", "N/A"))
+                tracking = ship.get("trackingNumber", "")
+                ship_date = ship.get("shipDate", "")
+                ship_items = ship.get("items", ship.get("lines", []))
+
+                output.append(f"### {carrier}")
+                if tracking:
+                    output.append(f"**Tracking:** {tracking}")
+                if ship_date:
+                    output.append(f"**Ship Date:** {ship_date}")
+                if ship_items:
+                    output.append(f"**Items:** {len(ship_items)}")
+
+        return "\n".join(output)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:300]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"destructiveHint": True})
+async def ingram_create_order(
+    customer_order_number: str = Field(..., description="Your PO number for this order"),
+    end_user_name: str = Field(..., description="End user/customer company name"),
+    ship_to_name: str = Field(..., description="Shipping recipient name"),
+    ship_to_address1: str = Field(..., description="Shipping address line 1"),
+    ship_to_city: str = Field(..., description="Shipping city"),
+    ship_to_state: str = Field(..., description="Shipping state/province"),
+    ship_to_postal_code: str = Field(..., description="Shipping postal/ZIP code"),
+    ship_to_country: str = Field("AU", description="Shipping country code (default: AU)"),
+    lines_json: str = Field(..., description="JSON array of line items: [{\"ingramPartNumber\": \"ABC123\", \"quantity\": 1}, ...]"),
+    ship_to_address2: Optional[str] = Field(None, description="Shipping address line 2"),
+    special_instructions: Optional[str] = Field(None, description="Special order instructions"),
+    notes: Optional[str] = Field(None, description="Order notes")
+) -> str:
+    """Create a new order in Ingram Micro. Requires product part numbers and quantities."""
+    if not ingram_config.is_configured:
+        return "Error: Ingram Micro not configured. Set INGRAM_CLIENT_ID and INGRAM_CLIENT_SECRET environment variables or secrets."
+
+    try:
+        # Parse line items
+        import json
+        try:
+            lines = json.loads(lines_json)
+        except json.JSONDecodeError as e:
+            return f"Error: Invalid lines_json format. Expected JSON array. Error: {e}"
+
+        if not lines or not isinstance(lines, list):
+            return "Error: lines_json must be a non-empty JSON array of line items."
+
+        headers = await ingram_config.headers()
+
+        # Build order request
+        order_request = {
+            "customerOrderNumber": customer_order_number,
+            "endUserInfo": {
+                "name": end_user_name,
+                "countryCode": ship_to_country
+            },
+            "shipToInfo": {
+                "name": ship_to_name,
+                "addressLine1": ship_to_address1,
+                "city": ship_to_city,
+                "state": ship_to_state,
+                "postalCode": ship_to_postal_code,
+                "countryCode": ship_to_country
+            },
+            "lines": []
+        }
+
+        if ship_to_address2:
+            order_request["shipToInfo"]["addressLine2"] = ship_to_address2
+
+        if special_instructions:
+            order_request["specialInstructions"] = special_instructions
+
+        if notes:
+            order_request["notes"] = notes
+
+        # Add line items
+        for i, line in enumerate(lines, 1):
+            ingram_pn = line.get("ingramPartNumber", line.get("partNumber", ""))
+            qty = line.get("quantity", 1)
+
+            if not ingram_pn:
+                return f"Error: Line {i} missing 'ingramPartNumber'."
+
+            order_request["lines"].append({
+                "customerLineNumber": str(i),
+                "ingramPartNumber": ingram_pn,
+                "quantity": qty
+            })
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{ingram_config.api_url}/resellers/v6/orders",
+                headers=headers,
+                json=order_request
+            )
+
+            if response.status_code == 401:
+                ingram_config._access_token = None
+                headers = await ingram_config.headers()
+                response = await client.post(
+                    f"{ingram_config.api_url}/resellers/v6/orders",
+                    headers=headers,
+                    json=order_request
+                )
+
+            if response.status_code == 401:
+                return "Error: Authentication failed."
+            if response.status_code == 400:
+                error_data = response.json()
+                return f"Error: Bad request - {error_data}"
+
+            response.raise_for_status()
+            result = response.json()
+
+        # Format success response
+        order_number = result.get("ingramOrderNumber", result.get("orderNumber", "N/A"))
+        order_status = result.get("orderStatus", result.get("status", "Submitted"))
+        order_total = result.get("orderTotal", result.get("totalAmount", 0))
+
+        output = ["# Order Created Successfully\n"]
+        output.append(f"**Ingram Order #:** {order_number}")
+        output.append(f"**Your PO #:** {customer_order_number}")
+        output.append(f"**Status:** {order_status}")
+        if order_total:
+            output.append(f"**Total:** ${order_total:,.2f}" if isinstance(order_total, (int, float)) else f"**Total:** {order_total}")
+
+        output.append(f"\n**Lines Ordered:** {len(lines)}")
+
+        # Show any warnings or messages
+        messages = result.get("messages", result.get("warnings", []))
+        if messages:
+            output.append("\n## Messages")
+            for msg in messages:
+                if isinstance(msg, dict):
+                    output.append(f"- {msg.get('message', msg.get('text', str(msg)))}")
+                else:
+                    output.append(f"- {msg}")
+
+        return "\n".join(output)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:500]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+# ============================================================================
+# Aussie Broadband Carbon API Integration
+# ============================================================================
+
+class CarbonConfig:
+    """Configuration for Aussie Broadband Carbon API integration."""
+
+    def __init__(self):
+        # Try Secret Manager first, then fall back to environment variables
+        self.username = get_secret_sync("CARBON_USERNAME") or os.getenv("CARBON_USERNAME", "")
+        self.password = get_secret_sync("CARBON_PASSWORD") or os.getenv("CARBON_PASSWORD", "")
+        self.api_url = os.getenv("CARBON_API_URL", "https://api.carbon.aussiebroadband.com.au").rstrip("/")
+        self._access_token: Optional[str] = None
+        self._refresh_token: Optional[str] = None
+        self._token_expiry: Optional[datetime] = None
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.username and self.password)
+
+    async def get_access_token(self) -> str:
+        """Get a valid access token, refreshing if necessary."""
+        # Return cached token if still valid
+        if self._access_token and self._token_expiry and datetime.now() < self._token_expiry:
+            return self._access_token
+
+        # Try to refresh if we have a refresh token
+        if self._refresh_token:
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.put(
+                        f"{self.api_url}/refresh",
+                        headers={"Authorization": f"Bearer {self._refresh_token}"}
+                    )
+                    if response.status_code == 200:
+                        data = response.json()
+                        self._refresh_token = data.get("refreshToken", self._refresh_token)
+                        expires_in = data.get("expiresIn", 3600)
+                        self._token_expiry = datetime.now() + timedelta(seconds=expires_in - 60)
+                        # Extract access token from cookie
+                        for cookie in response.cookies:
+                            if "myaussie_cookie" in cookie.lower() or "token" in cookie.lower():
+                                self._access_token = response.cookies[cookie]
+                                break
+                        if self._access_token:
+                            return self._access_token
+            except Exception:
+                pass  # Fall through to login
+
+        # Perform fresh login
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{self.api_url}/login",
+                json={"username": self.username, "password": self.password},
+                headers={"Content-Type": "application/json"}
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            self._refresh_token = data.get("refreshToken")
+            expires_in = data.get("expiresIn", 3600)
+            self._token_expiry = datetime.now() + timedelta(seconds=expires_in - 60)
+
+            # Try to get token from cookie first
+            for cookie_name in response.cookies:
+                if "myaussie" in cookie_name.lower() or "token" in cookie_name.lower():
+                    self._access_token = response.cookies[cookie_name]
+                    break
+
+            # If no cookie, use refresh token as access token (common pattern)
+            if not self._access_token:
+                self._access_token = self._refresh_token
+
+            return self._access_token
+
+    def headers(self) -> Dict[str, str]:
+        """Get headers for API requests (requires token to be set)."""
+        return {
+            "Authorization": f"Bearer {self._access_token}" if self._access_token else "",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+
+    async def get_headers(self) -> Dict[str, str]:
+        """Get headers with fresh token."""
+        await self.get_access_token()
+        return self.headers()
+
+
+carbon_config = CarbonConfig()
+
+
+def _format_carbon_service(service: Dict[str, Any]) -> str:
+    """Format a Carbon service for display."""
+    service_id = service.get("id", service.get("service_id", "N/A"))
+    name = service.get("name", service.get("description", "Unknown Service"))
+    service_type = service.get("type", service.get("service_type", service.get("nbn_type", "N/A")))
+    status = service.get("status", service.get("state", "N/A"))
+    address = service.get("address", service.get("service_address", ""))
+
+    # Connection details
+    speed = service.get("speed", service.get("plan_speed", ""))
+    plan = service.get("plan", service.get("plan_name", ""))
+
+    lines = [f"### {name}"]
+    lines.append(f"**ID:** `{service_id}` | **Type:** {service_type} | **Status:** {status}")
+
+    if address:
+        lines.append(f"**Address:** {address}")
+    if plan:
+        lines.append(f"**Plan:** {plan}")
+    if speed:
+        lines.append(f"**Speed:** {speed}")
+
+    # Usage data if available
+    usage = service.get("usage", service.get("data_usage", {}))
+    if usage:
+        used = usage.get("used", usage.get("total_used", ""))
+        remaining = usage.get("remaining", usage.get("remaining_mb", ""))
+        if used:
+            lines.append(f"**Usage:** {used}")
+        if remaining:
+            lines.append(f"**Remaining:** {remaining}")
+
+    return "\n".join(lines)
+
+
+def _format_carbon_client(client: Dict[str, Any]) -> str:
+    """Format a Carbon client/customer for display."""
+    client_id = client.get("id", client.get("customer_id", "N/A"))
+    name = client.get("name", client.get("company_name", client.get("business_name", "Unknown")))
+    contact = client.get("contact", client.get("contact_name", ""))
+    email = client.get("email", client.get("contact_email", ""))
+    phone = client.get("phone", client.get("contact_phone", ""))
+    status = client.get("status", client.get("account_status", "N/A"))
+
+    lines = [f"### {name}"]
+    lines.append(f"**ID:** `{client_id}` | **Status:** {status}")
+
+    if contact:
+        lines.append(f"**Contact:** {contact}")
+    if email:
+        lines.append(f"**Email:** {email}")
+    if phone:
+        lines.append(f"**Phone:** {phone}")
+
+    # Services count
+    services = client.get("services", client.get("service_count", ""))
+    if services:
+        if isinstance(services, list):
+            lines.append(f"**Services:** {len(services)}")
+        else:
+            lines.append(f"**Services:** {services}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def carbon_list_services(
+    status: Optional[str] = Field(None, description="Filter by status: 'active', 'pending', 'disconnected', or 'all'"),
+    service_type: Optional[str] = Field(None, description="Filter by type: 'nbn', 'enterprise', 'fibre', etc."),
+    search: Optional[str] = Field(None, description="Search by service name or address"),
+    limit: int = Field(50, description="Max results (1-100)")
+) -> str:
+    """List Aussie Broadband services from Carbon portal. Shows NBN, Enterprise Ethernet, and other connections."""
+    if not carbon_config.is_configured:
+        return "Error: Carbon API not configured. Set CARBON_USERNAME and CARBON_PASSWORD environment variables or secrets."
+
+    try:
+        headers = await carbon_config.get_headers()
+        params = {"pageSize": min(max(1, limit), 100)}
+
+        if status and status.lower() != "all":
+            params["status"] = status.lower()
+        if service_type:
+            params["service_type"] = service_type.lower()
+        if search:
+            params["search"] = search
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Try services endpoint
+            response = await client.get(
+                f"{carbon_config.api_url}/services",
+                headers=headers,
+                params=params
+            )
+
+            if response.status_code == 401:
+                # Token expired, force refresh
+                carbon_config._access_token = None
+                headers = await carbon_config.get_headers()
+                response = await client.get(
+                    f"{carbon_config.api_url}/services",
+                    headers=headers,
+                    params=params
+                )
+
+            if response.status_code == 404:
+                # Try alternative endpoint
+                response = await client.get(
+                    f"{carbon_config.api_url}/carbon/services",
+                    headers=headers,
+                    params=params
+                )
+
+            response.raise_for_status()
+            data = response.json()
+
+        services = data.get("services", data.get("data", data.get("items", data if isinstance(data, list) else [])))
+
+        if not services:
+            return "No services found."
+
+        total = data.get("total", data.get("totalCount", len(services)))
+
+        results = ["# Aussie Broadband Carbon Services\n"]
+        results.append(f"**Total Services:** {len(services)} of {total}\n")
+
+        for service in services[:limit]:
+            results.append(_format_carbon_service(service))
+            results.append("---")
+
+        return "\n".join(results)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def carbon_get_service(
+    service_id: str = Field(..., description="Service ID to get details for")
+) -> str:
+    """Get detailed information for a specific Aussie Broadband service including connection stats and usage."""
+    if not carbon_config.is_configured:
+        return "Error: Carbon API not configured. Set CARBON_USERNAME and CARBON_PASSWORD environment variables or secrets."
+
+    try:
+        headers = await carbon_config.get_headers()
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{carbon_config.api_url}/services/{service_id}",
+                headers=headers
+            )
+
+            if response.status_code == 401:
+                carbon_config._access_token = None
+                headers = await carbon_config.get_headers()
+                response = await client.get(
+                    f"{carbon_config.api_url}/services/{service_id}",
+                    headers=headers
+                )
+
+            if response.status_code == 404:
+                return f"Service not found: {service_id}"
+
+            response.raise_for_status()
+            service = response.json()
+
+        # Build detailed view
+        result = [f"# Service Details: {service_id}\n"]
+        result.append(_format_carbon_service(service))
+
+        # Additional details if available
+        connection = service.get("connection", service.get("connection_details", {}))
+        if connection:
+            result.append("\n## Connection Details")
+            for key, value in connection.items():
+                if value:
+                    result.append(f"- **{key.replace('_', ' ').title()}:** {value}")
+
+        # Billing info
+        billing = service.get("billing", service.get("billing_details", {}))
+        if billing:
+            result.append("\n## Billing")
+            for key, value in billing.items():
+                if value:
+                    result.append(f"- **{key.replace('_', ' ').title()}:** {value}")
+
+        return "\n".join(result)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def carbon_list_clients(
+    search: Optional[str] = Field(None, description="Search by client name, email, or phone"),
+    status: Optional[str] = Field(None, description="Filter by status: 'active', 'inactive', 'all'"),
+    limit: int = Field(50, description="Max results (1-100)")
+) -> str:
+    """List clients/customers in Carbon portal."""
+    if not carbon_config.is_configured:
+        return "Error: Carbon API not configured. Set CARBON_USERNAME and CARBON_PASSWORD environment variables or secrets."
+
+    try:
+        headers = await carbon_config.get_headers()
+        params = {"pageSize": min(max(1, limit), 100)}
+
+        if status and status.lower() != "all":
+            params["status"] = status.lower()
+        if search:
+            params["search"] = search
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Try customers endpoint
+            response = await client.get(
+                f"{carbon_config.api_url}/customers",
+                headers=headers,
+                params=params
+            )
+
+            if response.status_code == 401:
+                carbon_config._access_token = None
+                headers = await carbon_config.get_headers()
+                response = await client.get(
+                    f"{carbon_config.api_url}/customers",
+                    headers=headers,
+                    params=params
+                )
+
+            if response.status_code == 404:
+                # Try alternative endpoint
+                response = await client.get(
+                    f"{carbon_config.api_url}/carbon/customer",
+                    headers=headers,
+                    params=params
+                )
+
+            response.raise_for_status()
+            data = response.json()
+
+        clients = data.get("customers", data.get("clients", data.get("data", data if isinstance(data, list) else [])))
+
+        if not clients:
+            return "No clients found."
+
+        total = data.get("total", data.get("totalCount", len(clients)))
+
+        results = ["# Carbon Clients\n"]
+        results.append(f"**Total Clients:** {len(clients)} of {total}\n")
+
+        for client_data in clients[:limit]:
+            results.append(_format_carbon_client(client_data))
+            results.append("---")
+
+        return "\n".join(results)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def carbon_get_client(
+    client_id: str = Field(..., description="Client/customer ID to get details for")
+) -> str:
+    """Get detailed information for a specific Carbon client including all their services."""
+    if not carbon_config.is_configured:
+        return "Error: Carbon API not configured. Set CARBON_USERNAME and CARBON_PASSWORD environment variables or secrets."
+
+    try:
+        headers = await carbon_config.get_headers()
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{carbon_config.api_url}/customers/{client_id}",
+                headers=headers
+            )
+
+            if response.status_code == 401:
+                carbon_config._access_token = None
+                headers = await carbon_config.get_headers()
+                response = await client.get(
+                    f"{carbon_config.api_url}/customers/{client_id}",
+                    headers=headers
+                )
+
+            if response.status_code == 404:
+                return f"Client not found: {client_id}"
+
+            response.raise_for_status()
+            client_data = response.json()
+
+        result = [f"# Client Details: {client_id}\n"]
+        result.append(_format_carbon_client(client_data))
+
+        # List services for this client
+        services = client_data.get("services", [])
+        if services:
+            result.append("\n## Services")
+            for svc in services:
+                result.append(f"\n{_format_carbon_service(svc)}")
+
+        # Contact details
+        contacts = client_data.get("contacts", [])
+        if contacts:
+            result.append("\n## Contacts")
+            for contact in contacts:
+                name = contact.get("name", "Unknown")
+                email = contact.get("email", "")
+                phone = contact.get("phone", "")
+                role = contact.get("role", contact.get("type", ""))
+                result.append(f"- **{name}** ({role}): {email} {phone}")
+
+        # Billing info
+        billing = client_data.get("billing", {})
+        if billing:
+            result.append("\n## Billing")
+            for key, value in billing.items():
+                if value:
+                    result.append(f"- **{key.replace('_', ' ').title()}:** {value}")
+
+        return "\n".join(result)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def carbon_check_nbn_address(
+    address: str = Field(..., description="Full street address to check NBN availability"),
+    unit: Optional[str] = Field(None, description="Unit/apartment number if applicable")
+) -> str:
+    """Check NBN serviceability and available technologies for an address. Returns NBN availability, technology type, and service class."""
+    if not carbon_config.is_configured:
+        return "Error: Carbon API not configured. Set CARBON_USERNAME and CARBON_PASSWORD environment variables or secrets."
+
+    try:
+        headers = await carbon_config.get_headers()
+
+        # Build address query
+        params = {"address": address}
+        if unit:
+            params["unit"] = unit
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Try NBN qualification endpoint
+            response = await client.get(
+                f"{carbon_config.api_url}/nbn/qualify",
+                headers=headers,
+                params=params
+            )
+
+            if response.status_code == 401:
+                carbon_config._access_token = None
+                headers = await carbon_config.get_headers()
+                response = await client.get(
+                    f"{carbon_config.api_url}/nbn/qualify",
+                    headers=headers,
+                    params=params
+                )
+
+            if response.status_code == 404:
+                # Try alternative endpoints
+                for endpoint in ["/nbn/address", "/broadband/qualify", "/carbon/services/nbn/qualify"]:
+                    response = await client.get(
+                        f"{carbon_config.api_url}{endpoint}",
+                        headers=headers,
+                        params=params
+                    )
+                    if response.status_code != 404:
+                        break
+
+            response.raise_for_status()
+            data = response.json()
+
+        # Parse qualification results
+        result = ["# NBN Address Qualification\n"]
+        result.append(f"**Address:** {address}")
+        if unit:
+            result.append(f"**Unit:** {unit}")
+        result.append("")
+
+        # Serviceability status
+        serviceable = data.get("serviceable", data.get("nbn_serviceable", data.get("available", False)))
+        tech_type = data.get("technology_type", data.get("nbn_type", data.get("techType", "Unknown")))
+        service_class = data.get("service_class", data.get("serviceClass", data.get("nbn_service_class", "")))
+
+        status_icon = "✅" if serviceable else "❌"
+        result.append(f"**NBN Available:** {status_icon} {'Yes' if serviceable else 'No'}")
+        result.append(f"**Technology Type:** {tech_type}")
+        if service_class:
+            result.append(f"**Service Class:** {service_class}")
+
+        # Location ID
+        loc_id = data.get("location_id", data.get("nbn_location_id", data.get("locid", "")))
+        if loc_id:
+            result.append(f"**Location ID:** `{loc_id}`")
+
+        # Speed tiers available
+        speeds = data.get("speed_tiers", data.get("available_speeds", data.get("plans", [])))
+        if speeds:
+            result.append("\n## Available Speed Tiers")
+            for speed in speeds:
+                if isinstance(speed, dict):
+                    name = speed.get("name", speed.get("tier", str(speed)))
+                    down = speed.get("download", speed.get("down_speed", ""))
+                    up = speed.get("upload", speed.get("up_speed", ""))
+                    result.append(f"- **{name}:** {down}/{up}")
+                else:
+                    result.append(f"- {speed}")
+
+        # Additional info
+        rfs_date = data.get("ready_for_service", data.get("rfs_date", data.get("expected_date", "")))
+        if rfs_date:
+            result.append(f"\n**Ready for Service:** {rfs_date}")
+
+        return "\n".join(result)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def carbon_search_addresses(
+    query: str = Field(..., description="Partial address to search for"),
+    limit: int = Field(20, description="Max results (1-50)")
+) -> str:
+    """Search for addresses to get exact location IDs for NBN qualification. Use this to find the correct address format before checking NBN availability."""
+    if not carbon_config.is_configured:
+        return "Error: Carbon API not configured. Set CARBON_USERNAME and CARBON_PASSWORD environment variables or secrets."
+
+    try:
+        headers = await carbon_config.get_headers()
+        params = {"query": query, "limit": min(max(1, limit), 50)}
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{carbon_config.api_url}/address/search",
+                headers=headers,
+                params=params
+            )
+
+            if response.status_code == 401:
+                carbon_config._access_token = None
+                headers = await carbon_config.get_headers()
+                response = await client.get(
+                    f"{carbon_config.api_url}/address/search",
+                    headers=headers,
+                    params=params
+                )
+
+            if response.status_code == 404:
+                # Try alternative endpoints
+                for endpoint in ["/addresses", "/nbn/address/search", "/carbon/validate-address"]:
+                    response = await client.get(
+                        f"{carbon_config.api_url}{endpoint}",
+                        headers=headers,
+                        params=params
+                    )
+                    if response.status_code != 404:
+                        break
+
+            response.raise_for_status()
+            data = response.json()
+
+        addresses = data.get("addresses", data.get("results", data.get("suggestions", data if isinstance(data, list) else [])))
+
+        if not addresses:
+            return f"No addresses found matching '{query}'."
+
+        results = ["# Address Search Results\n"]
+        results.append(f"**Query:** {query} | **Results:** {len(addresses)}\n")
+
+        for addr in addresses[:limit]:
+            if isinstance(addr, dict):
+                full_addr = addr.get("full_address", addr.get("address", addr.get("formattedAddress", str(addr))))
+                loc_id = addr.get("location_id", addr.get("locid", addr.get("nbn_location_id", "")))
+                unit = addr.get("unit", addr.get("unit_number", ""))
+
+                if loc_id:
+                    results.append(f"- **{full_addr}** (LOC: `{loc_id}`)")
+                else:
+                    results.append(f"- {full_addr}")
+            else:
+                results.append(f"- {addr}")
+
+        return "\n".join(results)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def carbon_get_service_tests(
+    service_id: str = Field(..., description="Service ID to run diagnostics on")
+) -> str:
+    """Run or get available diagnostic tests for an NBN service. Returns test results including line stats and connection quality."""
+    if not carbon_config.is_configured:
+        return "Error: Carbon API not configured. Set CARBON_USERNAME and CARBON_PASSWORD environment variables or secrets."
+
+    try:
+        headers = await carbon_config.get_headers()
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(
+                f"{carbon_config.api_url}/services/{service_id}/tests",
+                headers=headers
+            )
+
+            if response.status_code == 401:
+                carbon_config._access_token = None
+                headers = await carbon_config.get_headers()
+                response = await client.get(
+                    f"{carbon_config.api_url}/services/{service_id}/tests",
+                    headers=headers
+                )
+
+            if response.status_code == 404:
+                # Try alternative endpoints
+                for endpoint in [f"/nbn/{service_id}/tests", f"/tests/service/{service_id}"]:
+                    response = await client.get(
+                        f"{carbon_config.api_url}{endpoint}",
+                        headers=headers
+                    )
+                    if response.status_code != 404:
+                        break
+
+            response.raise_for_status()
+            data = response.json()
+
+        result = [f"# Service Diagnostics: {service_id}\n"]
+
+        tests = data.get("tests", data.get("results", data.get("diagnostics", [data] if isinstance(data, dict) else data)))
+
+        if not tests:
+            return f"No diagnostic tests available for service {service_id}."
+
+        for test in tests:
+            if isinstance(test, dict):
+                test_name = test.get("name", test.get("test_type", "Diagnostic Test"))
+                test_status = test.get("status", test.get("result", "Unknown"))
+                test_time = test.get("timestamp", test.get("run_at", ""))
+
+                status_icon = "✅" if test_status.lower() in ["pass", "passed", "ok", "success"] else "⚠️" if test_status.lower() in ["warning", "warn"] else "❌"
+
+                result.append(f"## {test_name}")
+                result.append(f"**Status:** {status_icon} {test_status}")
+                if test_time:
+                    result.append(f"**Time:** {test_time}")
+
+                # Test details
+                details = test.get("details", test.get("data", {}))
+                if details and isinstance(details, dict):
+                    for key, value in details.items():
+                        if value is not None:
+                            result.append(f"- **{key.replace('_', ' ').title()}:** {value}")
+
+                result.append("")
+
+        return "\n".join(result)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def carbon_get_service_usage(
+    service_id: str = Field(..., description="Service ID to get usage data for"),
+    period: str = Field("current", description="Period: 'current' (billing period), 'last', or 'YYYY-MM' format")
+) -> str:
+    """Get data usage statistics for a broadband service."""
+    if not carbon_config.is_configured:
+        return "Error: Carbon API not configured. Set CARBON_USERNAME and CARBON_PASSWORD environment variables or secrets."
+
+    try:
+        headers = await carbon_config.get_headers()
+        params = {"period": period}
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{carbon_config.api_url}/services/{service_id}/usage",
+                headers=headers,
+                params=params
+            )
+
+            if response.status_code == 401:
+                carbon_config._access_token = None
+                headers = await carbon_config.get_headers()
+                response = await client.get(
+                    f"{carbon_config.api_url}/services/{service_id}/usage",
+                    headers=headers,
+                    params=params
+                )
+
+            if response.status_code == 404:
+                # Try alternative endpoints
+                response = await client.get(
+                    f"{carbon_config.api_url}/broadband/{service_id}/usage",
+                    headers=headers,
+                    params=params
+                )
+
+            response.raise_for_status()
+            data = response.json()
+
+        result = [f"# Service Usage: {service_id}\n"]
+        result.append(f"**Period:** {period}\n")
+
+        # Usage totals
+        downloaded = data.get("download", data.get("downloaded", data.get("download_mb", 0)))
+        uploaded = data.get("upload", data.get("uploaded", data.get("upload_mb", 0)))
+        total = data.get("total", data.get("total_usage", downloaded + uploaded if isinstance(downloaded, (int, float)) and isinstance(uploaded, (int, float)) else 0))
+        allowance = data.get("allowance", data.get("quota", data.get("data_allowance", "Unlimited")))
+
+        # Format sizes
+        def format_size(mb):
+            if isinstance(mb, (int, float)):
+                if mb >= 1024:
+                    return f"{mb/1024:.2f} GB"
+                return f"{mb:.0f} MB"
+            return str(mb)
+
+        result.append("## Summary")
+        result.append(f"- **Downloaded:** {format_size(downloaded)}")
+        result.append(f"- **Uploaded:** {format_size(uploaded)}")
+        result.append(f"- **Total Used:** {format_size(total)}")
+        result.append(f"- **Allowance:** {allowance}")
+
+        # Daily breakdown if available
+        daily = data.get("daily", data.get("daily_usage", []))
+        if daily:
+            result.append("\n## Daily Breakdown (Recent)")
+            for day in daily[-7:]:  # Last 7 days
+                date = day.get("date", "")
+                down = format_size(day.get("download", 0))
+                up = format_size(day.get("upload", 0))
+                result.append(f"- **{date}:** ⬇️ {down} / ⬆️ {up}")
+
+        return "\n".join(result)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def carbon_list_orders(
+    status: Optional[str] = Field(None, description="Filter by status: 'pending', 'in_progress', 'completed', 'cancelled', 'all'"),
+    order_type: Optional[str] = Field(None, description="Filter by type: 'new', 'modify', 'disconnect'"),
+    limit: int = Field(50, description="Max results (1-100)")
+) -> str:
+    """List orders in Carbon portal. Shows pending and completed service orders."""
+    if not carbon_config.is_configured:
+        return "Error: Carbon API not configured. Set CARBON_USERNAME and CARBON_PASSWORD environment variables or secrets."
+
+    try:
+        headers = await carbon_config.get_headers()
+        params = {"pageSize": min(max(1, limit), 100)}
+
+        if status and status.lower() != "all":
+            params["status"] = status.lower()
+        if order_type:
+            params["type"] = order_type.lower()
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{carbon_config.api_url}/orders",
+                headers=headers,
+                params=params
+            )
+
+            if response.status_code == 401:
+                carbon_config._access_token = None
+                headers = await carbon_config.get_headers()
+                response = await client.get(
+                    f"{carbon_config.api_url}/orders",
+                    headers=headers,
+                    params=params
+                )
+
+            if response.status_code == 404:
+                response = await client.get(
+                    f"{carbon_config.api_url}/carbon/orders",
+                    headers=headers,
+                    params=params
+                )
+
+            response.raise_for_status()
+            data = response.json()
+
+        orders = data.get("orders", data.get("data", data if isinstance(data, list) else []))
+
+        if not orders:
+            return "No orders found."
+
+        results = ["# Carbon Orders\n"]
+        results.append(f"**Total Orders:** {len(orders)}\n")
+
+        for order in orders[:limit]:
+            order_id = order.get("id", order.get("order_id", "N/A"))
+            order_type = order.get("type", order.get("order_type", "N/A"))
+            order_status = order.get("status", "N/A")
+            created = order.get("created", order.get("created_at", order.get("order_date", "")))[:10] if order.get("created", order.get("created_at", order.get("order_date", ""))) else ""
+            address = order.get("address", order.get("service_address", ""))
+
+            status_icon = "✅" if order_status.lower() in ["completed", "complete", "active"] else "⏳" if order_status.lower() in ["pending", "in_progress", "processing"] else "❌"
+
+            results.append(f"### Order #{order_id}")
+            results.append(f"**Type:** {order_type} | **Status:** {status_icon} {order_status}")
+            if created:
+                results.append(f"**Created:** {created}")
+            if address:
+                results.append(f"**Address:** {address}")
+            results.append("---")
+
+        return "\n".join(results)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def carbon_list_tickets(
+    status: Optional[str] = Field(None, description="Filter by status: 'open', 'closed', 'pending', 'all'"),
+    service_id: Optional[str] = Field(None, description="Filter by service ID"),
+    limit: int = Field(50, description="Max results (1-100)")
+) -> str:
+    """List support tickets in Carbon portal."""
+    if not carbon_config.is_configured:
+        return "Error: Carbon API not configured. Set CARBON_USERNAME and CARBON_PASSWORD environment variables or secrets."
+
+    try:
+        headers = await carbon_config.get_headers()
+        params = {"pageSize": min(max(1, limit), 100)}
+
+        if status and status.lower() != "all":
+            params["status"] = status.lower()
+        if service_id:
+            params["service_id"] = service_id
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{carbon_config.api_url}/tickets",
+                headers=headers,
+                params=params
+            )
+
+            if response.status_code == 401:
+                carbon_config._access_token = None
+                headers = await carbon_config.get_headers()
+                response = await client.get(
+                    f"{carbon_config.api_url}/tickets",
+                    headers=headers,
+                    params=params
+                )
+
+            if response.status_code == 404:
+                response = await client.get(
+                    f"{carbon_config.api_url}/carbon/tickets",
+                    headers=headers,
+                    params=params
+                )
+
+            response.raise_for_status()
+            data = response.json()
+
+        tickets = data.get("tickets", data.get("data", data if isinstance(data, list) else []))
+
+        if not tickets:
+            return "No tickets found."
+
+        results = ["# Carbon Support Tickets\n"]
+        results.append(f"**Total Tickets:** {len(tickets)}\n")
+
+        for ticket in tickets[:limit]:
+            ticket_id = ticket.get("id", ticket.get("ticket_id", "N/A"))
+            subject = ticket.get("subject", ticket.get("title", ticket.get("summary", "No subject")))
+            ticket_status = ticket.get("status", "N/A")
+            created = str(ticket.get("created", ticket.get("created_at", "")))[:10]
+            priority = ticket.get("priority", "")
+
+            status_icon = "🔴" if ticket_status.lower() in ["open", "new"] else "🟡" if ticket_status.lower() in ["pending", "in_progress"] else "🟢"
+
+            results.append(f"### #{ticket_id}: {subject}")
+            results.append(f"**Status:** {status_icon} {ticket_status}")
+            if priority:
+                results.append(f"**Priority:** {priority}")
+            if created:
+                results.append(f"**Created:** {created}")
+            results.append("---")
+
+        return "\n".join(results)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def carbon_get_nbn_connection(
+    service_id: str = Field(..., description="NBN service ID to get connection details for")
+) -> str:
+    """Get detailed NBN connection information including sync rates, line stats, and technology details."""
+    if not carbon_config.is_configured:
+        return "Error: Carbon API not configured. Set CARBON_USERNAME and CARBON_PASSWORD environment variables or secrets."
+
+    try:
+        headers = await carbon_config.get_headers()
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{carbon_config.api_url}/nbn/{service_id}/connection",
+                headers=headers
+            )
+
+            if response.status_code == 401:
+                carbon_config._access_token = None
+                headers = await carbon_config.get_headers()
+                response = await client.get(
+                    f"{carbon_config.api_url}/nbn/{service_id}/connection",
+                    headers=headers
+                )
+
+            if response.status_code == 404:
+                # Try alternative endpoints
+                for endpoint in [f"/services/{service_id}/connection", f"/broadband/{service_id}/connection"]:
+                    response = await client.get(
+                        f"{carbon_config.api_url}{endpoint}",
+                        headers=headers
+                    )
+                    if response.status_code != 404:
+                        break
+
+            response.raise_for_status()
+            data = response.json()
+
+        result = [f"# NBN Connection: {service_id}\n"]
+
+        # Technology type
+        tech_type = data.get("technology_type", data.get("nbn_type", data.get("techType", "Unknown")))
+        result.append(f"**Technology:** {tech_type}")
+
+        # Connection status
+        conn_status = data.get("status", data.get("connection_status", data.get("state", "Unknown")))
+        status_icon = "✅" if conn_status.lower() in ["connected", "active", "online"] else "❌"
+        result.append(f"**Status:** {status_icon} {conn_status}")
+
+        # Sync rates
+        down_sync = data.get("download_sync", data.get("downSync", data.get("sync_down", "")))
+        up_sync = data.get("upload_sync", data.get("upSync", data.get("sync_up", "")))
+        if down_sync or up_sync:
+            result.append(f"\n## Sync Rates")
+            if down_sync:
+                result.append(f"- **Download:** {down_sync} Mbps")
+            if up_sync:
+                result.append(f"- **Upload:** {up_sync} Mbps")
+
+        # Line stats (for FTTN/FTTC)
+        line_stats = data.get("line_stats", data.get("lineStats", {}))
+        if line_stats:
+            result.append(f"\n## Line Statistics")
+            attenuation = line_stats.get("attenuation", line_stats.get("atten", ""))
+            snr = line_stats.get("snr", line_stats.get("snr_margin", ""))
+            power = line_stats.get("power", line_stats.get("tx_power", ""))
+
+            if attenuation:
+                result.append(f"- **Attenuation:** {attenuation} dB")
+            if snr:
+                result.append(f"- **SNR Margin:** {snr} dB")
+            if power:
+                result.append(f"- **TX Power:** {power} dBm")
+
+        # CVC info
+        cvc = data.get("cvc", data.get("cvc_id", ""))
+        poi = data.get("poi", data.get("poi_name", ""))
+        if cvc or poi:
+            result.append(f"\n## Network")
+            if cvc:
+                result.append(f"- **CVC:** {cvc}")
+            if poi:
+                result.append(f"- **POI:** {poi}")
+
+        # Last connected/disconnected
+        last_connected = data.get("last_connected", data.get("connected_at", ""))
+        uptime = data.get("uptime", data.get("session_uptime", ""))
+        if last_connected or uptime:
+            result.append(f"\n## Session")
+            if last_connected:
+                result.append(f"- **Last Connected:** {last_connected}")
+            if uptime:
+                result.append(f"- **Uptime:** {uptime}")
+
+        return "\n".join(result)
+
+    except httpx.HTTPStatusError as e:
+        return f"Error: API returned {e.response.status_code} - {e.response.text[:200]}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+# ============================================================================
 # Server Status
 # ============================================================================
 
@@ -11508,6 +13933,23 @@ async def server_status() -> str:
         if not os.getenv("SALESFORCE_REFRESH_TOKEN") and not get_secret_sync("SALESFORCE_REFRESH_TOKEN"):
             missing.append("REFRESH_TOKEN")
         lines.append(f"⚠️ **Salesforce:** Missing: {', '.join(missing)}")
+
+    # Dicker Data status
+    if dicker_config.is_configured:
+        lines.append(f"✅ **Dicker Data:** Configured ({dicker_config.api_url})")
+    else:
+        lines.append("⚠️ **Dicker Data:** Missing DICKER_API_KEY")
+
+    # Ingram Micro status
+    if ingram_config.is_configured:
+        lines.append(f"✅ **Ingram Micro:** Configured ({ingram_config.api_url})")
+    else:
+        missing = []
+        if not os.getenv("INGRAM_CLIENT_ID") and not get_secret_sync("INGRAM_CLIENT_ID"):
+            missing.append("CLIENT_ID")
+        if not os.getenv("INGRAM_CLIENT_SECRET") and not get_secret_sync("INGRAM_CLIENT_SECRET"):
+            missing.append("CLIENT_SECRET")
+        lines.append(f"⚠️ **Ingram Micro:** Missing: {', '.join(missing) if missing else 'credentials'}")
 
     lines.append(f"\n**Cloud Run URL:** {CLOUD_RUN_URL}")
     return "\n".join(lines)
@@ -12324,6 +14766,29 @@ if __name__ == "__main__":
             "env_vars": ["SALESFORCE_INSTANCE_URL", "SALESFORCE_CLIENT_ID"],
             "auth_env_vars": ["SALESFORCE_CLIENT_SECRET", "SALESFORCE_REFRESH_TOKEN"]
         },
+        {
+            "name": "Carbon (Aussie BB)",
+            "config": carbon_config,
+            "category": "ISP / Broadband",
+            "check_type": "oauth",
+            "env_vars": ["CARBON_USERNAME"],
+            "auth_env_vars": ["CARBON_PASSWORD"]
+        },
+        {
+            "name": "Ingram Micro",
+            "config": ingram_config,
+            "category": "IT Distributor",
+            "check_type": "oauth",
+            "env_vars": ["INGRAM_CLIENT_ID"],
+            "auth_env_vars": ["INGRAM_CLIENT_SECRET"]
+        },
+        {
+            "name": "Dicker Data",
+            "config": dicker_config,
+            "category": "IT Distributor",
+            "check_type": "api_key",
+            "env_vars": ["DICKER_API_KEY"]
+        },
     ]
 
     async def check_platform_status(platform: dict) -> dict:
@@ -12397,6 +14862,15 @@ if __name__ == "__main__":
             result["api_version"] = "v2"
         elif name == "Maxotel":
             result["endpoint"] = "https://api.maxotel.com.au"
+            result["api_version"] = "v1"
+        elif name == "Carbon (Aussie BB)":
+            result["endpoint"] = "https://api.carbon.aussiebroadband.com.au"
+            result["api_version"] = "v1"
+        elif name == "Ingram Micro":
+            result["endpoint"] = "https://api.ingrammicro.com"
+            result["api_version"] = "v6"
+        elif name == "Dicker Data":
+            result["endpoint"] = "https://b2b-api.dickerdata.com.au"
             result["api_version"] = "v1"
 
         if not config.is_configured:
