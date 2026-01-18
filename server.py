@@ -18045,7 +18045,7 @@ if __name__ == "__main__":
         host="0.0.0.0", 
         port=port,
         timeout_keep_alive=5,  # Reduce keep-alive timeout
-        timeout_notify=30,     # Timeout for ASGI startup notification
+        # timeout_notify=30,     # Timeout for ASGI startup notification
         access_log=True,       # Enable access logs for debugging
         log_level="info"       # Set appropriate log level
     )
