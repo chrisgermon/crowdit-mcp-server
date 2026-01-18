@@ -17995,10 +17995,13 @@ if __name__ == "__main__":
 
     @asynccontextmanager
     async def minimal_lifespan(app):
-        """Lifespan handler - initialize FastMCP."""
+        """Lifespan handler - initialize FastMCP and configs."""
         # Initialize FastMCP's session manager via its lifespan handler
         # This is required for FastMCP 2.x
         async with mcp_app.lifespan(app):
+            # Initialize all configs now that the server is ready
+            _initialize_configs_once()
+            print(f"[STARTUP] Configs initialized at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
             yield
 
     app = Starlette(
@@ -18026,9 +18029,8 @@ if __name__ == "__main__":
     # (This should no longer be needed with the refactored approach above)
     print(f"[STARTUP] Skipping quick socket server shutdown at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
-    # NOTE: Configs are initialized lazily on first use to avoid blocking startup
-    # This allows uvicorn to bind to port 8080 immediately and respond to health checks
-    # while background initialization continues
+    # NOTE: Configs are initialized during lifespan startup (after FastMCP init)
+    # Health checks still work immediately as they don't depend on configs
     
     print(f"[STARTUP] Starting uvicorn at t={time.time() - _module_start_time:.3f}s - listening on 0.0.0.0:{port}", file=sys.stderr, flush=True)
     sys.stderr.flush()
