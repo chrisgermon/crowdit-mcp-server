@@ -15745,6 +15745,7 @@ if __name__ == "__main__":
     from starlette.responses import PlainTextResponse, HTMLResponse
     from starlette.middleware import Middleware
     from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.cors import CORSMiddleware
 
     print(f"[STARTUP] Starlette imports done at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
@@ -17965,6 +17966,15 @@ if __name__ == "__main__":
         lifespan=minimal_lifespan,
     )
     print(f"[STARTUP] Starlette app created at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+
+    # Add CORS Middleware to allow embedding in other sites
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Allow all origins for flexibility
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     # Add API Key middleware for MCP endpoint protection
     app.add_middleware(APIKeyMiddleware, api_key=api_key)
