@@ -66,58 +66,7 @@ print(f"[STARTUP] Azure tools registered at t={time.time() - _module_start_time:
 # Secret Manager Helper
 # ============================================================================
 
-def get_secret_sync(secret_id: str, timeout_seconds: float = 5.0) -> Optional[str]:
-    """Read the latest version of a secret from Google Secret Manager.
-
-    Args:
-        secret_id: The ID of the secret to read
-        timeout_seconds: Timeout for the Secret Manager API call (default 5 seconds)
-    """
-    try:
-        from google.cloud import secretmanager
-
-        client = secretmanager.SecretManagerServiceClient()
-        # Use GCP_PROJECT_ID first (explicitly set in Cloud Run), then GOOGLE_CLOUD_PROJECT, then default
-        project_id = os.getenv("GCP_PROJECT_ID", os.getenv("GOOGLE_CLOUD_PROJECT", "crowdmcp"))
-        name = f"projects/{project_id}/secrets/{secret_id}/versions/latest"
-
-        response = client.access_secret_version(
-            request={"name": name},
-            timeout=timeout_seconds
-        )
-        return response.payload.data.decode("UTF-8")
-    except Exception as e:
-        logger.warning(f"Failed to read secret {secret_id} from Secret Manager: {e}")
-        return None
-
-
-def update_secret_sync(secret_id: str, value: str, timeout_seconds: float = 10.0) -> bool:
-    """Update a secret in Google Secret Manager (sync version).
-
-    Args:
-        secret_id: The ID of the secret to update
-        value: The new value for the secret
-        timeout_seconds: Timeout for the Secret Manager API call (default 10 seconds)
-    """
-    try:
-        from google.cloud import secretmanager
-        client = secretmanager.SecretManagerServiceClient()
-        # Use GCP_PROJECT_ID first (explicitly set in Cloud Run), then GOOGLE_CLOUD_PROJECT, then default
-        project_id = os.getenv("GCP_PROJECT_ID", os.getenv("GOOGLE_CLOUD_PROJECT", "crowdmcp"))
-        parent = f"projects/{project_id}/secrets/{secret_id}"
-
-        client.add_secret_version(
-            request={
-                "parent": parent,
-                "payload": {"data": value.encode("UTF-8")}
-            },
-            timeout=timeout_seconds
-        )
-        logger.info(f"Updated secret: {secret_id}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to update secret {secret_id}: {e}")
-        return False
+from app.core.config import get_secret_sync, update_secret_sync
 
 
 # ============================================================================
@@ -15800,57 +15749,7 @@ if __name__ == "__main__":
     print(f"[STARTUP] Starlette imports done at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
     # API Key validation middleware
-    class APIKeyMiddleware(BaseHTTPMiddleware):
-        """Middleware to validate API key for MCP endpoints."""
-
-        # Paths that don't require API key authentication
-        PUBLIC_PATHS = {"/health", "/status", "/callback", "/sharepoint-callback", "/"}
-
-        def __init__(self, app, api_key: str = None):
-            super().__init__(app)
-            # Store the initial key but defer Secret Manager lookup to first request
-            self._api_key = api_key or os.getenv("MCP_API_KEY")
-            self._key_loaded = self._api_key is not None
-            if self._api_key:
-                logger.info("🔐 API Key authentication enabled for MCP endpoints")
-            else:
-                logger.info("🔑 API Key will be loaded from Secret Manager on first request")
-
-        @property
-        def api_key(self):
-            """Lazily load API key from Secret Manager if not already set."""
-            if not self._key_loaded:
-                self._api_key = get_secret_sync("MCP_API_KEY")
-                self._key_loaded = True
-                if self._api_key:
-                    logger.info("🔐 API Key loaded from Secret Manager")
-                else:
-                    logger.warning("⚠️ No MCP_API_KEY configured - endpoints are unprotected!")
-            return self._api_key
-        
-        async def dispatch(self, request, call_next):
-            path = request.url.path
-            
-            # Allow public paths without authentication
-            if path in self.PUBLIC_PATHS:
-                return await call_next(request)
-            
-            # If no API key is configured, allow all requests (backwards compatible)
-            if not self.api_key:
-                return await call_next(request)
-            
-            # Check for API key in query params or headers
-            provided_key = (
-                request.query_params.get("api_key") or 
-                request.headers.get("X-API-Key") or
-                request.headers.get("Authorization", "").replace("Bearer ", "")
-            )
-            
-            if provided_key != self.api_key:
-                logger.warning(f"🚫 Unauthorized request to {path} from {request.client.host if request.client else 'unknown'}")
-                return PlainTextResponse("Unauthorized - Invalid or missing API key", status_code=401)
-            
-            return await call_next(request)
+    from app.core.auth import APIKeyMiddleware
     
     port = int(os.getenv("PORT", 8080))
     print(f"[STARTUP] Port={port} at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
