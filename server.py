@@ -42,7 +42,7 @@ print(f"[STARTUP] FastMCP imported at t={time.time() - _module_start_time:.3f}s"
 from pydantic import BaseModel, Field
 print(f"[STARTUP] pydantic imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
-# from azure_tools import register_azure_tools  # Deferred to avoid blocking startup
+from azure_tools import register_azure_tools
 print(f"[STARTUP] azure_tools imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
 # Cloud Run URL for OAuth callback
@@ -55,8 +55,8 @@ mcp = FastMCP(
 )
 print(f"[STARTUP] FastMCP instance created at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
-# Register Azure tools (deferred - imported in lifespan)
-# register_azure_tools(mcp)  # Deferred to lifespan
+# Register Azure tools
+register_azure_tools(mcp)
 print(f"[STARTUP] Azure tools registered at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
 # ============================================================================
