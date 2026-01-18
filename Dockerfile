@@ -1,5 +1,5 @@
 # Stage 1: Build stage with dependencies
-FROM python:3.12-slim AS builder
+FROM python:3.11-slim AS builder
 
 # Install uv for fast dependency management
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
@@ -18,7 +18,7 @@ RUN uv venv /opt/venv && \
     uv pip install --no-cache -r requirements.lock
 
 # Stage 2: Runtime stage - minimal image with pre-installed deps
-FROM python:3.12-slim AS runtime
+FROM python:3.11-slim AS runtime
 
 # Install gcloud CLI in a separate layer (this rarely changes)
 # Using smaller installation with just core components
