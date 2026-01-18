@@ -70,8 +70,6 @@ steps:
       # Secrets are loaded dynamically from Secret Manager at runtime (not via --set-secrets)
       # This prevents deployment failures when secrets don't exist yet
       # Integrations without configured secrets will show as "Not configured" on status page
-      # Increase startup timeout for large Python module loading
-      - '--startup-cpu-boost'
     waitFor: ['build']
 
 images:
