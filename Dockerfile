@@ -45,6 +45,7 @@ WORKDIR /app
 
 # Copy application code LAST (changes most frequently)
 # This ensures code changes don't invalidate dependency cache
+COPY app ./app
 COPY server.py azure_tools.py ./
 
 # Runtime configuration
