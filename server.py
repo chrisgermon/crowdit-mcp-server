@@ -16428,6 +16428,24 @@ async def server_status() -> str:
             missing.append("CLIENT_SECRET")
         lines.append(f"⚠️ **NinjaOne:** Missing: {', '.join(missing)}")
 
+    # Metabase status
+    if metabase_config.is_configured:
+        try:
+            await metabase_config.get_session_token()
+            lines.append(f"✅ **Metabase:** Connected ({metabase_config.url})")
+        except Exception as e:
+            lines.append(f"❌ **Metabase:** Auth failed - {str(e)[:50]}")
+    else:
+        missing = []
+        if not os.getenv("METABASE_URL") and not get_secret_sync("METABASE_URL"):
+            missing.append("URL")
+        if not os.getenv("METABASE_API_KEY") and not get_secret_sync("METABASE_API_KEY"):
+            if not os.getenv("METABASE_USERNAME") and not get_secret_sync("METABASE_USERNAME"):
+                missing.append("USERNAME")
+            if not os.getenv("METABASE_PASSWORD") and not get_secret_sync("METABASE_PASSWORD"):
+                missing.append("PASSWORD")
+        lines.append(f"⚠️ **Metabase:** Missing: {', '.join(missing) if missing else 'credentials'}")
+
     lines.append(f"\n**Cloud Run URL:** {CLOUD_RUN_URL}")
     return "\n".join(lines)
 
@@ -17238,7 +17256,7 @@ if __name__ == "__main__":
             "name": "Metabase",
             "config": metabase_config,
             "category": "Business Intelligence",
-            "check_type": "oauth",
+            "check_type": "session",
             "env_vars": ["METABASE_URL"],
             "auth_env_vars": ["METABASE_USERNAME", "METABASE_PASSWORD", "METABASE_API_KEY"]
         },
@@ -17331,6 +17349,9 @@ if __name__ == "__main__":
         elif name == "Auvik":
             result["endpoint"] = getattr(config, 'base_url', 'https://auvikapi.au1.my.auvik.com')
             result["api_version"] = "v1"
+        elif name == "Metabase":
+            result["endpoint"] = getattr(config, 'url', None)
+            result["api_version"] = "v1"
 
         if not config.is_configured:
             # Build missing env vars message
@@ -17391,6 +17412,13 @@ if __name__ == "__main__":
 
             elif check_type == "api_key":
                 result["message"] = "Configured"
+
+            elif check_type == "session":
+                # Session-based auth (e.g., Metabase)
+                await config.get_session_token()
+                result["message"] = "Connected"
+                if name == "Metabase" and hasattr(config, 'url'):
+                    result["organization"] = config.url.replace("https://", "").replace("http://", "").split("/")[0]
 
             elif check_type == "bigquery":
                 client = config.get_client()
