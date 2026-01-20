@@ -17371,6 +17371,228 @@ async def metabase_send_password_reset(
 
 
 # ============================================================================
+# Metabase Settings Tools
+# ============================================================================
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def metabase_get_settings() -> str:
+    """Get all Metabase instance settings.
+
+    Returns all configurable settings including appearance, authentication, and system settings.
+    Requires admin privileges.
+    """
+    if not metabase_config.is_configured:
+        return "Metabase is not configured. Set METABASE_URL and METABASE_API_KEY."
+
+    try:
+        settings = await metabase_config.api_request("GET", "setting")
+
+        # Group settings by category for readability
+        appearance_keys = [
+            'application-name', 'application-logo-url', 'application-favicon-url',
+            'application-colors', 'loading-message', 'show-lighthouse-animation',
+            'show-metabase-links', 'help-link', 'help-link-custom-destination'
+        ]
+
+        result = "# Metabase Settings\n\n"
+
+        # Appearance settings
+        result += "## Appearance Settings\n"
+        for setting in settings:
+            key = setting.get('key', '')
+            if key in appearance_keys:
+                value = setting.get('value', setting.get('default', 'Not set'))
+                result += f"- **{key}**: `{value}`\n"
+
+        # Other important settings
+        result += "\n## Other Settings\n"
+        important_keys = [
+            'site-name', 'site-url', 'admin-email', 'report-timezone',
+            'enable-public-sharing', 'enable-embedding', 'email-configured'
+        ]
+        for setting in settings:
+            key = setting.get('key', '')
+            if key in important_keys:
+                value = setting.get('value', setting.get('default', 'Not set'))
+                result += f"- **{key}**: `{value}`\n"
+
+        result += f"\n*Total settings: {len(settings)}*"
+        return result
+
+    except Exception as e:
+        logger.error(f"Metabase get settings error: {e}")
+        return f"Error fetching settings: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def metabase_get_setting(
+    setting_key: str = Field(..., description="The setting key to retrieve (e.g., 'application-logo-url', 'site-name')")
+) -> str:
+    """Get a specific Metabase setting value.
+
+    Common setting keys:
+        - application-name: Instance name displayed in UI
+        - application-logo-url: URL for custom logo
+        - application-favicon-url: URL for favicon
+        - site-url: Base URL of the Metabase instance
+        - admin-email: Admin contact email
+        - report-timezone: Default timezone for reports
+    """
+    if not metabase_config.is_configured:
+        return "Metabase is not configured. Set METABASE_URL and METABASE_API_KEY."
+
+    try:
+        setting = await metabase_config.api_request("GET", f"setting/{setting_key}")
+        return f"**{setting_key}**: `{setting}`"
+
+    except Exception as e:
+        error_str = str(e)
+        if "404" in error_str:
+            return f"Setting '{setting_key}' not found."
+        logger.error(f"Metabase get setting error: {e}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": False})
+async def metabase_update_setting(
+    setting_key: str = Field(..., description="The setting key to update"),
+    value: str = Field(..., description="The new value for the setting (use 'null' to reset to default)")
+) -> str:
+    """Update a Metabase instance setting.
+
+    Common setting keys:
+        - application-logo-url: URL for custom logo image
+        - application-name: Custom name to replace "Metabase"
+        - application-favicon-url: URL for custom favicon
+        - site-name: Name of the Metabase instance
+        - admin-email: Admin contact email
+        - help-link: URL for custom help link
+        - loading-message: Custom loading message
+        - show-metabase-links: 'true' or 'false' to show/hide Metabase branding links
+
+    Examples:
+        - metabase_update_setting('application-logo-url', 'https://example.com/logo.png')
+        - metabase_update_setting('application-name', 'Crowd IT Analytics')
+        - metabase_update_setting('show-metabase-links', 'false')
+
+    Requires admin/superuser privileges.
+    """
+    if not metabase_config.is_configured:
+        return "Metabase is not configured. Set METABASE_URL and METABASE_API_KEY."
+
+    try:
+        # Handle null/none values
+        if value.lower() in ('null', 'none', 'reset', ''):
+            request_value = None
+        elif value.lower() == 'true':
+            request_value = True
+        elif value.lower() == 'false':
+            request_value = False
+        else:
+            request_value = value
+
+        await metabase_config.api_request("PUT", f"setting/{setting_key}", json_data={"value": request_value})
+
+        # Verify the change
+        new_value = await metabase_config.api_request("GET", f"setting/{setting_key}")
+
+        return f"✅ **Setting Updated**\n\n**{setting_key}** has been set to: `{new_value}`"
+
+    except Exception as e:
+        error_str = str(e)
+        if "403" in error_str:
+            return "❌ Permission denied. You need admin/superuser privileges to update settings."
+        elif "404" in error_str:
+            return f"❌ Setting '{setting_key}' not found. Use metabase_get_settings() to see available settings."
+        logger.error(f"Metabase update setting error: {e}")
+        return f"❌ Error updating setting: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": False})
+async def metabase_update_settings_bulk(
+    settings_json: str = Field(..., description="JSON object of settings to update, e.g., '{\"application-name\": \"My Analytics\", \"show-metabase-links\": false}'")
+) -> str:
+    """Update multiple Metabase settings at once.
+
+    Requires admin/superuser privileges.
+    """
+    if not metabase_config.is_configured:
+        return "Metabase is not configured. Set METABASE_URL and METABASE_API_KEY."
+
+    try:
+        settings = json.loads(settings_json)
+
+        await metabase_config.api_request("PUT", "setting", json_data=settings)
+
+        result = "✅ **Settings Updated**\n\n"
+        for key, value in settings.items():
+            result += f"- **{key}**: `{value}`\n"
+
+        return result
+
+    except json.JSONDecodeError as e:
+        return f"❌ Invalid JSON: {e}"
+    except Exception as e:
+        logger.error(f"Metabase update settings bulk error: {e}")
+        return f"❌ Error: {str(e)}"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def metabase_list_setting_keys() -> str:
+    """List all available Metabase setting keys that can be configured.
+
+    Returns a categorized list of all setting keys.
+    """
+    if not metabase_config.is_configured:
+        return "Metabase is not configured. Set METABASE_URL and METABASE_API_KEY."
+
+    try:
+        settings = await metabase_config.api_request("GET", "setting")
+
+        # Categorize settings
+        categories = {
+            'Appearance': [],
+            'Authentication': [],
+            'Email': [],
+            'Embedding': [],
+            'Other': []
+        }
+
+        for setting in settings:
+            key = setting.get('key', '')
+            description = setting.get('description', '')
+
+            if any(x in key for x in ['application-', 'logo', 'favicon', 'color', 'loading', 'show-']):
+                categories['Appearance'].append((key, description))
+            elif any(x in key for x in ['ldap', 'saml', 'google-auth', 'jwt', 'session']):
+                categories['Authentication'].append((key, description))
+            elif any(x in key for x in ['email', 'smtp']):
+                categories['Email'].append((key, description))
+            elif any(x in key for x in ['embed', 'public-sharing']):
+                categories['Embedding'].append((key, description))
+            else:
+                categories['Other'].append((key, description))
+
+        result = "# Available Metabase Settings\n\n"
+
+        for category, items in categories.items():
+            if items:
+                result += f"## {category}\n"
+                for key, desc in sorted(items)[:20]:  # Limit to top 20 per category
+                    short_desc = (desc[:60] + '...') if len(desc) > 60 else desc
+                    result += f"- `{key}`: {short_desc}\n"
+                if len(items) > 20:
+                    result += f"  *(and {len(items) - 20} more)*\n"
+                result += "\n"
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Metabase list setting keys error: {e}")
+        return f"Error: {str(e)}"
+
+
+# ============================================================================
 # Server Status
 # ============================================================================
 
