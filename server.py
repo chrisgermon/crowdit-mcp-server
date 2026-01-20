@@ -25,6 +25,7 @@ import asyncio
 import logging
 import json
 import re
+import uuid
 from datetime import datetime, timedelta, date, timezone
 from typing import Optional, Dict, Any
 
@@ -16392,7 +16393,7 @@ async def metabase_get_user_info() -> str:
 async def metabase_create_question(
     name: str = Field(..., description="Name for the new question"),
     database_id: int = Field(..., description="Database ID to query against"),
-    query: str = Field(..., description="Native SQL query for the question. Use {{variable_name}} syntax for filter variables."),
+    query: str = Field(..., description="Native SQL query for the question. Use {{variable_name}} syntax for filter variables, and [[ AND {{variable_name}} ]] to make filters optional."),
     display: str = Field("table", description="Visualization type: table, bar, line, pie, scalar, row, area, combo, pivot, funnel, scatter, map, waterfall, trend, progress, gauge, number"),
     collection_id: Optional[int] = Field(None, description="Collection ID to save the question in (null for root)"),
     description: Optional[str] = Field(None, description="Description for the question"),
@@ -16407,8 +16408,12 @@ async def metabase_create_question(
     Use metabase_get_table_fields to find field IDs for template_tags.
 
     Filter variables (template_tags) allow you to add interactive filters to questions:
-    - Use {{variable_name}} in your SQL query
+    - Use {{variable_name}} in your SQL query for required filters
+    - Use [[ AND {{variable_name}} ]] to make filters OPTIONAL (query runs even without a value)
     - Define the variable in template_tags with type, dimension, and widget-type
+
+    Example SQL with optional filters:
+        SELECT * FROM orders WHERE 1=1 [[ AND {{brand}} ]] [[ AND {{order_date}} ]]
 
     Widget types: text, number, date/single, date/range, date/relative, date/month-year,
     date/quarter-year, date/all-options, category, id, location/city, location/state,
@@ -16429,7 +16434,7 @@ async def metabase_create_question(
                 processed_tags = {}
                 for tag_name, tag_config in tags.items():
                     processed_tag = {
-                        "id": tag_config.get("id", tag_name),
+                        "id": tag_config.get("id", str(uuid.uuid4())),  # Auto-generate UUID if not provided
                         "name": tag_name,
                         "display-name": tag_config.get("display-name", tag_name.replace("_", " ").title()),
                         "type": tag_config.get("type", "text"),
@@ -16498,7 +16503,7 @@ async def metabase_create_question(
 async def metabase_update_question(
     question_id: int = Field(..., description="Question/Card ID to update"),
     name: Optional[str] = Field(None, description="New name for the question"),
-    query: Optional[str] = Field(None, description="New SQL query. Use {{variable_name}} syntax for filter variables."),
+    query: Optional[str] = Field(None, description="New SQL query. Use {{variable_name}} syntax for filter variables, and [[ AND {{variable_name}} ]] to make filters optional."),
     display: Optional[str] = Field(None, description="New visualization type: table, bar, line, pie, scalar, row, area, combo, pivot, funnel, scatter, map, waterfall, trend, progress, gauge, number"),
     description: Optional[str] = Field(None, description="New description"),
     collection_id: Optional[int] = Field(None, description="Move to this collection ID"),
@@ -16512,8 +16517,12 @@ async def metabase_update_question(
     Use metabase_get_table_fields to find field IDs for template_tags.
 
     Filter variables (template_tags) allow you to add interactive filters:
-    - Use {{variable_name}} in your SQL query
+    - Use {{variable_name}} in your SQL query for required filters
+    - Use [[ AND {{variable_name}} ]] to make filters OPTIONAL (query runs even without a value)
     - Define the variable in template_tags with type, dimension, and widget-type
+
+    Example SQL with optional filters:
+        SELECT * FROM orders WHERE 1=1 [[ AND {{brand}} ]] [[ AND {{order_date}} ]]
 
     Widget types: text, number, date/single, date/range, date/relative, date/month-year,
     date/quarter-year, date/all-options, category, id, location/city, location/state,
@@ -16570,7 +16579,7 @@ async def metabase_update_question(
                         processed_tags = {}
                         for tag_name, tag_config in tags.items():
                             processed_tag = {
-                                "id": tag_config.get("id", tag_name),
+                                "id": tag_config.get("id", str(uuid.uuid4())),  # Auto-generate UUID if not provided
                                 "name": tag_name,
                                 "display-name": tag_config.get("display-name", tag_name.replace("_", " ").title()),
                                 "type": tag_config.get("type", "text"),
