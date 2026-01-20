@@ -12713,9 +12713,14 @@ class CarbonConfig:
         return bool(self.username and self.password)
 
     async def get_access_token(self) -> str:
-        """Get a valid access token, refreshing if necessary."""
+        """Get a valid access token, refreshing if necessary.
+
+        Carbon API uses a two-step authentication flow:
+        1. POST to /login with username/password to get access token
+        2. Use Bearer token for all subsequent API calls
+        """
         self._load_secrets()
-        # Return cached token if still valid
+        # Return cached token if still valid (with 5-minute buffer)
         if self._access_token and self._token_expiry and datetime.now() < self._token_expiry:
             return self._access_token
 
@@ -12723,55 +12728,70 @@ class CarbonConfig:
         if self._refresh_token:
             try:
                 async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.put(
+                    response = await client.post(
                         f"{self.api_url}/refresh",
-                        headers={"Authorization": f"Bearer {self._refresh_token}"}
+                        json={"refreshToken": self._refresh_token},
+                        headers={
+                            "Content-Type": "application/json",
+                            "Accept": "application/json"
+                        }
                     )
                     if response.status_code == 200:
                         data = response.json()
-                        self._refresh_token = data.get("refreshToken", self._refresh_token)
-                        expires_in = data.get("expiresIn", 3600)
-                        self._token_expiry = datetime.now() + timedelta(seconds=expires_in - 60)
-                        # Extract access token from cookie
-                        for cookie in response.cookies:
-                            if "myaussie_cookie" in cookie.lower() or "token" in cookie.lower():
-                                self._access_token = response.cookies[cookie]
-                                break
+                        # Extract access token from response body
+                        self._access_token = data.get("accessToken") or data.get("access_token")
+                        self._refresh_token = data.get("refreshToken") or data.get("refresh_token") or self._refresh_token
+                        expires_in = data.get("expiresIn", data.get("expires_in", 3600))
+                        # Set expiry with 5-minute buffer
+                        self._token_expiry = datetime.now() + timedelta(seconds=expires_in - 300)
                         if self._access_token:
+                            logger.info("Carbon: Token refreshed successfully")
                             return self._access_token
-            except Exception:
-                pass  # Fall through to login
+            except Exception as e:
+                logger.debug(f"Carbon: Token refresh failed, will perform fresh login: {e}")
 
         # Perform fresh login
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 f"{self.api_url}/login",
                 json={"username": self.username, "password": self.password},
-                headers={"Content-Type": "application/json"}
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json"
+                }
             )
+
+            # Handle specific error cases
+            if response.status_code == 401:
+                raise Exception("Carbon authentication failed: Invalid credentials")
+            elif response.status_code == 422:
+                raise Exception(f"Carbon authentication failed: Validation error - {response.text}")
+            elif response.status_code == 429:
+                raise Exception("Carbon authentication failed: Rate limited. Try again later.")
+
             response.raise_for_status()
             data = response.json()
 
-            self._refresh_token = data.get("refreshToken")
-            expires_in = data.get("expiresIn", 3600)
-            self._token_expiry = datetime.now() + timedelta(seconds=expires_in - 60)
+            # Extract access token from response body (try both camelCase and snake_case)
+            self._access_token = data.get("accessToken") or data.get("access_token")
+            self._refresh_token = data.get("refreshToken") or data.get("refresh_token")
 
-            # Try to get token from cookie first
-            for cookie_name in response.cookies:
-                if "myaussie" in cookie_name.lower() or "token" in cookie_name.lower():
-                    self._access_token = response.cookies[cookie_name]
-                    break
-
-            # If no cookie, use refresh token as access token (common pattern)
             if not self._access_token:
-                self._access_token = self._refresh_token
+                raise Exception("Carbon authentication failed: No access token in response")
 
+            # Set expiry with 5-minute buffer (default to 55 mins if not provided)
+            expires_in = data.get("expiresIn", data.get("expires_in", 3600))
+            self._token_expiry = datetime.now() + timedelta(seconds=expires_in - 300)
+
+            logger.info("Carbon: Authentication successful")
             return self._access_token
 
     def headers(self) -> Dict[str, str]:
         """Get headers for API requests (requires token to be set)."""
+        if not self._access_token:
+            raise Exception("Carbon: No access token available. Call get_access_token() first.")
         return {
-            "Authorization": f"Bearer {self._access_token}" if self._access_token else "",
+            "Authorization": f"Bearer {self._access_token}",
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
@@ -12781,7 +12801,39 @@ class CarbonConfig:
         await self.get_access_token()
         return self.headers()
 
+    async def request(self, method: str, endpoint: str, params: dict = None, json_data: dict = None, timeout: float = 30.0) -> Any:
+        """Make an authenticated request to the Carbon API with automatic retry on 401."""
+        headers = await self.get_headers()
+        url = f"{self.api_url}{endpoint}"
 
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.request(
+                method=method,
+                url=url,
+                headers=headers,
+                params=params,
+                json=json_data
+            )
+
+            # If unauthorized, clear token and retry once with fresh auth
+            if response.status_code == 401:
+                self._access_token = None
+                self._token_expiry = None
+                headers = await self.get_headers()
+                response = await client.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    params=params,
+                    json=json_data
+                )
+
+            return response
+
+    def clear_token(self) -> None:
+        """Clear cached access token to force re-authentication."""
+        self._access_token = None
+        self._token_expiry = None
 
 
 # ============================================================================
