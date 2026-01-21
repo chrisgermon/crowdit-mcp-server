@@ -18341,6 +18341,381 @@ async def server_status() -> str:
 
 print(f"[STARTUP] Module loading complete at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
+
+# ============================================================================
+# GitHub Integration (Repository Management & CI/CD)
+# ============================================================================
+
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+GITHUB_DEFAULT_REPO = "chrisgermon/crowdit-mcp-server"
+
+def get_github_headers():
+    """Get headers for GitHub API requests."""
+    if not GITHUB_TOKEN:
+        raise ValueError("GITHUB_TOKEN not configured")
+    return {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+
+@mcp.tool(
+    name="github_read_file",
+    annotations={
+        "title": "Read File from GitHub",
+        "readOnlyHint": True,
+        "openWorldHint": True
+    }
+)
+async def github_read_file(
+    path: str = Field(..., description="File path in repository (e.g., 'server.py', 'app/tools/example.py')"),
+    repo: str = Field(GITHUB_DEFAULT_REPO, description="Repository in format 'owner/repo'"),
+    branch: str = Field("main", description="Branch name")
+) -> str:
+    """Read a file from a GitHub repository."""
+    try:
+        headers = get_github_headers()
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"https://api.github.com/repos/{repo}/contents/{path}",
+                headers=headers,
+                params={"ref": branch}
+            )
+            response.raise_for_status()
+            data = response.json()
+        
+        if data.get("type") != "file":
+            return f"Error: {path} is not a file"
+        
+        import base64
+        content = base64.b64decode(data["content"]).decode("utf-8")
+        
+        return f"**File:** {path}\n**Branch:** {branch}\n**Size:** {data.get('size', 'N/A')} bytes\n**SHA:** {data.get('sha', 'N/A')[:7]}\n\n```\n{content}\n```"
+        
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return f"Error: File '{path}' not found in {repo} on branch {branch}"
+        return f"Error: {e}"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.tool(
+    name="github_update_file",
+    annotations={
+        "title": "Update/Create File in GitHub",
+        "readOnlyHint": False,
+        "openWorldHint": True
+    }
+)
+async def github_update_file(
+    path: str = Field(..., description="File path in repository"),
+    content: str = Field(..., description="New file content"),
+    message: str = Field(..., description="Commit message"),
+    repo: str = Field(GITHUB_DEFAULT_REPO, description="Repository in format 'owner/repo'"),
+    branch: str = Field("main", description="Branch name"),
+    sha: str = Field(None, description="Current file SHA (required for updates, auto-fetched if not provided)")
+) -> str:
+    """Create or update a file in a GitHub repository."""
+    import base64
+    try:
+        headers = get_github_headers()
+        async with httpx.AsyncClient() as client:
+            # Get current SHA if not provided (for updates)
+            if not sha:
+                try:
+                    response = await client.get(
+                        f"https://api.github.com/repos/{repo}/contents/{path}",
+                        headers=headers,
+                        params={"ref": branch}
+                    )
+                    if response.status_code == 200:
+                        sha = response.json().get("sha")
+                except:
+                    pass  # File doesn't exist, will be created
+            
+            # Prepare the request
+            data = {
+                "message": message,
+                "content": base64.b64encode(content.encode()).decode(),
+                "branch": branch
+            }
+            if sha:
+                data["sha"] = sha
+            
+            response = await client.put(
+                f"https://api.github.com/repos/{repo}/contents/{path}",
+                headers=headers,
+                json=data
+            )
+            response.raise_for_status()
+            result = response.json()
+        
+        commit = result.get("commit", {})
+        return f"✅ File {'updated' if sha else 'created'} successfully\n\n" \
+               f"**File:** {path}\n" \
+               f"**Commit:** {commit.get('sha', 'N/A')[:7]}\n" \
+               f"**Message:** {message}\n" \
+               f"**URL:** {result.get('content', {}).get('html_url', 'N/A')}"
+        
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.tool(
+    name="github_list_commits",
+    annotations={
+        "title": "List Recent Commits",
+        "readOnlyHint": True,
+        "openWorldHint": True
+    }
+)
+async def github_list_commits(
+    repo: str = Field(GITHUB_DEFAULT_REPO, description="Repository in format 'owner/repo'"),
+    branch: str = Field("main", description="Branch name"),
+    limit: int = Field(10, description="Number of commits to return (max 30)")
+) -> str:
+    """List recent commits on a branch."""
+    try:
+        headers = get_github_headers()
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"https://api.github.com/repos/{repo}/commits",
+                headers=headers,
+                params={"sha": branch, "per_page": min(limit, 30)}
+            )
+            response.raise_for_status()
+            commits = response.json()
+        
+        if not commits:
+            return f"No commits found on branch {branch}"
+        
+        result = f"**Recent Commits on {branch}** ({len(commits)} shown)\n\n"
+        for commit in commits:
+            sha = commit.get("sha", "")[:7]
+            msg = commit.get("commit", {}).get("message", "").split("\n")[0][:60]
+            author = commit.get("commit", {}).get("author", {}).get("name", "Unknown")
+            date = commit.get("commit", {}).get("author", {}).get("date", "")[:10]
+            result += f"• `{sha}` {msg} - {author} ({date})\n"
+        
+        return result
+        
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.tool(
+    name="github_list_branches",
+    annotations={
+        "title": "List Branches",
+        "readOnlyHint": True,
+        "openWorldHint": True
+    }
+)
+async def github_list_branches(
+    repo: str = Field(GITHUB_DEFAULT_REPO, description="Repository in format 'owner/repo'")
+) -> str:
+    """List all branches in a repository."""
+    try:
+        headers = get_github_headers()
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"https://api.github.com/repos/{repo}/branches",
+                headers=headers
+            )
+            response.raise_for_status()
+            branches = response.json()
+        
+        if not branches:
+            return "No branches found"
+        
+        result = f"**Branches in {repo}**\n\n"
+        for branch in branches:
+            name = branch.get("name", "")
+            protected = "🔒" if branch.get("protected") else ""
+            result += f"• {name} {protected}\n"
+        
+        return result
+        
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.tool(
+    name="github_list_files",
+    annotations={
+        "title": "List Files in Directory",
+        "readOnlyHint": True,
+        "openWorldHint": True
+    }
+)
+async def github_list_files(
+    path: str = Field("", description="Directory path (empty for root)"),
+    repo: str = Field(GITHUB_DEFAULT_REPO, description="Repository in format 'owner/repo'"),
+    branch: str = Field("main", description="Branch name")
+) -> str:
+    """List files and directories in a repository path."""
+    try:
+        headers = get_github_headers()
+        async with httpx.AsyncClient() as client:
+            url = f"https://api.github.com/repos/{repo}/contents/{path}" if path else f"https://api.github.com/repos/{repo}/contents"
+            response = await client.get(
+                url,
+                headers=headers,
+                params={"ref": branch}
+            )
+            response.raise_for_status()
+            items = response.json()
+        
+        if not isinstance(items, list):
+            return f"Path '{path}' is a file, not a directory"
+        
+        result = f"**Contents of {path or '/'}** ({branch})\n\n"
+        
+        # Sort: directories first, then files
+        dirs = sorted([i for i in items if i.get("type") == "dir"], key=lambda x: x.get("name", ""))
+        files = sorted([i for i in items if i.get("type") == "file"], key=lambda x: x.get("name", ""))
+        
+        for item in dirs:
+            result += f"📁 {item.get('name', '')}/\n"
+        for item in files:
+            size = item.get("size", 0)
+            size_str = f"{size:,}" if size < 1024 else f"{size/1024:.1f}KB"
+            result += f"📄 {item.get('name', '')} ({size_str})\n"
+        
+        return result
+        
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.tool(
+    name="github_trigger_deploy",
+    annotations={
+        "title": "Trigger Cloud Build Deploy",
+        "readOnlyHint": False,
+        "openWorldHint": True
+    }
+)
+async def github_trigger_deploy(
+    repo: str = Field(GITHUB_DEFAULT_REPO, description="Repository in format 'owner/repo'"),
+    branch: str = Field("main", description="Branch to deploy")
+) -> str:
+    """Trigger a Cloud Build deployment for the repository.
+    
+    This creates an empty commit to trigger the Cloud Build pipeline.
+    """
+    import base64
+    from datetime import datetime, timezone
+    try:
+        headers = get_github_headers()
+        
+        # First get the latest commit SHA on the branch
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"https://api.github.com/repos/{repo}/git/refs/heads/{branch}",
+                headers=headers
+            )
+            response.raise_for_status()
+            ref_data = response.json()
+            latest_sha = ref_data.get("object", {}).get("sha")
+            
+            if not latest_sha:
+                return "Error: Could not get latest commit SHA"
+            
+            # Get the tree SHA from the latest commit
+            response = await client.get(
+                f"https://api.github.com/repos/{repo}/git/commits/{latest_sha}",
+                headers=headers
+            )
+            response.raise_for_status()
+            commit_data = response.json()
+            tree_sha = commit_data.get("tree", {}).get("sha")
+            
+            # Create a new commit with the same tree (empty commit)
+            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            response = await client.post(
+                f"https://api.github.com/repos/{repo}/git/commits",
+                headers=headers,
+                json={
+                    "message": f"[deploy] Trigger deployment - {timestamp}",
+                    "tree": tree_sha,
+                    "parents": [latest_sha]
+                }
+            )
+            response.raise_for_status()
+            new_commit = response.json()
+            new_sha = new_commit.get("sha")
+            
+            # Update the branch reference to point to the new commit
+            response = await client.patch(
+                f"https://api.github.com/repos/{repo}/git/refs/heads/{branch}",
+                headers=headers,
+                json={"sha": new_sha}
+            )
+            response.raise_for_status()
+        
+        return f"✅ Deployment triggered successfully\n\n" \
+               f"**Repository:** {repo}\n" \
+               f"**Branch:** {branch}\n" \
+               f"**Commit:** {new_sha[:7]}\n" \
+               f"**Message:** [deploy] Trigger deployment - {timestamp}\n\n" \
+               f"Cloud Build should pick this up automatically. Check GCP Console for build status."
+        
+    except Exception as e:
+        return f"Error triggering deployment: {e}"
+
+
+@mcp.tool(
+    name="github_get_latest_deploy",
+    annotations={
+        "title": "Get Latest Deployment Status",
+        "readOnlyHint": True,
+        "openWorldHint": True
+    }
+)
+async def github_get_latest_deploy(
+    repo: str = Field(GITHUB_DEFAULT_REPO, description="Repository in format 'owner/repo'")
+) -> str:
+    """Get the latest deployment/commit info and Cloud Run revision status."""
+    try:
+        headers = get_github_headers()
+        
+        async with httpx.AsyncClient() as client:
+            # Get latest commit
+            response = await client.get(
+                f"https://api.github.com/repos/{repo}/commits",
+                headers=headers,
+                params={"per_page": 1}
+            )
+            response.raise_for_status()
+            commits = response.json()
+        
+        if not commits:
+            return "No commits found"
+        
+        commit = commits[0]
+        sha = commit.get("sha", "")[:7]
+        full_sha = commit.get("sha", "")
+        msg = commit.get("commit", {}).get("message", "").split("\n")[0]
+        author = commit.get("commit", {}).get("author", {}).get("name", "Unknown")
+        date = commit.get("commit", {}).get("author", {}).get("date", "")
+        
+        result = f"**Latest Commit**\n"
+        result += f"• SHA: `{sha}`\n"
+        result += f"• Message: {msg}\n"
+        result += f"• Author: {author}\n"
+        result += f"• Date: {date}\n\n"
+        result += f"**GitHub URL:** https://github.com/{repo}/commit/{full_sha}\n\n"
+        result += f"💡 Use `cloud_run_latest_deployment` to check if this has been deployed to Cloud Run."
+        
+        return result
+        
+    except Exception as e:
+        return f"Error: {e}"
+
+print("✅ GitHub tools registered successfully")
+
 # ============================================================================
 # Main Entry Point
 # ============================================================================
