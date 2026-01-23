@@ -135,6 +135,7 @@ carbon_config = None
 ninjaone_config = None
 auvik_config = None
 metabase_config = None
+gorelo_config = None
 
 _configs_initialized = False
 
@@ -143,7 +144,7 @@ def _initialize_configs_once():
     global halopsa_config, xero_config, front_config, sharepoint_config, bigquery_config
     global rds_config, forticloud_config, maxotel_config, ubuntu_config, visionrad_config
     global cipp_config, salesforce_config, gcloud_config, dicker_config, ingram_config
-    global carbon_config, ninjaone_config, auvik_config, metabase_config, _configs_initialized
+    global carbon_config, ninjaone_config, auvik_config, metabase_config, gorelo_config, _configs_initialized
     
     if _configs_initialized:
         return
@@ -170,6 +171,7 @@ def _initialize_configs_once():
         ninjaone_config = NinjaOneConfig()
         auvik_config = AuvikConfig()
         metabase_config = MetabaseConfig()
+        gorelo_config = GoreloConfig()
     except Exception as e:
         logger.error(f"Error during lazy config initialization: {e}", exc_info=True)
 
@@ -4416,6 +4418,179 @@ async def front_list_tags() -> str:
         if not tags:
             return "No tags found."
         return "## Front Tags\n\n" + "\n".join([f"- **{t.get('name', 'Unknown')}** (ID: `{t.get('id', 'N/A')}`)" for t in tags])
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+# ============================================================================
+# Gorelo Integration (RMM / PSA)
+# ============================================================================
+
+class GoreloConfig:
+    def __init__(self):
+        self.api_key = os.getenv("GORELO_API_KEY", "")
+        self.base_url = "https://api.usw.gorelo.io"
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.api_key)
+
+    def headers(self):
+        return {"X-API-Key": self.api_key, "Content-Type": "application/json", "Accept": "application/json"}
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def gorelo_list_clients() -> str:
+    """List all Gorelo clients/companies."""
+    if not gorelo_config.is_configured:
+        return "Error: Gorelo not configured (missing GORELO_API_KEY)."
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{gorelo_config.base_url}/v1/clients", headers=gorelo_config.headers())
+            response.raise_for_status()
+            clients = response.json()
+        if not clients:
+            return "No clients found."
+        results = []
+        for c in clients[:50]:
+            results.append(f"- **{c.get('name', 'Unknown')}** (ID: `{c.get('id', 'N/A')}`)")
+        return f"## Gorelo Clients ({len(clients)} total)\n\n" + "\n".join(results)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def gorelo_get_client(client_id: int = Field(..., description="Client ID")) -> str:
+    """Get details for a specific Gorelo client."""
+    if not gorelo_config.is_configured:
+        return "Error: Gorelo not configured."
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{gorelo_config.base_url}/v1/clients/{client_id}", headers=gorelo_config.headers())
+            response.raise_for_status()
+            data = response.json()
+        return f"## Client: {data.get('name', 'Unknown')}\n\n**ID:** {data.get('id')}\n\n```json\n{json.dumps(data, indent=2)}\n```"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def gorelo_list_client_locations(client_id: int = Field(..., description="Client ID")) -> str:
+    """List all locations for a specific Gorelo client."""
+    if not gorelo_config.is_configured:
+        return "Error: Gorelo not configured."
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{gorelo_config.base_url}/v1/clients/{client_id}/locations", headers=gorelo_config.headers())
+            response.raise_for_status()
+            locations = response.json()
+        if not locations:
+            return f"No locations found for client {client_id}."
+        results = []
+        for loc in locations:
+            results.append(f"- **{loc.get('name', 'Unknown')}** (ID: `{loc.get('id', 'N/A')}`)")
+        return f"## Locations for Client {client_id}\n\n" + "\n".join(results)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def gorelo_list_contacts(
+    client_id: Optional[int] = Field(None, description="Filter by client ID"),
+    contact_ids: Optional[str] = Field(None, description="Comma-separated contact IDs to retrieve")
+) -> str:
+    """List Gorelo contacts, optionally filtered by client."""
+    if not gorelo_config.is_configured:
+        return "Error: Gorelo not configured."
+    try:
+        params = {}
+        if client_id:
+            params["clientid"] = client_id
+        if contact_ids:
+            params["ContactIds"] = contact_ids
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{gorelo_config.base_url}/v1/contacts", params=params, headers=gorelo_config.headers())
+            response.raise_for_status()
+            contacts = response.json()
+        if not contacts:
+            return "No contacts found."
+        results = []
+        for c in contacts[:50]:
+            name = f"{c.get('firstName', '')} {c.get('lastName', '')}".strip() or "Unknown"
+            email = c.get('email', 'N/A')
+            results.append(f"- **{name}** ({email}) - ID: `{c.get('id', 'N/A')}`")
+        return f"## Gorelo Contacts ({len(contacts)} total)\n\n" + "\n".join(results)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def gorelo_get_contact(contact_id: int = Field(..., description="Contact ID")) -> str:
+    """Get details for a specific Gorelo contact."""
+    if not gorelo_config.is_configured:
+        return "Error: Gorelo not configured."
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{gorelo_config.base_url}/v1/contacts/{contact_id}", headers=gorelo_config.headers())
+            response.raise_for_status()
+            data = response.json()
+        name = f"{data.get('firstName', '')} {data.get('lastName', '')}".strip() or "Unknown"
+        return f"## Contact: {name}\n\n**ID:** {data.get('id')}\n**Email:** {data.get('email', 'N/A')}\n\n```json\n{json.dumps(data, indent=2)}\n```"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def gorelo_list_agents() -> str:
+    """List all Gorelo agents (managed devices)."""
+    if not gorelo_config.is_configured:
+        return "Error: Gorelo not configured."
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{gorelo_config.base_url}/v1/assets/agents", headers=gorelo_config.headers())
+            response.raise_for_status()
+            agents = response.json()
+        if not agents:
+            return "No agents found."
+        results = []
+        for a in agents[:50]:
+            name = a.get('hostname', a.get('name', 'Unknown'))
+            status = a.get('status', 'N/A')
+            results.append(f"- **{name}** (Status: {status}) - ID: `{a.get('id', 'N/A')}`")
+        return f"## Gorelo Agents ({len(agents)} total)\n\n" + "\n".join(results)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def gorelo_get_agent(agent_id: str = Field(..., description="Agent UUID")) -> str:
+    """Get details for a specific Gorelo agent."""
+    if not gorelo_config.is_configured:
+        return "Error: Gorelo not configured."
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{gorelo_config.base_url}/v1/assets/agents/{agent_id}", headers=gorelo_config.headers())
+            response.raise_for_status()
+            data = response.json()
+        name = data.get('hostname', data.get('name', 'Unknown'))
+        return f"## Agent: {name}\n\n**ID:** {data.get('id')}\n**Status:** {data.get('status', 'N/A')}\n\n```json\n{json.dumps(data, indent=2)}\n```"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@mcp.tool(annotations={"readOnlyHint": False})
+async def gorelo_create_alert(
+    name: str = Field(..., description="Alert name/title"),
+    client_id: int = Field(..., description="Client ID"),
+    severity: str = Field(..., description="Alert severity (e.g., 'low', 'medium', 'high', 'critical')"),
+    service_provider_id: int = Field(..., description="Service provider ID")
+) -> str:
+    """Create a new alert in Gorelo."""
+    if not gorelo_config.is_configured:
+        return "Error: Gorelo not configured."
+    try:
+        payload = {
+            "name": name,
+            "clientId": client_id,
+            "severity": severity,
+            "serviceProviderId": service_provider_id
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.post(f"{gorelo_config.base_url}/v1/alerts/", json=payload, headers=gorelo_config.headers())
+            response.raise_for_status()
+        return f"Alert '{name}' created successfully for client {client_id}."
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -14420,6 +14595,7 @@ async def crowdit_platform_status() -> str:
         ("Dicker Data", dicker_config, "IT Distribution"),
         ("NinjaOne", ninjaone_config, "RMM / Endpoint Management"),
         ("Auvik", auvik_config, "Network Management"),
+        ("Gorelo", gorelo_config, "RMM / PSA"),
     ]
 
     configured = []
@@ -19520,6 +19696,14 @@ if __name__ == "__main__":
             "check_type": "session",
             "env_vars": ["METABASE_URL"],
             "auth_env_vars": ["METABASE_USERNAME", "METABASE_PASSWORD", "METABASE_API_KEY"]
+        },
+        {
+            "name": "Gorelo",
+            "config": gorelo_config,
+            "category": "RMM / PSA",
+            "check_type": "api_key",
+            "env_vars": [],
+            "auth_env_vars": ["GORELO_API_KEY"]
         },
     ]
 
