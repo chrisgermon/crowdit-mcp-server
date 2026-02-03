@@ -1,0 +1,91 @@
+{
+  "name": "Crowd IT Skills Library",
+  "version": "1.0.0",
+  "description": "Centralized AI skills for MSP operations, radiology workflows, and automation",
+  "organization": "Crowd IT Pty Ltd",
+  "baseUrl": "https://storage.googleapis.com/crowdit-skills",
+  "customDomain": "https://skills.crowdit.com.au",
+  "lastUpdated": "2026-02-03T10:00:00+11:00",
+  "categories": [
+    {
+      "id": "core",
+      "name": "Core Skills",
+      "description": "Fundamental skills applicable across all contexts",
+      "skillCount": 0
+    },
+    {
+      "id": "msp",
+      "name": "MSP Operations",
+      "description": "Managed Service Provider workflows and processes",
+      "skillCount": 2
+    },
+    {
+      "id": "radiology",
+      "name": "Radiology",
+      "description": "Medical imaging specific workflows",
+      "skillCount": 1
+    },
+    {
+      "id": "automation",
+      "name": "Automation",
+      "description": "Workflow automation and integration skills",
+      "skillCount": 0
+    },
+    {
+      "id": "templates",
+      "name": "Templates",
+      "description": "Skill creation templates",
+      "skillCount": 1
+    }
+  ],
+  "skills": [
+    {
+      "name": "ticket-triage",
+      "displayName": "Ticket Triage and Prioritization",
+      "category": "msp",
+      "version": "1.0.0",
+      "path": "/msp/ticket-triage.md",
+      "author": "chris@crowdit.com.au",
+      "tags": ["tickets", "halopsa", "prioritization", "support", "workflow"],
+      "platforms": ["claude", "openclaw", "n8n"],
+      "requires_tools": ["halopsa_search_tickets", "halopsa_get_ticket", "halopsa_get_clients", "halopsa_update_ticket"],
+      "description": "Systematically evaluate and prioritize support tickets based on impact, urgency, client importance, and SLA requirements."
+    },
+    {
+      "name": "billing-reconciliation",
+      "displayName": "Billing Reconciliation",
+      "category": "msp",
+      "version": "1.0.0",
+      "path": "/msp/billing-reconciliation.md",
+      "author": "chris@crowdit.com.au",
+      "tags": ["billing", "xero", "pax8", "halopsa", "reconciliation", "invoicing"],
+      "platforms": ["claude", "openclaw", "n8n"],
+      "requires_tools": ["pax8_list_subscriptions", "pax8_list_companies", "xero_get_invoices", "xero_get_contacts", "halopsa_get_recurring_invoices"],
+      "description": "Compare subscriptions across billing platforms against Xero invoices to identify revenue leakage and discrepancies."
+    },
+    {
+      "name": "study-volume-monitoring",
+      "displayName": "Radiology Study Volume Monitoring",
+      "category": "radiology",
+      "version": "1.0.0",
+      "path": "/radiology/study-volume-monitoring.md",
+      "author": "chris@crowdit.com.au",
+      "tags": ["radiology", "bigquery", "pacs", "ris", "karisma", "monitoring", "analytics"],
+      "platforms": ["claude", "openclaw", "n8n"],
+      "requires_tools": ["bigquery_query", "bigquery_list_tables", "bigquery_describe_table"],
+      "description": "Monitor imaging study volumes across Vision Radiology sites using BigQuery data."
+    },
+    {
+      "name": "skill-template",
+      "displayName": "Skill Template",
+      "category": "templates",
+      "version": "1.0.0",
+      "path": "/templates/skill-template.md",
+      "author": "chris@crowdit.com.au",
+      "tags": ["template", "documentation"],
+      "platforms": ["claude", "openclaw", "n8n"],
+      "requires_tools": [],
+      "description": "Template for creating new skills with proper structure and metadata."
+    }
+  ]
+}
