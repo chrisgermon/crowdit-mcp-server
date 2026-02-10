@@ -1,6 +1,6 @@
 """
 Crowd IT Unified MCP Server
-Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), Auvik (Network Management), and Metabase (Business Intelligence) integration.
+Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Microsoft 365 (Email/Calendar/OneDrive/Teams), Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), Auvik (Network Management), and Metabase (Business Intelligence) integration.
 """
 
 # Absolute first thing - print to both stdout and stderr
@@ -46,12 +46,15 @@ print(f"[STARTUP] pydantic imported at t={time.time() - _module_start_time:.3f}s
 from azure_tools import register_azure_tools
 print(f"[STARTUP] azure_tools imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
+from microsoft365_tools import register_microsoft365_tools, Microsoft365Config
+print(f"[STARTUP] microsoft365_tools imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+
 # Cloud Run URL for OAuth callback
 CLOUD_RUN_URL = os.getenv("CLOUD_RUN_URL", "https://crowdit-mcp-server-lypf4vkh4q-ts.a.run.app")
 
 mcp = FastMCP(
     name="crowdit-mcp-server",
-    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), Auvik (Network Management), and Metabase (Business Intelligence) integration for MSP operations.",
+    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Microsoft 365 (Email/Calendar/OneDrive/Teams), Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), Auvik (Network Management), and Metabase (Business Intelligence) integration for MSP operations.",
     stateless_http=True  # Required for Cloud Run - enables stateless sessions
 )
 print(f"[STARTUP] FastMCP instance created at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
@@ -62,6 +65,19 @@ try:
 except Exception as e:
     print(f'[STARTUP] Azure tools registration failed (non-critical): {e}', file=sys.stderr, flush=True)
 print(f"[STARTUP] Azure tools registered at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+
+# Register Microsoft 365 tools (Email, Calendar, OneDrive, Teams)
+m365_config = None
+
+def _get_m365_config():
+    """Config getter for M365 tools - returns the lazily initialized config."""
+    return m365_config
+
+try:
+    register_microsoft365_tools(mcp, _get_m365_config)
+except Exception as e:
+    print(f'[STARTUP] Microsoft 365 tools registration failed (non-critical): {e}', file=sys.stderr, flush=True)
+print(f"[STARTUP] Microsoft 365 tools registered at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
 # ============================================================================
 # Secret Manager Helper
@@ -144,7 +160,8 @@ def _initialize_configs_once():
     global halopsa_config, xero_config, front_config, sharepoint_config, bigquery_config
     global rds_config, forticloud_config, maxotel_config, ubuntu_config, visionrad_config
     global cipp_config, salesforce_config, gcloud_config, dicker_config, ingram_config
-    global carbon_config, ninjaone_config, auvik_config, metabase_config, gorelo_config, _configs_initialized
+    global carbon_config, ninjaone_config, auvik_config, metabase_config, gorelo_config
+    global m365_config, _configs_initialized
     
     if _configs_initialized:
         return
@@ -172,6 +189,7 @@ def _initialize_configs_once():
         auvik_config = AuvikConfig()
         metabase_config = MetabaseConfig()
         gorelo_config = GoreloConfig()
+        m365_config = Microsoft365Config()
     except Exception as e:
         logger.error(f"Error during lazy config initialization: {e}", exc_info=True)
 
@@ -18298,6 +18316,20 @@ async def server_status() -> str:
         if not os.getenv("SHAREPOINT_REFRESH_TOKEN"): missing.append("REFRESH_TOKEN")
         lines.append(f"⚠️ **SharePoint:** Missing: {', '.join(missing)}")
     
+    if m365_config and m365_config.is_configured:
+        try:
+            await m365_config.get_access_token()
+            lines.append("✅ **Microsoft 365:** Connected (Email, Calendar, OneDrive, Teams)")
+        except Exception as e:
+            lines.append(f"❌ **Microsoft 365:** Auth failed - {str(e)[:50]}")
+    else:
+        missing = []
+        if not (os.getenv("M365_CLIENT_ID") or os.getenv("SHAREPOINT_CLIENT_ID")): missing.append("CLIENT_ID")
+        if not (os.getenv("M365_CLIENT_SECRET") or os.getenv("SHAREPOINT_CLIENT_SECRET")): missing.append("CLIENT_SECRET")
+        if not (os.getenv("M365_TENANT_ID") or os.getenv("SHAREPOINT_TENANT_ID")): missing.append("TENANT_ID")
+        if not os.getenv("M365_REFRESH_TOKEN"): missing.append("M365_REFRESH_TOKEN")
+        lines.append(f"⚠️ **Microsoft 365:** Missing: {', '.join(missing)}")
+
     if front_config.is_configured:
         lines.append("✅ **Front:** Connected")
     else:
@@ -19033,6 +19065,77 @@ if __name__ == "__main__":
             return HTMLResponse(f"<html><body><h1>Error</h1><p>{str(e)}</p></body></html>", status_code=500)
 
     # ============================================================================
+    # MICROSOFT 365 OAUTH CALLBACK
+    # ============================================================================
+
+    async def m365_callback_route(request):
+        code = request.query_params.get("code")
+        error = request.query_params.get("error")
+        error_description = request.query_params.get("error_description", "")
+
+        if error:
+            return HTMLResponse(f"<html><body><h1>Microsoft 365 Authorization Failed</h1><p>{error}: {error_description}</p></body></html>", status_code=400)
+
+        if not code:
+            return HTMLResponse("<html><body><h1>No Authorization Code</h1></body></html>", status_code=400)
+
+        client_id = os.getenv("M365_CLIENT_ID", "") or os.getenv("SHAREPOINT_CLIENT_ID", "")
+        client_secret = os.getenv("M365_CLIENT_SECRET", "") or os.getenv("SHAREPOINT_CLIENT_SECRET", "")
+        tenant_id = os.getenv("M365_TENANT_ID", "") or os.getenv("SHAREPOINT_TENANT_ID", "")
+        redirect_uri = f"{CLOUD_RUN_URL}/m365-callback"
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
+                    data={
+                        "grant_type": "authorization_code",
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "code": code,
+                        "redirect_uri": redirect_uri,
+                        "scope": "https://graph.microsoft.com/.default offline_access",
+                    },
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+                response.raise_for_status()
+                tokens = response.json()
+                access_token = tokens["access_token"]
+                refresh_token = tokens.get("refresh_token", "")
+
+            m365_config._access_token = access_token
+            m365_config._refresh_token = refresh_token
+            m365_config._token_expiry = datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600) - 60)
+
+            saved_refresh = update_secret_sync("M365_REFRESH_TOKEN", refresh_token) if refresh_token else False
+            status_msg = "Tokens saved" if saved_refresh else "Manual save needed"
+
+            # Get user info
+            try:
+                async with httpx.AsyncClient() as client:
+                    me_response = await client.get(
+                        "https://graph.microsoft.com/v1.0/me",
+                        headers={"Authorization": f"Bearer {access_token}"},
+                    )
+                    me_response.raise_for_status()
+                    me = me_response.json()
+                    user_info = f"<p><b>User:</b> {me.get('displayName', '')} ({me.get('mail', me.get('userPrincipalName', ''))})</p>"
+            except Exception:
+                user_info = ""
+
+            return HTMLResponse(f"""<html><head><title>Microsoft 365 Connected!</title></head>
+<body style="font-family:Arial,sans-serif;max-width:600px;margin:50px auto;padding:20px;">
+<h1 style="color:#27ae60;">Microsoft 365 Connected!</h1>
+{user_info}
+<p><b>Tenant ID:</b> {tenant_id}</p>
+<p><b>Services:</b> Email, Calendar, OneDrive, Teams, Contacts</p>
+<p>{status_msg}</p>
+<p>You can close this window.</p>
+</body></html>""")
+        except Exception as e:
+            return HTMLResponse(f"<html><body><h1>Error</h1><p>{str(e)}</p></body></html>", status_code=500)
+
+    # ============================================================================
     # BIGQUERY SYNC STATUS HELPER
     # ============================================================================
 
@@ -19705,6 +19808,14 @@ if __name__ == "__main__":
             "env_vars": [],
             "auth_env_vars": ["GORELO_API_KEY"]
         },
+        {
+            "name": "Microsoft 365",
+            "config": m365_config,
+            "category": "Email, Calendar & Collaboration",
+            "check_type": "oauth",
+            "env_vars": ["M365_TENANT_ID"],
+            "auth_env_vars": ["M365_CLIENT_ID", "M365_CLIENT_SECRET", "M365_REFRESH_TOKEN"]
+        },
     ]
 
     async def check_platform_status(platform: dict) -> dict:
@@ -19751,6 +19862,14 @@ if __name__ == "__main__":
             if tenant_id:
                 result["supports_reauth"] = True
                 result["reauth_url"] = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize?response_type=code&client_id={config.client_id}&redirect_uri={CLOUD_RUN_URL}/sharepoint-callback&scope=https://graph.microsoft.com/.default offline_access"
+            result["endpoint"] = "https://graph.microsoft.com"
+            result["api_version"] = "v1.0"
+        elif name == "Microsoft 365" and hasattr(config, 'client_id') and config.client_id:
+            tenant_id = os.getenv("M365_TENANT_ID", "") or os.getenv("SHAREPOINT_TENANT_ID", "")
+            if tenant_id:
+                from microsoft365_tools import M365_SCOPES
+                result["supports_reauth"] = True
+                result["reauth_url"] = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize?response_type=code&client_id={config.client_id}&redirect_uri={CLOUD_RUN_URL}/m365-callback&scope={M365_SCOPES}"
             result["endpoint"] = "https://graph.microsoft.com"
             result["api_version"] = "v1.0"
         elif name == "HaloPSA":
@@ -21144,6 +21263,7 @@ if __name__ == "__main__":
             Route("/status", status_page_route),
             Route("/callback", callback_route),
             Route("/sharepoint-callback", sharepoint_callback_route),
+            Route("/m365-callback", m365_callback_route),
             Route("/api/test-connection/{service_name:path}", api_test_connection_route),
             Route("/api/refresh-token/{service_name:path}", api_refresh_token_route),
             Route("/api/test-all-connections", api_test_all_connections_route),
