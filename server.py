@@ -19721,7 +19721,7 @@ if __name__ == "__main__":
             "config": aws_config,
             "category": "Cloud Infrastructure",
             "check_type": "aws",
-            "env_vars": ["AWS_DEFAULT_REGION"],
+            "env_vars": ["AWS_DEFAULT_REGION", "AWS_ROLE_ARN_NONPROD", "AWS_ROLE_ARN_ADMIN"],
             "auth_env_vars": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
         },
     ]
@@ -19817,7 +19817,7 @@ if __name__ == "__main__":
             result["endpoint"] = getattr(config, 'url', None)
             result["api_version"] = "v1"
         elif name == "AWS":
-            result["endpoint"] = f"https://{config.region}.amazonaws.com"
+            result["endpoint"] = f"https://{config.region}.amazonaws.com (multi-account)"
             result["api_version"] = "boto3"
 
         if not config.is_configured:
@@ -19915,9 +19915,14 @@ if __name__ == "__main__":
                 result["endpoint"] = getattr(config, 'hostname', None)
 
             elif check_type == "aws":
-                sts = config.get_client("sts")
+                sts = config.get_client("sts", account="prod")
                 identity = sts.get_caller_identity()
-                result["message"] = f"Connected (Account: {identity['Account']})"
+                accounts = ["prod"]
+                if config.role_arn_nonprod:
+                    accounts.append("nonprod")
+                if config.role_arn_admin:
+                    accounts.append("admin")
+                result["message"] = f"Connected (Account: {identity['Account']}, Roles: {', '.join(accounts)})"
                 result["organization"] = identity["Account"]
 
             else:
