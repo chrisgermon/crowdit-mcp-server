@@ -45,7 +45,7 @@ WORKDIR /app
 
 # Copy application code LAST (changes most frequently)
 # This ensures code changes don't invalidate dependency cache
-COPY server.py azure_tools.py ./
+COPY server.py azure_tools.py aws_tools.py ./
 COPY app ./app
 
 # Runtime configuration

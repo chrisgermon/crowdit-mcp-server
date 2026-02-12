@@ -23,6 +23,8 @@ dependencies = [
     "azure-mgmt-storage>=21.0.0",
     "azure-mgmt-subscription>=3.1.0",
     "azure-mgmt-costmanagement>=4.0.0",
+    # AWS SDK dependency
+    "boto3>=1.34.0",
 ]
 
 [build-system]
@@ -30,4 +32,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["server.py", "azure_tools.py"]
+only-include = ["server.py", "azure_tools.py", "aws_tools.py"]

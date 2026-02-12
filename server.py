@@ -1,6 +1,6 @@
 """
 Crowd IT Unified MCP Server
-Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), Auvik (Network Management), and Metabase (Business Intelligence) integration.
+Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, AWS, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), Auvik (Network Management), and Metabase (Business Intelligence) integration.
 """
 
 # Absolute first thing - print to both stdout and stderr
@@ -46,12 +46,15 @@ print(f"[STARTUP] pydantic imported at t={time.time() - _module_start_time:.3f}s
 from azure_tools import register_azure_tools
 print(f"[STARTUP] azure_tools imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
+from aws_tools import register_aws_tools, AWSConfig
+print(f"[STARTUP] aws_tools imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+
 # Cloud Run URL for OAuth callback
 CLOUD_RUN_URL = os.getenv("CLOUD_RUN_URL", "https://crowdit-mcp-server-lypf4vkh4q-ts.a.run.app")
 
 mcp = FastMCP(
     name="crowdit-mcp-server",
-    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), Auvik (Network Management), and Metabase (Business Intelligence) integration for MSP operations.",
+    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, AWS, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), Auvik (Network Management), and Metabase (Business Intelligence) integration for MSP operations.",
     stateless_http=True  # Required for Cloud Run - enables stateless sessions
 )
 print(f"[STARTUP] FastMCP instance created at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
@@ -62,6 +65,14 @@ try:
 except Exception as e:
     print(f'[STARTUP] Azure tools registration failed (non-critical): {e}', file=sys.stderr, flush=True)
 print(f"[STARTUP] Azure tools registered at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+
+# Register AWS tools
+aws_config = AWSConfig()
+try:
+    register_aws_tools(mcp, aws_config)
+except Exception as e:
+    print(f'[STARTUP] AWS tools registration failed (non-critical): {e}', file=sys.stderr, flush=True)
+print(f"[STARTUP] AWS tools registered at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
 # ============================================================================
 # Secret Manager Helper
@@ -19705,6 +19716,14 @@ if __name__ == "__main__":
             "env_vars": [],
             "auth_env_vars": ["GORELO_API_KEY"]
         },
+        {
+            "name": "AWS",
+            "config": aws_config,
+            "category": "Cloud Infrastructure",
+            "check_type": "aws",
+            "env_vars": ["AWS_DEFAULT_REGION"],
+            "auth_env_vars": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+        },
     ]
 
     async def check_platform_status(platform: dict) -> dict:
@@ -19797,6 +19816,9 @@ if __name__ == "__main__":
         elif name == "Metabase":
             result["endpoint"] = getattr(config, 'url', None)
             result["api_version"] = "v1"
+        elif name == "AWS":
+            result["endpoint"] = f"https://{config.region}.amazonaws.com"
+            result["api_version"] = "boto3"
 
         if not config.is_configured:
             # Build missing env vars message
@@ -19891,6 +19913,12 @@ if __name__ == "__main__":
                 result["message"] = f"Connected to {hostname}"
                 result["organization"] = hostname
                 result["endpoint"] = getattr(config, 'hostname', None)
+
+            elif check_type == "aws":
+                sts = config.get_client("sts")
+                identity = sts.get_caller_identity()
+                result["message"] = f"Connected (Account: {identity['Account']})"
+                result["organization"] = identity["Account"]
 
             else:
                 result["status"] = "warning"
