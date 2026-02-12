@@ -49,6 +49,9 @@ print(f"[STARTUP] azure_tools imported at t={time.time() - _module_start_time:.3
 from aws_tools import register_aws_tools, AWSConfig
 print(f"[STARTUP] aws_tools imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
+from email_tools import register_email_tools, EmailConfig
+print(f"[STARTUP] email_tools imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+
 # Cloud Run URL for OAuth callback
 CLOUD_RUN_URL = os.getenv("CLOUD_RUN_URL", "https://crowdit-mcp-server-lypf4vkh4q-ts.a.run.app")
 
@@ -84,6 +87,19 @@ except Exception as e:
     print(f'[STARTUP] AWS tools registration FAILED: {e}', file=sys.stderr, flush=True)
     traceback.print_exc(file=sys.stderr)
     aws_config = type('AWSConfig', (), {'is_configured': False, 'region': 'ap-southeast-2'})()
+
+# Register Email (Microsoft Graph) tools
+try:
+    email_config = EmailConfig()
+    _email_tool_count_before = len(mcp._tool_manager._tools)
+    register_email_tools(mcp, email_config)
+    _email_tool_count_after = len(mcp._tool_manager._tools)
+    _email_tools_added = _email_tool_count_after - _email_tool_count_before
+    print(f"[STARTUP] Email tools registered ({_email_tools_added} tools added) at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+except Exception as e:
+    import traceback
+    print(f'[STARTUP] Email tools registration FAILED: {e}', file=sys.stderr, flush=True)
+    traceback.print_exc(file=sys.stderr)
 
 # ============================================================================
 # Secret Manager Helper
