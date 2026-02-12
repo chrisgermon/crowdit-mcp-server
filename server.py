@@ -61,18 +61,29 @@ print(f"[STARTUP] FastMCP instance created at t={time.time() - _module_start_tim
 
 # Register Azure tools
 try:
+    _azure_tool_count_before = len(mcp._tool_manager._tools)
     register_azure_tools(mcp)
+    _azure_tool_count_after = len(mcp._tool_manager._tools)
+    _azure_tools_added = _azure_tool_count_after - _azure_tool_count_before
+    print(f"[STARTUP] Azure tools registered ({_azure_tools_added} tools added) at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 except Exception as e:
-    print(f'[STARTUP] Azure tools registration failed (non-critical): {e}', file=sys.stderr, flush=True)
-print(f"[STARTUP] Azure tools registered at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+    import traceback
+    print(f'[STARTUP] Azure tools registration FAILED: {e}', file=sys.stderr, flush=True)
+    traceback.print_exc(file=sys.stderr)
 
 # Register AWS tools
-aws_config = AWSConfig()
 try:
+    aws_config = AWSConfig()
+    _aws_tool_count_before = len(mcp._tool_manager._tools)
     register_aws_tools(mcp, aws_config)
+    _aws_tool_count_after = len(mcp._tool_manager._tools)
+    _aws_tools_added = _aws_tool_count_after - _aws_tool_count_before
+    print(f"[STARTUP] AWS tools registered ({_aws_tools_added} tools added) at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 except Exception as e:
-    print(f'[STARTUP] AWS tools registration failed (non-critical): {e}', file=sys.stderr, flush=True)
-print(f"[STARTUP] AWS tools registered at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+    import traceback
+    print(f'[STARTUP] AWS tools registration FAILED: {e}', file=sys.stderr, flush=True)
+    traceback.print_exc(file=sys.stderr)
+    aws_config = type('AWSConfig', (), {'is_configured': False, 'region': 'ap-southeast-2'})()
 
 # ============================================================================
 # Secret Manager Helper
@@ -18925,6 +18936,11 @@ if __name__ == "__main__":
     
     port = int(os.getenv("PORT", 8080))
     print(f"[STARTUP] Port={port} at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+
+    # Log total registered tools
+    _total_tools = len(mcp._tool_manager._tools)
+    _aws_tools = [k for k in mcp._tool_manager._tools if k.startswith("aws_") and not k.startswith("aws_rds_")]
+    print(f"[STARTUP] Total MCP tools registered: {_total_tools} (AWS new: {len(_aws_tools)}: {', '.join(sorted(_aws_tools))})", file=sys.stderr, flush=True)
 
     # Get FastMCP's HTTP app
     print(f"[STARTUP] Creating FastMCP HTTP app at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
