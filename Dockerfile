@@ -20,14 +20,18 @@ RUN uv venv /opt/venv && \
 # Stage 2: Runtime stage - minimal image with pre-installed deps
 FROM python:3.11-slim AS runtime
 
-# Install gcloud CLI in a separate layer (this rarely changes)
+# Install gcloud CLI and AWS CLI in a separate layer (this rarely changes)
 # Using smaller installation with just core components
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl gnupg ca-certificates && \
+    apt-get install -y --no-install-recommends curl gnupg ca-certificates unzip && \
     echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee /etc/apt/sources.list.d/google-cloud-sdk.list && \
     curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
     apt-get update && \
     apt-get install -y --no-install-recommends google-cloud-cli && \
+    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip" && \
+    unzip -q /tmp/awscliv2.zip -d /tmp && \
+    /tmp/aws/install && \
+    rm -rf /tmp/aws /tmp/awscliv2.zip && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
