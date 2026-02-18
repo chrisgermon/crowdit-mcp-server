@@ -1,6 +1,6 @@
 """
 Crowd IT Unified MCP Server
-Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, AWS, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), Auvik (Network Management), Metabase (Business Intelligence), and Jira (Project Management) integration.
+Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, AWS, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), Auvik (Network Management), Metabase (Business Intelligence), Jira (Project Management), and DigitalOcean (Cloud Infrastructure) integration.
 """
 
 # Absolute first thing - print to both stdout and stderr
@@ -55,12 +55,15 @@ print(f"[STARTUP] email_tools imported at t={time.time() - _module_start_time:.3
 from jira_tools import register_jira_tools, JiraConfig
 print(f"[STARTUP] jira_tools imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
+from digitalocean_tools import register_digitalocean_tools, DigitalOceanConfig
+print(f"[STARTUP] digitalocean_tools imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+
 # Cloud Run URL for OAuth callback
 CLOUD_RUN_URL = os.getenv("CLOUD_RUN_URL", "https://crowdit-mcp-server-lypf4vkh4q-ts.a.run.app")
 
 mcp = FastMCP(
     name="crowdit-mcp-server",
-    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, AWS, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), Auvik (Network Management), Metabase (Business Intelligence), and Jira (Project Management) integration for MSP operations.",
+    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, AWS, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), Auvik (Network Management), Metabase (Business Intelligence), Jira (Project Management), and DigitalOcean (Cloud Infrastructure) integration for MSP operations.",
     stateless_http=True  # Required for Cloud Run - enables stateless sessions
 )
 print(f"[STARTUP] FastMCP instance created at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
@@ -116,6 +119,20 @@ except Exception as e:
     import traceback
     print(f'[STARTUP] Jira tools registration FAILED: {e}', file=sys.stderr, flush=True)
     traceback.print_exc(file=sys.stderr)
+
+# Register DigitalOcean tools
+try:
+    do_config = DigitalOceanConfig()
+    _do_tool_count_before = len(mcp._tool_manager._tools)
+    register_digitalocean_tools(mcp, do_config)
+    _do_tool_count_after = len(mcp._tool_manager._tools)
+    _do_tools_added = _do_tool_count_after - _do_tool_count_before
+    print(f"[STARTUP] DigitalOcean tools registered ({_do_tools_added} tools added) at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+except Exception as e:
+    import traceback
+    print(f'[STARTUP] DigitalOcean tools registration FAILED: {e}', file=sys.stderr, flush=True)
+    traceback.print_exc(file=sys.stderr)
+    do_config = type('DigitalOceanConfig', (), {'is_configured': False})()
 
 # ============================================================================
 # Secret Manager Helper
@@ -19772,6 +19789,14 @@ if __name__ == "__main__":
             "env_vars": ["AWS_DEFAULT_REGION", "AWS_ROLE_ARN_NONPROD", "AWS_ROLE_ARN_ADMIN"],
             "auth_env_vars": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
         },
+        {
+            "name": "DigitalOcean",
+            "config": do_config,
+            "category": "Cloud Infrastructure",
+            "check_type": "api_key",
+            "env_vars": [],
+            "auth_env_vars": ["DIGITALOCEAN_TOKEN"]
+        },
     ]
 
     async def check_platform_status(platform: dict) -> dict:
@@ -19867,6 +19892,9 @@ if __name__ == "__main__":
         elif name == "AWS":
             result["endpoint"] = f"https://{config.region}.amazonaws.com (multi-account)"
             result["api_version"] = "boto3"
+        elif name == "DigitalOcean":
+            result["endpoint"] = "https://api.digitalocean.com/v2"
+            result["api_version"] = "v2"
 
         if not config.is_configured:
             # Build missing env vars message
