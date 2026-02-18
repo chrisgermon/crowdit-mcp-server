@@ -26,6 +26,7 @@
 steps:
   # Build with Kaniko for layer caching
   # Kaniko caches layers in Artifact Registry, dramatically speeding up subsequent builds
+  # Note: Kaniko pushes directly to the registry via --destination (no local Docker daemon)
   - name: 'gcr.io/kaniko-project/executor:latest'
     id: 'build'
     args:
@@ -87,9 +88,9 @@ steps:
         echo "Skills available at: https://storage.googleapis.com/crowdit-skills/"
     waitFor: ['deploy']
 
-images:
-  - 'australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:$BUILD_ID'
-  - 'australia-southeast1-docker.pkg.dev/$PROJECT_ID/crowdit/crowdit-mcp-server:latest'
+# Note: No 'images:' block needed - Kaniko pushes directly to Artifact Registry
+# via --destination flags. Adding an images: block would cause PUSH_IMAGE_NOT_FOUND
+# errors because Cloud Build looks for local images that Kaniko doesn't create.
 
 options:
   logging: CLOUD_LOGGING_ONLY
