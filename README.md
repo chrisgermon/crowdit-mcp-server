@@ -59,6 +59,25 @@ pip install -r pyproject.toml
 python server.py
 ```
 
+## Reducing Token Usage
+
+This server registers 500+ tools. When connected to an LLM like Claude, every tool definition is sent on each API call (~150 tokens per tool = ~75,000 tokens/turn overhead).
+
+### Option 1: Filter services with ENABLED_SERVICES
+
+Set the `ENABLED_SERVICES` environment variable to only load the services you need:
+
+```bash
+# Only load HaloPSA and Xero tools (~70 tools instead of 500+)
+ENABLED_SERVICES=halopsa,xero python server.py
+```
+
+Available service names: `halopsa`, `xero`, `front`, `sharepoint`, `quoter`, `pax8`, `bigquery`, `aws_rds`, `aws`, `azure`, `forticloud`, `maxotel`, `ubuntu`, `visionrad`, `cipp`, `salesforce`, `gcp`, `dicker`, `ingram`, `carbon`, `ninjaone`, `crowdit`, `auvik`, `metabase`, `n8n`, `gorelo`, `email`, `jira`, `linear`, `digitalocean`, `github`, `server`, `cloud_run`
+
+### Option 2: Use separate MCP servers per service
+
+For the lowest token usage, run individual MCP servers per integration (e.g., one for HaloPSA, one for Xero). This way each Claude session only loads the tools it actually needs.
+
 ## Environment Variables
 
 See Google Secret Manager in `crowdmcp` project for required secrets.

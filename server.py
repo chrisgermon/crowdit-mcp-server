@@ -64,90 +64,205 @@ print(f"[STARTUP] digitalocean_tools imported at t={time.time() - _module_start_
 # Cloud Run URL for OAuth callback
 CLOUD_RUN_URL = os.getenv("CLOUD_RUN_URL", "https://crowdit-mcp-server-lypf4vkh4q-ts.a.run.app")
 
+# =============================================================================
+# Service Filtering - Reduce token usage by only loading needed services
+# =============================================================================
+# Set ENABLED_SERVICES to a comma-separated list of service names to load.
+# When not set (or set to "all"), ALL services are loaded (backwards-compatible).
+# Example: ENABLED_SERVICES=halopsa,xero,front
+#
+# Available services:
+#   halopsa, xero, front, sharepoint, quoter, pax8, bigquery, aws_rds, aws,
+#   azure, forticloud, maxotel, ubuntu, visionrad, cipp, salesforce, gcp,
+#   dicker, ingram, carbon, ninjaone, crowdit, auvik, metabase, n8n, gorelo,
+#   email, jira, linear, digitalocean, github, server, cloud_run
+#
+_enabled_services_raw = os.getenv("ENABLED_SERVICES", "all").strip().lower()
+if _enabled_services_raw in ("all", "", "*"):
+    ENABLED_SERVICES = None  # None means all services enabled
+else:
+    ENABLED_SERVICES = {s.strip() for s in _enabled_services_raw.split(",") if s.strip()}
+
+# Map of tool name prefix -> service name for tools defined in server.py
+_TOOL_PREFIX_TO_SERVICE = {
+    "halopsa_": "halopsa",
+    "xero_": "xero",
+    "front_": "front",
+    "sharepoint_": "sharepoint",
+    "quoter_": "quoter",
+    "pax8_": "pax8",
+    "bigquery_": "bigquery",
+    "aws_rds_": "aws_rds",
+    "forticloud_": "forticloud",
+    "maxotel_": "maxotel",
+    "ubuntu_": "ubuntu",
+    "visionrad_": "visionrad",
+    "cipp_": "cipp",
+    "salesforce_": "salesforce",
+    "gcp_": "gcp",
+    "dicker_": "dicker",
+    "ingram_": "ingram",
+    "carbon_": "carbon",
+    "ninjaone_": "ninjaone",
+    "crowdit_": "crowdit",
+    "auvik_": "auvik",
+    "metabase_": "metabase",
+    "n8n_": "n8n",
+    "gorelo_": "gorelo",
+    "github_": "github",
+    "server_": "server",
+    "cloud_run_": "cloud_run",
+}
+
+# Map of external register function -> service name
+_EXTERNAL_SERVICE_MAP = {
+    "azure": "azure",
+    "aws": "aws",
+    "email": "email",
+    "jira": "jira",
+    "linear": "linear",
+    "digitalocean": "digitalocean",
+}
+
+
+def service_enabled(service_name: str) -> bool:
+    """Check if a service is enabled. Returns True if ENABLED_SERVICES is not set (all enabled)."""
+    if ENABLED_SERVICES is None:
+        return True
+    return service_name in ENABLED_SERVICES
+
+
+def _get_enabled_services_description() -> str:
+    """Build dynamic instructions string based on enabled services."""
+    if ENABLED_SERVICES is None:
+        return "Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, AWS, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), Auvik (Network Management), Metabase (Business Intelligence), Jira (Project Management), Linear (Project Management), and DigitalOcean (Cloud Infrastructure) integration for MSP operations."
+    service_labels = {
+        "halopsa": "HaloPSA", "xero": "Xero", "front": "Front",
+        "sharepoint": "SharePoint", "quoter": "Quoter", "pax8": "Pax8",
+        "bigquery": "BigQuery", "aws_rds": "AWS RDS", "aws": "AWS",
+        "azure": "Azure", "forticloud": "FortiCloud", "maxotel": "Maxotel VoIP",
+        "ubuntu": "Ubuntu Server", "visionrad": "Vision Radiology",
+        "cipp": "CIPP (M365)", "salesforce": "Salesforce", "gcp": "GCloud CLI",
+        "dicker": "Dicker Data", "ingram": "Ingram Micro", "carbon": "Aussie Broadband Carbon",
+        "ninjaone": "NinjaOne", "crowdit": "Crowd IT", "auvik": "Auvik",
+        "metabase": "Metabase", "n8n": "n8n", "gorelo": "Gorelo",
+        "email": "Email (Graph)", "jira": "Jira", "linear": "Linear",
+        "digitalocean": "DigitalOcean", "github": "GitHub",
+        "server": "Server Status", "cloud_run": "Cloud Run",
+    }
+    enabled_labels = [service_labels.get(s, s) for s in sorted(ENABLED_SERVICES) if s in service_labels]
+    return f"Crowd IT MCP Server - {', '.join(enabled_labels)} integration for MSP operations."
+
+
+if ENABLED_SERVICES is not None:
+    print(f"[STARTUP] Service filtering ACTIVE: {len(ENABLED_SERVICES)} services enabled: {', '.join(sorted(ENABLED_SERVICES))}", file=sys.stderr, flush=True)
+else:
+    print("[STARTUP] Service filtering OFF: all services enabled (set ENABLED_SERVICES to filter)", file=sys.stderr, flush=True)
+
 mcp = FastMCP(
     name="crowdit-mcp-server",
-    instructions="Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, AWS, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), Auvik (Network Management), Metabase (Business Intelligence), Jira (Project Management), Linear (Project Management), and DigitalOcean (Cloud Infrastructure) integration for MSP operations.",
+    instructions=_get_enabled_services_description(),
     stateless_http=True  # Required for Cloud Run - enables stateless sessions
 )
 print(f"[STARTUP] FastMCP instance created at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
 # Register Azure tools
-try:
-    _azure_tool_count_before = len(mcp._tool_manager._tools)
-    register_azure_tools(mcp)
-    _azure_tool_count_after = len(mcp._tool_manager._tools)
-    _azure_tools_added = _azure_tool_count_after - _azure_tool_count_before
-    print(f"[STARTUP] Azure tools registered ({_azure_tools_added} tools added) at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
-except Exception as e:
-    import traceback
-    print(f'[STARTUP] Azure tools registration FAILED: {e}', file=sys.stderr, flush=True)
-    traceback.print_exc(file=sys.stderr)
+if service_enabled("azure"):
+    try:
+        _azure_tool_count_before = len(mcp._tool_manager._tools)
+        register_azure_tools(mcp)
+        _azure_tool_count_after = len(mcp._tool_manager._tools)
+        _azure_tools_added = _azure_tool_count_after - _azure_tool_count_before
+        print(f"[STARTUP] Azure tools registered ({_azure_tools_added} tools added) at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+    except Exception as e:
+        import traceback
+        print(f'[STARTUP] Azure tools registration FAILED: {e}', file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+else:
+    print("[STARTUP] Azure tools SKIPPED (not in ENABLED_SERVICES)", file=sys.stderr, flush=True)
 
 # Register AWS tools
-try:
-    aws_config = AWSConfig()
-    _aws_tool_count_before = len(mcp._tool_manager._tools)
-    register_aws_tools(mcp, aws_config)
-    _aws_tool_count_after = len(mcp._tool_manager._tools)
-    _aws_tools_added = _aws_tool_count_after - _aws_tool_count_before
-    print(f"[STARTUP] AWS tools registered ({_aws_tools_added} tools added) at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
-except Exception as e:
-    import traceback
-    print(f'[STARTUP] AWS tools registration FAILED: {e}', file=sys.stderr, flush=True)
-    traceback.print_exc(file=sys.stderr)
+if service_enabled("aws"):
+    try:
+        aws_config = AWSConfig()
+        _aws_tool_count_before = len(mcp._tool_manager._tools)
+        register_aws_tools(mcp, aws_config)
+        _aws_tool_count_after = len(mcp._tool_manager._tools)
+        _aws_tools_added = _aws_tool_count_after - _aws_tool_count_before
+        print(f"[STARTUP] AWS tools registered ({_aws_tools_added} tools added) at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+    except Exception as e:
+        import traceback
+        print(f'[STARTUP] AWS tools registration FAILED: {e}', file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        aws_config = type('AWSConfig', (), {'is_configured': False, 'region': 'ap-southeast-2'})()
+else:
+    print("[STARTUP] AWS tools SKIPPED (not in ENABLED_SERVICES)", file=sys.stderr, flush=True)
     aws_config = type('AWSConfig', (), {'is_configured': False, 'region': 'ap-southeast-2'})()
 
 # Register Email (Microsoft Graph) tools
-try:
-    email_config = EmailConfig()
-    _email_tool_count_before = len(mcp._tool_manager._tools)
-    register_email_tools(mcp, email_config)
-    _email_tool_count_after = len(mcp._tool_manager._tools)
-    _email_tools_added = _email_tool_count_after - _email_tool_count_before
-    print(f"[STARTUP] Email tools registered ({_email_tools_added} tools added) at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
-except Exception as e:
-    import traceback
-    print(f'[STARTUP] Email tools registration FAILED: {e}', file=sys.stderr, flush=True)
-    traceback.print_exc(file=sys.stderr)
+if service_enabled("email"):
+    try:
+        email_config = EmailConfig()
+        _email_tool_count_before = len(mcp._tool_manager._tools)
+        register_email_tools(mcp, email_config)
+        _email_tool_count_after = len(mcp._tool_manager._tools)
+        _email_tools_added = _email_tool_count_after - _email_tool_count_before
+        print(f"[STARTUP] Email tools registered ({_email_tools_added} tools added) at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+    except Exception as e:
+        import traceback
+        print(f'[STARTUP] Email tools registration FAILED: {e}', file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+else:
+    print("[STARTUP] Email tools SKIPPED (not in ENABLED_SERVICES)", file=sys.stderr, flush=True)
 
 # Register Jira tools
-try:
-    jira_config = JiraConfig()
-    _jira_tool_count_before = len(mcp._tool_manager._tools)
-    register_jira_tools(mcp, jira_config)
-    _jira_tool_count_after = len(mcp._tool_manager._tools)
-    _jira_tools_added = _jira_tool_count_after - _jira_tool_count_before
-    print(f"[STARTUP] Jira tools registered ({_jira_tools_added} tools added) at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
-except Exception as e:
-    import traceback
-    print(f'[STARTUP] Jira tools registration FAILED: {e}', file=sys.stderr, flush=True)
-    traceback.print_exc(file=sys.stderr)
+if service_enabled("jira"):
+    try:
+        jira_config = JiraConfig()
+        _jira_tool_count_before = len(mcp._tool_manager._tools)
+        register_jira_tools(mcp, jira_config)
+        _jira_tool_count_after = len(mcp._tool_manager._tools)
+        _jira_tools_added = _jira_tool_count_after - _jira_tool_count_before
+        print(f"[STARTUP] Jira tools registered ({_jira_tools_added} tools added) at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+    except Exception as e:
+        import traceback
+        print(f'[STARTUP] Jira tools registration FAILED: {e}', file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+else:
+    print("[STARTUP] Jira tools SKIPPED (not in ENABLED_SERVICES)", file=sys.stderr, flush=True)
 
 # Register Linear tools
-try:
-    linear_config = LinearConfig()
-    _linear_tool_count_before = len(mcp._tool_manager._tools)
-    register_linear_tools(mcp, linear_config)
-    _linear_tool_count_after = len(mcp._tool_manager._tools)
-    _linear_tools_added = _linear_tool_count_after - _linear_tool_count_before
-    print(f"[STARTUP] Linear tools registered ({_linear_tools_added} tools added) at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
-except Exception as e:
-    import traceback
-    print(f'[STARTUP] Linear tools registration FAILED: {e}', file=sys.stderr, flush=True)
-    traceback.print_exc(file=sys.stderr)
+if service_enabled("linear"):
+    try:
+        linear_config = LinearConfig()
+        _linear_tool_count_before = len(mcp._tool_manager._tools)
+        register_linear_tools(mcp, linear_config)
+        _linear_tool_count_after = len(mcp._tool_manager._tools)
+        _linear_tools_added = _linear_tool_count_after - _linear_tool_count_before
+        print(f"[STARTUP] Linear tools registered ({_linear_tools_added} tools added) at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+    except Exception as e:
+        import traceback
+        print(f'[STARTUP] Linear tools registration FAILED: {e}', file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+else:
+    print("[STARTUP] Linear tools SKIPPED (not in ENABLED_SERVICES)", file=sys.stderr, flush=True)
 
 # Register DigitalOcean tools
-try:
-    do_config = DigitalOceanConfig()
-    _do_tool_count_before = len(mcp._tool_manager._tools)
-    register_digitalocean_tools(mcp, do_config)
-    _do_tool_count_after = len(mcp._tool_manager._tools)
-    _do_tools_added = _do_tool_count_after - _do_tool_count_before
-    print(f"[STARTUP] DigitalOcean tools registered ({_do_tools_added} tools added) at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
-except Exception as e:
-    import traceback
-    print(f'[STARTUP] DigitalOcean tools registration FAILED: {e}', file=sys.stderr, flush=True)
-    traceback.print_exc(file=sys.stderr)
+if service_enabled("digitalocean"):
+    try:
+        do_config = DigitalOceanConfig()
+        _do_tool_count_before = len(mcp._tool_manager._tools)
+        register_digitalocean_tools(mcp, do_config)
+        _do_tool_count_after = len(mcp._tool_manager._tools)
+        _do_tools_added = _do_tool_count_after - _do_tool_count_before
+        print(f"[STARTUP] DigitalOcean tools registered ({_do_tools_added} tools added) at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+    except Exception as e:
+        import traceback
+        print(f'[STARTUP] DigitalOcean tools registration FAILED: {e}', file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        do_config = type('DigitalOceanConfig', (), {'is_configured': False})()
+else:
+    print("[STARTUP] DigitalOcean tools SKIPPED (not in ENABLED_SERVICES)", file=sys.stderr, flush=True)
     do_config = type('DigitalOceanConfig', (), {'is_configured': False})()
 
 # ============================================================================
@@ -3721,18 +3836,7 @@ async def xero_get_contact_details(
     contact_id: Optional[str] = Field(None, description="Xero ContactID (GUID) - use this if known"),
     contact_name: Optional[str] = Field(None, description="Contact/company name to search for (exact or partial match)")
 ) -> str:
-    """Get detailed contact information from Xero including ContactID.
-
-    Returns full contact details including:
-    - ContactID (required for updates)
-    - Name, FirstName, LastName
-    - Email, Phone numbers
-    - Addresses
-    - Customer/Supplier status
-    - Contact persons
-
-    Use this to get full details for a specific contact, or to find a ContactID by name.
-    """
+    """Get detailed contact information from Xero by ID or name."""
     if not xero_config.is_configured:
         return "Error: Xero not configured."
 
@@ -3846,21 +3950,7 @@ async def xero_get_contact_details(
 async def xero_bulk_update_contacts(
     updates: str = Field(..., description="JSON array of contact updates. Each object must have 'contact_id' and optional fields: 'first_name', 'last_name', 'email', 'name'")
 ) -> str:
-    """Bulk update multiple contacts in Xero.
-
-    Efficiently updates multiple contacts in a single API call. Perfect for updating
-    contact person details across many contacts at once.
-
-    Args:
-        updates: JSON array of updates. Example:
-            [
-                {"contact_id": "abc-123", "first_name": "John", "last_name": "Smith"},
-                {"contact_id": "def-456", "first_name": "Jane", "last_name": "Doe", "email": "jane@example.com"}
-            ]
-
-    Returns:
-        Summary of updated contacts
-    """
+    """Bulk update multiple contacts in Xero in a single call."""
     if not xero_config.is_configured:
         return "Error: Xero not configured."
 
@@ -6874,12 +6964,7 @@ async def pax8_list_products(
 async def pax8_get_product(
     product_id: str = Field(..., description="Pax8 product ID (UUID)")
 ) -> str:
-    """
-    Get detailed product information from Pax8 including pricing.
-    
-    Returns product details including name, vendor, pricing tiers, and provisioning info.
-    Use this to check partner pricing for Microsoft 365, Exchange Online, and other products.
-    """
+    """Get detailed product information and pricing from Pax8."""
     if not pax8_config.is_configured:
         return "Error: Pax8 not configured."
 
@@ -6984,41 +7069,7 @@ async def bigquery_query(
     sql: str = Field(..., description="SQL query to execute against BigQuery"),
     max_results: int = Field(100, description="Maximum rows to return (1-1000)")
 ) -> str:
-    """
-    Execute a SQL query against BigQuery and return results as markdown table.
-    Use this for querying RIS data from Karisma radiology databases.
-
-    Cross-Project Queries:
-    - Jobs run in BIGQUERY_JOB_PROJECT_ID (requires bigquery.jobs.create permission)
-    - Data can be queried from any project using fully qualified table names: `project.dataset.table`
-    - Use fully qualified names when querying other projects (e.g., `vision-radiology.dataset.table`)
-
-    Common datasets in crowdmcp project:
-    - karisma_warehouse: Radiology data synced from Karisma RIS systems
-
-    Karisma RIS Data - Key Tables and Views:
-
-    Pre-built Views (recommended):
-    - vw_Sonographer_Services: Sonographer activity with worksite, service, patient details
-    - vw_WorkSite_Revenue: Invoice-level revenue by worksite and date
-    - vw_Radiologist_Revenue: Invoice item-level revenue by radiologist and worksite
-    - vw_Referrer_Activity: Referring doctor activity with patient counts
-    - vw_Study_Types: Study breakdown by modality, department, worksite
-
-    Core Tables:
-    - Data_Request: Patient visits/requests
-    - Data_RequestService: Services within a request
-    - Data_WorkSite: Site/location information
-    - Data_Practitioner: Radiologists/doctors (reporting providers)
-    - Data_ResourceInstance: Sonographers/technicians
-    - Data_Report: Radiology reports
-    - Data_Invoice: Billing records
-
-    Example queries:
-    - SELECT * FROM `crowdmcp.karisma_warehouse.vw_Sonographer_Services` WHERE SonographerName = 'Name' LIMIT 10
-    - SELECT WorkSiteName, COUNT(*) as Studies FROM `crowdmcp.karisma_warehouse.vw_Study_Types` GROUP BY WorkSiteName
-    - SELECT RadiologistName, SUM(ItemCharged) as Revenue FROM `crowdmcp.karisma_warehouse.vw_Radiologist_Revenue` GROUP BY RadiologistName
-    """
+    """Run SQL query on BigQuery. Use fully qualified table names (project.dataset.table). Use bigquery_list_tables to discover tables."""
     if not bigquery_config.is_configured:
         return "Error: BigQuery is not configured. Set BIGQUERY_PROJECT_ID environment variable."
 
@@ -7898,18 +7949,7 @@ async def forticloud_device_config(
     serial_number: str = Field(..., description="FortiGate device serial number"),
     path: str = Field("system/global", description="Config path (e.g., 'system/global', 'firewall/policy', 'vpn/ipsec/phase1-interface')")
 ) -> str:
-    """
-    Get configuration from a FortiGate device via FortiCloud proxy.
-    This proxies requests to the FortiOS REST API through FortiCloud.
-
-    Common config paths:
-    - system/global: Global system settings
-    - system/interface: Network interfaces
-    - firewall/policy: Firewall policies
-    - firewall/address: Address objects
-    - vpn/ipsec/phase1-interface: VPN phase1 tunnels
-    - router/static: Static routes
-    """
+    """Get configuration from a FortiGate device via FortiCloud."""
     if not forticloud_config.is_configured:
         return "Error: FortiCloud is not configured."
 
@@ -9831,17 +9871,7 @@ async def visionrad_manage_service(
     service_name: str = Field(..., description="Name of the systemd service to manage"),
     action: str = Field(..., description="Action: start, stop, restart, reload, enable, disable")
 ) -> str:
-    """
-    Manage a systemd service on the Vision Radiology server.
-
-    Actions:
-    - start: Start the service
-    - stop: Stop the service
-    - restart: Restart the service
-    - reload: Reload service configuration
-    - enable: Enable service to start on boot
-    - disable: Disable service from starting on boot
-    """
+    """Manage a systemd service on the Vision Radiology server."""
     if not visionrad_config.is_configured:
         return "Error: Vision Radiology server not configured."
 
@@ -10137,14 +10167,7 @@ async def cipp_list_tenants() -> str:
 
 @mcp.tool(annotations={"readOnlyHint": True})
 async def cipp_list_users(tenant_filter: str, limit: int = 100) -> str:
-    """List users for a specific M365 tenant.
-    
-    Args:
-        tenant_filter: Tenant domain or ID to filter users
-        limit: Maximum number of users to return (default 100)
-    
-    Returns user list with display name, email, and account status.
-    """
+    """List users for a specific M365 tenant via CIPP."""
     if not cipp_config.is_configured:
         return "❌ CIPP not configured. Set CIPP_TENANT_ID, CIPP_CLIENT_ID, CIPP_CLIENT_SECRET, and CIPP_API_URL."
     
@@ -10595,17 +10618,7 @@ async def salesforce_soql_query(
     soql: str = Field(..., description="SOQL query string (e.g., 'SELECT Id, Name FROM Account LIMIT 10')"),
     max_results: int = Field(500, description="Maximum number of records to return")
 ) -> str:
-    """Execute a SOQL query against Salesforce.
-
-    Common objects:
-        - CA_Referral_Details__c: Referral/target records with MLO, Worksite, Procedures
-        - User: Salesforce users
-        - Account: Customer accounts
-
-    Example queries:
-        - SELECT Id, Name FROM User WHERE IsActive = true
-        - SELECT MLO__r.Name, SUM(Procedures__c) FROM CA_Referral_Details__c GROUP BY MLO__r.Name
-    """
+    """Execute a SOQL query against Salesforce."""
     if not salesforce_config.is_configured:
         return "❌ Salesforce not configured. Set SALESFORCE_INSTANCE_URL, SALESFORCE_CLIENT_ID, SALESFORCE_CLIENT_SECRET, SALESFORCE_REFRESH_TOKEN."
 
@@ -10971,16 +10984,7 @@ async def salesforce_list_users() -> str:
 async def salesforce_execute_apex(
     apex_code: str = Field(..., description="The Apex code to execute")
 ) -> str:
-    """Execute anonymous Apex code in Salesforce.
-
-    Common uses:
-        - Run batch jobs: Database.executeBatch(new SharepointFileRetrievalBatch(), 10);
-        - Create test data: insert new Account(Name='Test');
-        - Execute DML operations
-        - Run scheduled jobs: System.schedule('Job Name', '0 0 * * * ?', new MySchedulable());
-
-    Returns execution result including any debug logs or errors.
-    """
+    """Execute anonymous Apex code in Salesforce."""
     if not salesforce_config.is_configured:
         return "❌ Salesforce is not configured."
 
@@ -13265,11 +13269,7 @@ async def ninjaone_get_organizations(
     page_size: int = Field(100, description="Number of results per page (max 1000)"),
     after: Optional[int] = Field(None, description="Cursor for pagination - organization ID to start after")
 ) -> str:
-    """List all organizations (clients/customers) in NinjaOne.
-
-    Returns organization details including ID, name, description, and custom fields.
-    Use this to get an overview of managed clients or find specific organization IDs.
-    """
+    """List all organizations in NinjaOne."""
     if not ninjaone_config.is_configured:
         return "Error: NinjaOne not configured. Set NINJAONE_CLIENT_ID and NINJAONE_CLIENT_SECRET."
 
@@ -16015,27 +16015,7 @@ async def metabase_list_tables(
 async def metabase_get_table_fields(
     table_id: int = Field(..., description="Table ID to get fields from. Use metabase_list_tables to find table IDs.")
 ) -> str:
-    """Get detailed field information for a table in Metabase.
-
-    Returns field IDs, names, types, and semantic types - essential for setting up
-    template_tags (filter variables) in questions.
-
-    Use the field IDs in template_tags like:
-    {
-      "my_filter": {
-        "type": "dimension",
-        "dimension": ["field", <field_id>, null],
-        "widget-type": "category"
-      }
-    }
-
-    Common widget types by field type:
-    - Text fields: "category", "text"
-    - Number fields: "number", "category"
-    - Date fields: "date/all-options", "date/single", "date/range", "date/relative"
-    - ID fields: "id", "category"
-    - Location fields: "location/city", "location/state", "location/country"
-    """
+    """Get field names, types, and IDs for a Metabase table."""
     if not metabase_config.is_configured:
         return "Error: Metabase not configured. Set METABASE_URL and METABASE_USERNAME/METABASE_PASSWORD or METABASE_API_KEY."
 
@@ -16287,18 +16267,7 @@ async def metabase_list_questions(
 async def metabase_get_question(
     question_id: int = Field(..., description="Question/Card ID to retrieve")
 ) -> str:
-    """Get detailed information about a saved question (card) in Metabase.
-
-    Returns comprehensive question details including:
-    - Basic info (name, description, display type)
-    - SQL query content
-    - Template tags (filter variables) with field IDs and widget types
-    - Visualization settings
-    - Collection and database info
-
-    Use this to inspect existing questions before updating them,
-    especially to understand template_tags configuration.
-    """
+    """Get detailed information about a saved question in Metabase."""
     if not metabase_config.is_configured:
         return "Error: Metabase not configured. Set METABASE_URL and METABASE_USERNAME/METABASE_PASSWORD or METABASE_API_KEY."
 
@@ -17126,11 +17095,7 @@ async def metabase_remove_card_from_dashboard(
     dashboard_id: int = Field(..., description="Dashboard ID to remove the card from"),
     dashcard_id: int = Field(..., description="Dashcard ID to remove (from metabase_get_dashboard response)")
 ) -> str:
-    """Remove a card from a dashboard.
-
-    Note: This removes the card from the dashboard but does NOT delete the underlying question.
-    The dashcard_id is the ID shown in metabase_get_dashboard, not the question/card ID.
-    """
+    """Remove a card from a Metabase dashboard by dashcard ID."""
     if not metabase_config.is_configured:
         return "Error: Metabase not configured. Set METABASE_URL and METABASE_USERNAME/METABASE_PASSWORD or METABASE_API_KEY."
 
@@ -17446,12 +17411,7 @@ async def metabase_create_permission_group(
 async def metabase_delete_permission_group(
     group_id: int = Field(..., description="Permission group ID to delete")
 ) -> str:
-    """Delete a permission group from Metabase.
-
-    WARNING: This permanently deletes the group. Users will lose any permissions granted through this group.
-    Built-in groups (Administrators, All Users) cannot be deleted.
-    Requires admin privileges.
-    """
+    """Permanently delete a permission group from Metabase."""
     if not metabase_config.is_configured:
         return "Error: Metabase not configured. Set METABASE_URL and METABASE_USERNAME/METABASE_PASSWORD or METABASE_API_KEY."
 
@@ -18102,16 +18062,7 @@ async def metabase_get_settings() -> str:
 async def metabase_get_setting(
     setting_key: str = Field(..., description="The setting key to retrieve (e.g., 'application-logo-url', 'site-name')")
 ) -> str:
-    """Get a specific Metabase setting value.
-
-    Common setting keys:
-        - application-name: Instance name displayed in UI
-        - application-logo-url: URL for custom logo
-        - application-favicon-url: URL for favicon
-        - site-url: Base URL of the Metabase instance
-        - admin-email: Admin contact email
-        - report-timezone: Default timezone for reports
-    """
+    """Get a specific Metabase setting value by key."""
     if not metabase_config.is_configured:
         return "Metabase is not configured. Set METABASE_URL and METABASE_API_KEY."
 
@@ -18132,25 +18083,7 @@ async def metabase_update_setting(
     setting_key: str = Field(..., description="The setting key to update"),
     value: str = Field(..., description="The new value for the setting (use 'null' to reset to default)")
 ) -> str:
-    """Update a Metabase instance setting.
-
-    Common setting keys:
-        - application-logo-url: URL for custom logo image
-        - application-name: Custom name to replace "Metabase"
-        - application-favicon-url: URL for custom favicon
-        - site-name: Name of the Metabase instance
-        - admin-email: Admin contact email
-        - help-link: URL for custom help link
-        - loading-message: Custom loading message
-        - show-metabase-links: 'true' or 'false' to show/hide Metabase branding links
-
-    Examples:
-        - metabase_update_setting('application-logo-url', 'https://example.com/logo.png')
-        - metabase_update_setting('application-name', 'Crowd IT Analytics')
-        - metabase_update_setting('show-metabase-links', 'false')
-
-    Requires admin/superuser privileges.
-    """
+    """Update a Metabase instance setting by key."""
     if not metabase_config.is_configured:
         return "Metabase is not configured. Set METABASE_URL and METABASE_API_KEY."
 
@@ -18980,6 +18913,37 @@ async def github_get_latest_deploy(
 print("✅ GitHub tools registered successfully")
 
 # ============================================================================
+# Service Filtering: Prune server.py tools not in ENABLED_SERVICES
+# ============================================================================
+# Tools from external files (azure, aws, email, jira, linear, digitalocean) are
+# already skipped above if not enabled. Tools defined in server.py using @mcp.tool()
+# decorators are registered at import time, so we prune them here after all
+# decorators have run.
+
+if ENABLED_SERVICES is not None:
+    _all_tool_names = list(mcp._tool_manager._tools.keys())
+    _tools_to_remove = []
+    for tool_name in _all_tool_names:
+        # Find which service this tool belongs to (longest prefix match first)
+        matched_service = None
+        best_prefix_len = 0
+        for prefix, svc in _TOOL_PREFIX_TO_SERVICE.items():
+            if tool_name.startswith(prefix) and len(prefix) > best_prefix_len:
+                matched_service = svc
+                best_prefix_len = len(prefix)
+        # If we identified a service and it's not enabled, mark for removal
+        if matched_service and matched_service not in ENABLED_SERVICES:
+            _tools_to_remove.append(tool_name)
+
+    for tool_name in _tools_to_remove:
+        del mcp._tool_manager._tools[tool_name]
+
+    _remaining = len(mcp._tool_manager._tools)
+    print(f"[STARTUP] Service filter pruned {len(_tools_to_remove)} tools, {_remaining} tools remaining", file=sys.stderr, flush=True)
+else:
+    print(f"[STARTUP] Total MCP tools registered: {len(mcp._tool_manager._tools)}", file=sys.stderr, flush=True)
+
+# ============================================================================
 # Main Entry Point
 # ============================================================================
 
@@ -19002,10 +18966,14 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     print(f"[STARTUP] Port={port} at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
-    # Log total registered tools
+    # Log total registered tools and token estimate
     _total_tools = len(mcp._tool_manager._tools)
-    _aws_tools = [k for k in mcp._tool_manager._tools if k.startswith("aws_") and not k.startswith("aws_rds_")]
-    print(f"[STARTUP] Total MCP tools registered: {_total_tools} (AWS new: {len(_aws_tools)}: {', '.join(sorted(_aws_tools))})", file=sys.stderr, flush=True)
+    if ENABLED_SERVICES is not None:
+        print(f"[STARTUP] Active tools: {_total_tools} (filtered by ENABLED_SERVICES: {', '.join(sorted(ENABLED_SERVICES))})", file=sys.stderr, flush=True)
+        print(f"[STARTUP] Estimated token savings: ~{(522 - _total_tools) * 150} tokens/turn avoided by filtering", file=sys.stderr, flush=True)
+    else:
+        print(f"[STARTUP] Total MCP tools registered: {_total_tools} (all services enabled)", file=sys.stderr, flush=True)
+        print(f"[STARTUP] TIP: Set ENABLED_SERVICES=service1,service2 to reduce token usage. Current tools use ~{_total_tools * 150} tokens/turn.", file=sys.stderr, flush=True)
 
     # Get FastMCP's HTTP app
     print(f"[STARTUP] Creating FastMCP HTTP app at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
@@ -19394,12 +19362,7 @@ if __name__ == "__main__":
         limit: int = Field(10, description="Number of recent deployments to return (1-50)"),
         status_filter: Optional[str] = Field(None, description="Filter by status: 'success', 'failure', 'working', 'queued', or 'all'")
     ) -> str:
-        """
-        Get recent Cloud Run deployment history from Cloud Build.
-
-        Shows deployment status, timing, commit info, and links to logs.
-        Use this to monitor deployments and check if new revisions have been deployed.
-        """
+        """Get recent Cloud Run deployment history from Cloud Build."""
         try:
             import asyncio
             from google.cloud.build_v1 import CloudBuildClient

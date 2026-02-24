@@ -267,7 +267,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         },
     )
     async def digitalocean_get_account() -> str:
-        """Get DigitalOcean account information including email, droplet limit, and status."""
+        """Get DigitalOcean account info including email, limits, and status."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -371,13 +371,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         per_page: int = 50,
         page: int = 1,
     ) -> str:
-        """List all DigitalOcean droplets with status, region, size, and IP info.
-
-        Args:
-            tag_name: Filter droplets by tag name (optional)
-            per_page: Results per page, max 200 (default 50)
-            page: Page number for pagination (default 1)
-        """
+        """List all DigitalOcean droplets with status, region, size, and IP info."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -406,11 +400,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         },
     )
     async def digitalocean_get_droplet(droplet_id: int) -> str:
-        """Get detailed information about a specific DigitalOcean droplet.
-
-        Args:
-            droplet_id: Numeric droplet ID
-        """
+        """Get detailed information about a specific DigitalOcean droplet."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -448,20 +438,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         tags: str = "",
         user_data: str = "",
     ) -> str:
-        """Create a new DigitalOcean droplet (virtual machine).
-
-        Args:
-            name: Hostname for the droplet (e.g., 'web-server-01')
-            region: Region slug (e.g., 'syd1', 'sgp1', 'nyc3'). Use digitalocean_list_regions.
-            size: Size slug (e.g., 's-1vcpu-1gb'). Use digitalocean_list_sizes.
-            image: Image slug or ID (e.g., 'ubuntu-24-04-x64'). Use digitalocean_list_images.
-            ssh_keys: Comma-separated SSH key IDs or fingerprints (optional)
-            backups: Enable weekly backups (default false)
-            monitoring: Enable monitoring agent (default true, recommended)
-            vpc_uuid: VPC UUID to place droplet in (optional)
-            tags: Comma-separated tags (e.g., 'web,production')
-            user_data: Cloud-init user data script for first boot (optional)
-        """
+        """Create a new DigitalOcean droplet (virtual machine)."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -510,11 +487,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         },
     )
     async def digitalocean_delete_droplet(droplet_id: int) -> str:
-        """Permanently delete a DigitalOcean droplet. This action is irreversible.
-
-        Args:
-            droplet_id: Numeric droplet ID to delete
-        """
+        """Permanently delete a DigitalOcean droplet. This is irreversible."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -534,14 +507,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         },
     )
     async def digitalocean_droplet_action(droplet_id: int, action: str) -> str:
-        """Perform a power or configuration action on a droplet.
-
-        Args:
-            droplet_id: Numeric droplet ID
-            action: One of: 'power_on', 'power_off', 'shutdown' (graceful), 'reboot',
-                    'power_cycle', 'enable_backups', 'disable_backups', 'enable_ipv6',
-                    'enable_private_networking'
-        """
+        """Perform a power or configuration action on a droplet."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         valid = ["power_on", "power_off", "shutdown", "reboot", "power_cycle",
@@ -570,13 +536,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         },
     )
     async def digitalocean_resize_droplet(droplet_id: int, size: str, disk: bool = True) -> str:
-        """Resize a droplet to a different plan. Droplet must be powered off first.
-
-        Args:
-            droplet_id: Numeric droplet ID
-            size: New size slug (e.g., 's-2vcpu-4gb'). Use digitalocean_list_sizes.
-            disk: If true, disk is permanently resized (cannot downsize later). Default true.
-        """
+        """Resize a droplet to a different plan. Must be powered off first."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -599,12 +559,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         },
     )
     async def digitalocean_rebuild_droplet(droplet_id: int, image: str) -> str:
-        """Rebuild a droplet with a new image. WARNING: All data on the droplet will be destroyed.
-
-        Args:
-            droplet_id: Numeric droplet ID
-            image: Image slug or ID to rebuild with (e.g., 'ubuntu-24-04-x64')
-        """
+        """Rebuild a droplet with a new image. All data will be destroyed."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -627,12 +582,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         },
     )
     async def digitalocean_rename_droplet(droplet_id: int, name: str) -> str:
-        """Rename a DigitalOcean droplet.
-
-        Args:
-            droplet_id: Numeric droplet ID
-            name: New hostname for the droplet
-        """
+        """Rename a DigitalOcean droplet."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -655,12 +605,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         },
     )
     async def digitalocean_snapshot_droplet(droplet_id: int, name: str = "") -> str:
-        """Create a snapshot of a droplet. Droplet should be powered off for consistency.
-
-        Args:
-            droplet_id: Numeric droplet ID
-            name: Snapshot name (optional, defaults to date-based name)
-        """
+        """Create a snapshot of a droplet. Power off first for consistency."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -685,11 +630,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         },
     )
     async def digitalocean_list_droplet_snapshots(droplet_id: int) -> str:
-        """List all snapshots for a specific droplet.
-
-        Args:
-            droplet_id: Numeric droplet ID
-        """
+        """List all snapshots for a specific droplet."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -712,11 +653,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         },
     )
     async def digitalocean_list_droplet_backups(droplet_id: int) -> str:
-        """List all backups for a specific droplet.
-
-        Args:
-            droplet_id: Numeric droplet ID
-        """
+        """List all backups for a specific droplet."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -739,11 +676,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         },
     )
     async def digitalocean_list_droplet_neighbors(droplet_id: int) -> str:
-        """List droplets running on the same physical hardware as this droplet.
-
-        Args:
-            droplet_id: Numeric droplet ID
-        """
+        """List droplets on the same physical hardware as this droplet."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -778,11 +711,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Get Domain Details", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_get_domain(domain_name: str) -> str:
-        """Get details for a specific domain.
-
-        Args:
-            domain_name: The domain name (e.g., 'example.com')
-        """
+        """Get details for a specific domain."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -797,12 +726,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Create Domain", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
     )
     async def digitalocean_create_domain(name: str, ip_address: str = "") -> str:
-        """Add a domain to DigitalOcean DNS management.
-
-        Args:
-            name: Domain name to add (e.g., 'example.com')
-            ip_address: Optional IP to create an A record for the domain root
-        """
+        """Add a domain to DigitalOcean DNS management."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -821,11 +745,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Delete Domain", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_delete_domain(domain_name: str) -> str:
-        """Remove a domain from DigitalOcean DNS. This deletes all associated DNS records.
-
-        Args:
-            domain_name: Domain name to delete (e.g., 'example.com')
-        """
+        """Remove a domain from DigitalOcean DNS and all its records."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -839,12 +759,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "List DNS Records", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_list_domain_records(domain_name: str, record_type: str = "") -> str:
-        """List all DNS records for a domain.
-
-        Args:
-            domain_name: Domain name (e.g., 'example.com')
-            record_type: Filter by type: A, AAAA, CNAME, MX, TXT, NS, SRV, CAA (optional)
-        """
+        """List all DNS records for a domain."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -868,18 +783,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         domain_name: str, record_type: str, name: str, data: str,
         priority: int = 0, port: int = 0, ttl: int = 1800, weight: int = 0,
     ) -> str:
-        """Create a DNS record for a domain.
-
-        Args:
-            domain_name: Domain name (e.g., 'example.com')
-            record_type: Record type: A, AAAA, CNAME, MX, TXT, NS, SRV, CAA
-            name: Record name (e.g., 'www', '@' for root, '*' for wildcard)
-            data: Record value (e.g., IP address, hostname, text value)
-            priority: Priority for MX/SRV records (default 0)
-            port: Port for SRV records (default 0)
-            ttl: Time to live in seconds (default 1800)
-            weight: Weight for SRV records (default 0)
-        """
+        """Create a DNS record for a domain."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -904,17 +808,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         domain_name: str, record_id: int, record_type: str = "", name: str = "",
         data: str = "", priority: int = -1, ttl: int = -1,
     ) -> str:
-        """Update an existing DNS record.
-
-        Args:
-            domain_name: Domain name (e.g., 'example.com')
-            record_id: Record ID to update (from digitalocean_list_domain_records)
-            record_type: New record type (optional, usually not changed)
-            name: New record name (optional)
-            data: New record value (optional)
-            priority: New priority for MX/SRV (use -1 to skip)
-            ttl: New TTL in seconds (use -1 to skip)
-        """
+        """Update an existing DNS record."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -943,12 +837,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Delete DNS Record", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_delete_domain_record(domain_name: str, record_id: int) -> str:
-        """Delete a DNS record.
-
-        Args:
-            domain_name: Domain name (e.g., 'example.com')
-            record_id: Record ID to delete (from digitalocean_list_domain_records)
-        """
+        """Delete a DNS record."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -989,11 +878,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Get Firewall Details", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_get_firewall(firewall_id: str) -> str:
-        """Get detailed information about a firewall including all rules.
-
-        Args:
-            firewall_id: Firewall UUID
-        """
+        """Get firewall details including all rules."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1018,23 +903,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         name: str, inbound_rules: str = "", outbound_rules: str = "",
         droplet_ids: str = "", tags: str = "",
     ) -> str:
-        """Create a new DigitalOcean cloud firewall.
-
-        Args:
-            name: Firewall name
-            inbound_rules: JSON array of inbound rules. Each rule:
-                {"protocol":"tcp","ports":"22","sources":{"addresses":["0.0.0.0/0"]}}
-                Protocol: tcp, udp, icmp. Ports: '22', '80,443', '8000-9000', or 'all'.
-                Sources: addresses (CIDRs), droplet_ids, load_balancer_uids, kubernetes_ids, tags.
-            outbound_rules: JSON array of outbound rules. Same format but 'destinations' instead of 'sources'.
-            droplet_ids: Comma-separated droplet IDs to protect
-            tags: Comma-separated tags - firewall applies to droplets with these tags
-
-        Example inbound_rules:
-        [{"protocol":"tcp","ports":"22","sources":{"addresses":["10.0.0.0/8"]}},
-         {"protocol":"tcp","ports":"80,443","sources":{"addresses":["0.0.0.0/0","::/0"]}},
-         {"protocol":"icmp","sources":{"addresses":["0.0.0.0/0","::/0"]}}]
-        """
+        """Create a new DigitalOcean cloud firewall."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1064,16 +933,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         firewall_id: str, name: str, inbound_rules: str = "[]", outbound_rules: str = "[]",
         droplet_ids: str = "", tags: str = "",
     ) -> str:
-        """Update a firewall. Replaces the entire firewall configuration.
-
-        Args:
-            firewall_id: Firewall UUID
-            name: Firewall name (required for update)
-            inbound_rules: JSON array of ALL inbound rules (replaces existing)
-            outbound_rules: JSON array of ALL outbound rules (replaces existing)
-            droplet_ids: Comma-separated droplet IDs
-            tags: Comma-separated tags
-        """
+        """Update a firewall, replacing the entire configuration."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1096,11 +956,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Delete Firewall", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_delete_firewall(firewall_id: str) -> str:
-        """Delete a DigitalOcean firewall.
-
-        Args:
-            firewall_id: Firewall UUID
-        """
+        """Delete a DigitalOcean firewall."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1114,12 +970,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Add Droplets to Firewall", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_add_firewall_droplets(firewall_id: str, droplet_ids: str) -> str:
-        """Add droplets to a firewall.
-
-        Args:
-            firewall_id: Firewall UUID
-            droplet_ids: Comma-separated droplet IDs to add
-        """
+        """Add droplets to a firewall."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1134,12 +985,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Remove Droplets from Firewall", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_remove_firewall_droplets(firewall_id: str, droplet_ids: str) -> str:
-        """Remove droplets from a firewall.
-
-        Args:
-            firewall_id: Firewall UUID
-            droplet_ids: Comma-separated droplet IDs to remove
-        """
+        """Remove droplets from a firewall."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1158,11 +1004,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "List Volumes", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_list_volumes(region: str = "") -> str:
-        """List all block storage volumes.
-
-        Args:
-            region: Filter by region slug (optional, e.g., 'syd1')
-        """
+        """List all block storage volumes."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1184,11 +1026,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Get Volume Details", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_get_volume(volume_id: str) -> str:
-        """Get detailed information about a block storage volume.
-
-        Args:
-            volume_id: Volume UUID
-        """
+        """Get details of a block storage volume."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1210,16 +1048,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         name: str, size_gigabytes: int, region: str, description: str = "",
         filesystem_type: str = "ext4", tags: str = "",
     ) -> str:
-        """Create a new block storage volume.
-
-        Args:
-            name: Volume name (must be unique per region)
-            size_gigabytes: Volume size in GB (min 1, max 16384)
-            region: Region slug (e.g., 'syd1')
-            description: Volume description (optional)
-            filesystem_type: Filesystem type: 'ext4' or 'xfs' (default 'ext4')
-            tags: Comma-separated tags (optional)
-        """
+        """Create a new block storage volume."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1241,11 +1070,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Delete Volume", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_delete_volume(volume_id: str) -> str:
-        """Delete a block storage volume. Volume must be detached from all droplets first.
-
-        Args:
-            volume_id: Volume UUID
-        """
+        """Delete a block storage volume (must be detached first)."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1259,13 +1084,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Attach Volume to Droplet", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_attach_volume(volume_id: str, droplet_id: int, region: str = "") -> str:
-        """Attach a block storage volume to a droplet. Both must be in the same region.
-
-        Args:
-            volume_id: Volume UUID
-            droplet_id: Droplet ID to attach to
-            region: Region slug (optional, inferred from volume)
-        """
+        """Attach a block storage volume to a droplet."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1284,13 +1103,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Detach Volume from Droplet", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_detach_volume(volume_id: str, droplet_id: int, region: str = "") -> str:
-        """Detach a block storage volume from a droplet.
-
-        Args:
-            volume_id: Volume UUID
-            droplet_id: Droplet ID to detach from
-            region: Region slug (optional)
-        """
+        """Detach a block storage volume from a droplet."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1309,11 +1122,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "List Volume Snapshots", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_list_volume_snapshots(volume_id: str) -> str:
-        """List snapshots for a block storage volume.
-
-        Args:
-            volume_id: Volume UUID
-        """
+        """List snapshots for a block storage volume."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1330,13 +1139,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Create Volume Snapshot", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
     )
     async def digitalocean_create_volume_snapshot(volume_id: str, name: str, tags: str = "") -> str:
-        """Create a snapshot of a block storage volume.
-
-        Args:
-            volume_id: Volume UUID
-            name: Snapshot name
-            tags: Comma-separated tags (optional)
-        """
+        """Create a snapshot of a block storage volume."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1374,11 +1177,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Get Kubernetes Cluster", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_get_kubernetes_cluster(cluster_id: str) -> str:
-        """Get detailed information about a Kubernetes cluster.
-
-        Args:
-            cluster_id: Kubernetes cluster UUID
-        """
+        """Get details of a Kubernetes cluster."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1396,21 +1195,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         node_pool_count: int = 3, auto_scale: bool = False, min_nodes: int = 1,
         max_nodes: int = 5, vpc_uuid: str = "", tags: str = "",
     ) -> str:
-        """Create a new DigitalOcean Kubernetes cluster.
-
-        Args:
-            name: Cluster name
-            region: Region slug (e.g., 'syd1')
-            version: Kubernetes version slug (e.g., '1.29.1-do.0')
-            node_pool_name: Name for the default node pool
-            node_pool_size: Droplet size for nodes (e.g., 's-2vcpu-4gb')
-            node_pool_count: Number of nodes (default 3)
-            auto_scale: Enable auto-scaling (default false)
-            min_nodes: Min nodes if auto-scaling enabled (default 1)
-            max_nodes: Max nodes if auto-scaling enabled (default 5)
-            vpc_uuid: VPC UUID (optional)
-            tags: Comma-separated tags (optional)
-        """
+        """Create a new DigitalOcean Kubernetes cluster."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1436,11 +1221,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Delete Kubernetes Cluster", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_delete_kubernetes_cluster(cluster_id: str) -> str:
-        """Delete a Kubernetes cluster and all its resources.
-
-        Args:
-            cluster_id: Kubernetes cluster UUID
-        """
+        """Delete a Kubernetes cluster and all its resources."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1454,11 +1235,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "List K8s Node Pools", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_list_kubernetes_node_pools(cluster_id: str) -> str:
-        """List node pools in a Kubernetes cluster.
-
-        Args:
-            cluster_id: Kubernetes cluster UUID
-        """
+        """List node pools in a Kubernetes cluster."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1481,18 +1258,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         cluster_id: str, name: str, size: str, count: int = 3,
         auto_scale: bool = False, min_nodes: int = 1, max_nodes: int = 5, tags: str = "",
     ) -> str:
-        """Add a new node pool to a Kubernetes cluster.
-
-        Args:
-            cluster_id: Kubernetes cluster UUID
-            name: Node pool name
-            size: Droplet size for nodes (e.g., 's-2vcpu-4gb')
-            count: Number of nodes (default 3)
-            auto_scale: Enable auto-scaling (default false)
-            min_nodes: Min nodes if auto-scaling (default 1)
-            max_nodes: Max nodes if auto-scaling (default 5)
-            tags: Comma-separated tags (optional)
-        """
+        """Add a new node pool to a Kubernetes cluster."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1515,12 +1281,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Delete K8s Node Pool", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_delete_kubernetes_node_pool(cluster_id: str, node_pool_id: str) -> str:
-        """Delete a node pool from a Kubernetes cluster.
-
-        Args:
-            cluster_id: Kubernetes cluster UUID
-            node_pool_id: Node pool UUID to delete
-        """
+        """Delete a node pool from a Kubernetes cluster."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1534,11 +1295,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Get Kubeconfig", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_get_kubernetes_kubeconfig(cluster_id: str) -> str:
-        """Get the kubeconfig YAML for a Kubernetes cluster.
-
-        Args:
-            cluster_id: Kubernetes cluster UUID
-        """
+        """Get the kubeconfig YAML for a Kubernetes cluster."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1582,11 +1339,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Get Load Balancer", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_get_load_balancer(lb_id: str) -> str:
-        """Get detailed information about a load balancer.
-
-        Args:
-            lb_id: Load balancer UUID
-        """
+        """Get details of a load balancer."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1614,22 +1367,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         health_check_protocol: str = "http", health_check_port: int = 80,
         health_check_path: str = "/", vpc_uuid: str = "",
     ) -> str:
-        """Create a new load balancer.
-
-        Args:
-            name: Load balancer name
-            region: Region slug (e.g., 'syd1')
-            forwarding_rules: JSON array of forwarding rules. Each rule:
-                {"entry_protocol":"http","entry_port":80,"target_protocol":"http","target_port":80}
-                Protocols: http, https, http2, http3, tcp, udp
-            droplet_ids: Comma-separated droplet IDs to add (optional)
-            tag: Tag name - LB applies to all droplets with this tag (optional)
-            redirect_http_to_https: Redirect HTTP to HTTPS (default false)
-            health_check_protocol: Health check protocol: http, https, tcp (default 'http')
-            health_check_port: Health check port (default 80)
-            health_check_path: Health check path (default '/')
-            vpc_uuid: VPC UUID (optional)
-        """
+        """Create a new load balancer."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1662,17 +1400,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         lb_id: str, name: str, region: str, forwarding_rules: str,
         droplet_ids: str = "", tag: str = "", redirect_http_to_https: bool = False,
     ) -> str:
-        """Update a load balancer. Replaces the entire configuration.
-
-        Args:
-            lb_id: Load balancer UUID
-            name: Load balancer name
-            region: Region slug
-            forwarding_rules: JSON array of ALL forwarding rules (replaces existing)
-            droplet_ids: Comma-separated droplet IDs (optional)
-            tag: Tag name (optional)
-            redirect_http_to_https: Redirect HTTP to HTTPS (default false)
-        """
+        """Update a load balancer, replacing the entire configuration."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1696,11 +1424,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Delete Load Balancer", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_delete_load_balancer(lb_id: str) -> str:
-        """Delete a load balancer.
-
-        Args:
-            lb_id: Load balancer UUID
-        """
+        """Delete a load balancer."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1714,12 +1438,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Add Droplets to LB", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_add_load_balancer_droplets(lb_id: str, droplet_ids: str) -> str:
-        """Add droplets to a load balancer.
-
-        Args:
-            lb_id: Load balancer UUID
-            droplet_ids: Comma-separated droplet IDs
-        """
+        """Add droplets to a load balancer."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1734,12 +1453,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Remove Droplets from LB", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_remove_load_balancer_droplets(lb_id: str, droplet_ids: str) -> str:
-        """Remove droplets from a load balancer.
-
-        Args:
-            lb_id: Load balancer UUID
-            droplet_ids: Comma-separated droplet IDs
-        """
+        """Remove droplets from a load balancer."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1773,11 +1487,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Get Database Cluster", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_get_database_cluster(db_id: str) -> str:
-        """Get detailed information about a managed database cluster.
-
-        Args:
-            db_id: Database cluster UUID
-        """
+        """Get details of a managed database cluster."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1801,18 +1511,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         name: str, engine: str, region: str, size: str, num_nodes: int = 1,
         version: str = "", vpc_uuid: str = "", tags: str = "",
     ) -> str:
-        """Create a new managed database cluster.
-
-        Args:
-            name: Database cluster name
-            engine: Database engine: 'pg' (PostgreSQL), 'mysql', 'redis', 'mongodb', 'kafka'
-            region: Region slug (e.g., 'syd1')
-            size: Size slug (e.g., 'db-s-1vcpu-1gb')
-            num_nodes: Number of nodes (1 for standalone, 3 for HA) (default 1)
-            version: Engine version (optional, uses latest if empty)
-            vpc_uuid: VPC UUID (optional)
-            tags: Comma-separated tags (optional)
-        """
+        """Create a new managed database cluster."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1835,11 +1534,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Delete Database Cluster", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_delete_database_cluster(db_id: str) -> str:
-        """Delete a managed database cluster. WARNING: All data will be destroyed.
-
-        Args:
-            db_id: Database cluster UUID
-        """
+        """Delete a managed database cluster. All data will be destroyed."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1853,11 +1548,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "List Databases in Cluster", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_list_databases(db_id: str) -> str:
-        """List all databases within a managed database cluster.
-
-        Args:
-            db_id: Database cluster UUID
-        """
+        """List all databases within a managed database cluster."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1872,11 +1563,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "List Database Users", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_list_database_users(db_id: str) -> str:
-        """List all users for a managed database cluster.
-
-        Args:
-            db_id: Database cluster UUID
-        """
+        """List all users for a managed database cluster."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1891,12 +1578,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Add Database User", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
     )
     async def digitalocean_add_database_user(db_id: str, name: str) -> str:
-        """Add a new user to a managed database cluster.
-
-        Args:
-            db_id: Database cluster UUID
-            name: Username for the new database user
-        """
+        """Add a new user to a managed database cluster."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1913,11 +1595,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "List Connection Pools", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_list_database_pools(db_id: str) -> str:
-        """List connection pools for a PostgreSQL database cluster.
-
-        Args:
-            db_id: Database cluster UUID
-        """
+        """List connection pools for a PostgreSQL database cluster."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1934,11 +1612,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "List Database Replicas", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_list_database_replicas(db_id: str) -> str:
-        """List read replicas for a database cluster.
-
-        Args:
-            db_id: Database cluster UUID
-        """
+        """List read replicas for a database cluster."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1955,11 +1629,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "List DB Firewall Rules", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_list_database_firewall_rules(db_id: str) -> str:
-        """List firewall (trusted sources) rules for a database cluster.
-
-        Args:
-            db_id: Database cluster UUID
-        """
+        """List firewall rules for a database cluster."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1975,13 +1645,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Update DB Firewall Rules", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_update_database_firewall(db_id: str, rules: str) -> str:
-        """Update firewall (trusted sources) rules for a database cluster. Replaces all existing rules.
-
-        Args:
-            db_id: Database cluster UUID
-            rules: JSON array of rules. Each rule: {"type":"ip_addr","value":"1.2.3.4"}
-                Type can be: 'ip_addr', 'droplet', 'k8s', 'tag', 'app'
-        """
+        """Update firewall rules for a database cluster, replacing all."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -1998,13 +1662,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         annotations={"title": "Resize Database Cluster", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
     )
     async def digitalocean_resize_database_cluster(db_id: str, size: str, num_nodes: int = 0) -> str:
-        """Resize a managed database cluster.
-
-        Args:
-            db_id: Database cluster UUID
-            size: New size slug (e.g., 'db-s-2vcpu-4gb')
-            num_nodes: New number of nodes (0 to keep current)
-        """
+        """Resize a managed database cluster."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2037,11 +1695,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_get_project", annotations={"title": "Get Project", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_get_project(project_id: str) -> str:
-        """Get details for a specific project.
-
-        Args:
-            project_id: Project UUID
-        """
+        """Get details for a specific project."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2055,14 +1709,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_create_project", annotations={"title": "Create Project", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
     async def digitalocean_create_project(name: str, purpose: str, description: str = "", environment: str = "Development") -> str:
-        """Create a new project for organizing resources.
-
-        Args:
-            name: Project name
-            purpose: Project purpose (e.g., 'Website or blog', 'Service or API', 'Operational / Developer tooling')
-            description: Project description (optional)
-            environment: Environment: 'Development', 'Staging', 'Production' (default 'Development')
-        """
+        """Create a new project for organizing resources."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2075,16 +1722,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_update_project", annotations={"title": "Update Project", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_update_project(project_id: str, name: str = "", description: str = "", purpose: str = "", environment: str = "", is_default: bool = False) -> str:
-        """Update a project's details.
-
-        Args:
-            project_id: Project UUID
-            name: New name (optional)
-            description: New description (optional)
-            purpose: New purpose (optional)
-            environment: New environment (optional)
-            is_default: Set as default project (default false)
-        """
+        """Update a project's details."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2102,11 +1740,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_list_project_resources", annotations={"title": "List Project Resources", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_list_project_resources(project_id: str) -> str:
-        """List all resources assigned to a project.
-
-        Args:
-            project_id: Project UUID
-        """
+        """List all resources assigned to a project."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2119,12 +1753,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_assign_project_resources", annotations={"title": "Assign Resources to Project", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_assign_project_resources(project_id: str, urns: str) -> str:
-        """Assign resources to a project using URNs.
-
-        Args:
-            project_id: Project UUID
-            urns: Comma-separated URNs (e.g., 'do:droplet:123,do:volume:abc-123,do:domain:example.com')
-        """
+        """Assign resources to a project using URNs."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2154,11 +1783,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_get_ssh_key", annotations={"title": "Get SSH Key", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_get_ssh_key(key_id: str) -> str:
-        """Get details of an SSH key by ID or fingerprint.
-
-        Args:
-            key_id: SSH key ID (numeric) or fingerprint
-        """
+        """Get details of an SSH key by ID or fingerprint."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2171,12 +1796,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_create_ssh_key", annotations={"title": "Create SSH Key", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
     async def digitalocean_create_ssh_key(name: str, public_key: str) -> str:
-        """Add an SSH public key to the account.
-
-        Args:
-            name: Name for the SSH key
-            public_key: Full SSH public key string (e.g., 'ssh-rsa AAAA... user@host')
-        """
+        """Add an SSH public key to the account."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2189,11 +1809,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_delete_ssh_key", annotations={"title": "Delete SSH Key", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_delete_ssh_key(key_id: str) -> str:
-        """Delete an SSH key from the account.
-
-        Args:
-            key_id: SSH key ID or fingerprint
-        """
+        """Delete an SSH key from the account."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2208,11 +1824,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_list_snapshots", annotations={"title": "List Snapshots", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_list_snapshots(resource_type: str = "") -> str:
-        """List all snapshots (droplet and volume snapshots).
-
-        Args:
-            resource_type: Filter by type: 'droplet' or 'volume' (optional, empty=all)
-        """
+        """List all snapshots (droplet and volume)."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2230,11 +1842,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_get_snapshot", annotations={"title": "Get Snapshot", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_get_snapshot(snapshot_id: str) -> str:
-        """Get details of a specific snapshot.
-
-        Args:
-            snapshot_id: Snapshot ID
-        """
+        """Get details of a specific snapshot."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2249,11 +1857,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_delete_snapshot", annotations={"title": "Delete Snapshot", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_delete_snapshot(snapshot_id: str) -> str:
-        """Delete a snapshot permanently.
-
-        Args:
-            snapshot_id: Snapshot ID
-        """
+        """Delete a snapshot permanently."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2283,11 +1887,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_get_vpc", annotations={"title": "Get VPC", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_get_vpc(vpc_id: str) -> str:
-        """Get details of a VPC.
-
-        Args:
-            vpc_id: VPC UUID
-        """
+        """Get details of a VPC."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2301,14 +1901,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_create_vpc", annotations={"title": "Create VPC", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
     async def digitalocean_create_vpc(name: str, region: str, description: str = "", ip_range: str = "") -> str:
-        """Create a new VPC.
-
-        Args:
-            name: VPC name
-            region: Region slug (e.g., 'syd1')
-            description: VPC description (optional)
-            ip_range: IP range in CIDR notation (e.g., '10.10.10.0/24'). Auto-assigned if empty.
-        """
+        """Create a new VPC."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2324,13 +1917,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_update_vpc", annotations={"title": "Update VPC", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_update_vpc(vpc_id: str, name: str = "", description: str = "") -> str:
-        """Update a VPC's name or description.
-
-        Args:
-            vpc_id: VPC UUID
-            name: New name (optional)
-            description: New description (optional)
-        """
+        """Update a VPC's name or description."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2345,11 +1932,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_delete_vpc", annotations={"title": "Delete VPC", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_delete_vpc(vpc_id: str) -> str:
-        """Delete a VPC. All resources must be removed from the VPC first.
-
-        Args:
-            vpc_id: VPC UUID
-        """
+        """Delete a VPC (all resources must be removed first)."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2360,12 +1943,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_list_vpc_members", annotations={"title": "List VPC Members", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_list_vpc_members(vpc_id: str, resource_type: str = "") -> str:
-        """List all resources in a VPC.
-
-        Args:
-            vpc_id: VPC UUID
-            resource_type: Filter by type: 'droplet', 'load_balancer', 'database' (optional)
-        """
+        """List all resources in a VPC."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2385,14 +1963,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_list_images", annotations={"title": "List Images", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_list_images(image_type: str = "", private: bool = False, per_page: int = 50, page: int = 1) -> str:
-        """List available images (OS distributions, snapshots, backups, custom images).
-
-        Args:
-            image_type: Filter: 'distribution', 'application', or '' for all (default '')
-            private: Show only private/custom images (default false)
-            per_page: Results per page (default 50)
-            page: Page number (default 1)
-        """
+        """List available images (distributions, snapshots, backups)."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2415,11 +1986,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_get_image", annotations={"title": "Get Image", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_get_image(image_id: str) -> str:
-        """Get details of an image by ID or slug.
-
-        Args:
-            image_id: Image ID (numeric) or slug (e.g., 'ubuntu-24-04-x64')
-        """
+        """Get details of an image by ID or slug."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2436,14 +2003,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_update_image", annotations={"title": "Update Image", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_update_image(image_id: int, name: str = "", description: str = "", distribution: str = "") -> str:
-        """Update a custom image's metadata.
-
-        Args:
-            image_id: Image ID (numeric)
-            name: New name (optional)
-            description: New description (optional)
-            distribution: New distribution label (optional)
-        """
+        """Update a custom image's metadata."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2459,11 +2019,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_delete_image", annotations={"title": "Delete Image", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_delete_image(image_id: int) -> str:
-        """Delete a custom image.
-
-        Args:
-            image_id: Image ID (numeric)
-        """
+        """Delete a custom image."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2492,11 +2048,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_get_reserved_ip", annotations={"title": "Get Reserved IP", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_get_reserved_ip(ip: str) -> str:
-        """Get details of a reserved IP.
-
-        Args:
-            ip: The reserved IP address
-        """
+        """Get details of a reserved IP."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2509,12 +2061,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_create_reserved_ip", annotations={"title": "Create Reserved IP", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
     async def digitalocean_create_reserved_ip(region: str = "", droplet_id: int = 0) -> str:
-        """Create a new reserved IP. Provide either region OR droplet_id.
-
-        Args:
-            region: Region slug for unassigned IP (e.g., 'syd1')
-            droplet_id: Droplet ID to assign immediately (0 = unassigned)
-        """
+        """Create a new reserved IP (provide either region or droplet_id)."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2534,11 +2081,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_delete_reserved_ip", annotations={"title": "Delete Reserved IP", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_delete_reserved_ip(ip: str) -> str:
-        """Delete a reserved IP. Must be unassigned first.
-
-        Args:
-            ip: Reserved IP address to delete
-        """
+        """Delete a reserved IP (must be unassigned first)."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2549,12 +2092,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_assign_reserved_ip", annotations={"title": "Assign Reserved IP", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_assign_reserved_ip(ip: str, droplet_id: int) -> str:
-        """Assign a reserved IP to a droplet.
-
-        Args:
-            ip: Reserved IP address
-            droplet_id: Droplet ID to assign to
-        """
+        """Assign a reserved IP to a droplet."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2568,11 +2106,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_unassign_reserved_ip", annotations={"title": "Unassign Reserved IP", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_unassign_reserved_ip(ip: str) -> str:
-        """Unassign a reserved IP from its current droplet.
-
-        Args:
-            ip: Reserved IP address
-        """
+        """Unassign a reserved IP from its current droplet."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2603,11 +2137,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_get_tag", annotations={"title": "Get Tag", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_get_tag(tag_name: str) -> str:
-        """Get details of a tag including resource counts by type.
-
-        Args:
-            tag_name: Tag name
-        """
+        """Get details of a tag including resource counts."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2619,11 +2149,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_create_tag", annotations={"title": "Create Tag", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_create_tag(name: str) -> str:
-        """Create a new tag.
-
-        Args:
-            name: Tag name (lowercase, alphanumeric, hyphens, colons)
-        """
+        """Create a new tag."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2635,11 +2161,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_delete_tag", annotations={"title": "Delete Tag", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_delete_tag(tag_name: str) -> str:
-        """Delete a tag. Does not delete the tagged resources.
-
-        Args:
-            tag_name: Tag name to delete
-        """
+        """Delete a tag (does not delete tagged resources)."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2650,13 +2172,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_tag_resources", annotations={"title": "Tag Resources", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_tag_resources(tag_name: str, resources: str) -> str:
-        """Apply a tag to resources.
-
-        Args:
-            tag_name: Tag name
-            resources: JSON array of resources: [{"resource_id":"123","resource_type":"droplet"}]
-                resource_type can be: droplet, image, volume, volume_snapshot, database
-        """
+        """Apply a tag to resources."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2670,12 +2186,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_untag_resources", annotations={"title": "Untag Resources", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_untag_resources(tag_name: str, resources: str) -> str:
-        """Remove a tag from resources.
-
-        Args:
-            tag_name: Tag name
-            resources: JSON array of resources: [{"resource_id":"123","resource_type":"droplet"}]
-        """
+        """Remove a tag from resources."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2708,11 +2219,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_get_certificate", annotations={"title": "Get Certificate", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_get_certificate(certificate_id: str) -> str:
-        """Get details of a certificate.
-
-        Args:
-            certificate_id: Certificate UUID
-        """
+        """Get details of a certificate."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2727,13 +2234,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_create_certificate", annotations={"title": "Create Certificate", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
     async def digitalocean_create_certificate(name: str, dns_names: str, cert_type: str = "lets_encrypt") -> str:
-        """Create an SSL/TLS certificate (Let's Encrypt auto-managed or custom).
-
-        Args:
-            name: Certificate name
-            dns_names: Comma-separated domain names (e.g., 'example.com,www.example.com')
-            cert_type: Certificate type: 'lets_encrypt' (auto) or 'custom' (default 'lets_encrypt')
-        """
+        """Create an SSL/TLS certificate (Let's Encrypt or custom)."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2748,11 +2249,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_delete_certificate", annotations={"title": "Delete Certificate", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_delete_certificate(certificate_id: str) -> str:
-        """Delete a certificate.
-
-        Args:
-            certificate_id: Certificate UUID
-        """
+        """Delete a certificate."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2782,11 +2279,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_get_cdn_endpoint", annotations={"title": "Get CDN Endpoint", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_get_cdn_endpoint(endpoint_id: str) -> str:
-        """Get details of a CDN endpoint.
-
-        Args:
-            endpoint_id: CDN endpoint UUID
-        """
+        """Get details of a CDN endpoint."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2800,14 +2293,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_create_cdn_endpoint", annotations={"title": "Create CDN Endpoint", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
     async def digitalocean_create_cdn_endpoint(origin: str, ttl: int = 3600, custom_domain: str = "", certificate_id: str = "") -> str:
-        """Create a new CDN endpoint.
-
-        Args:
-            origin: Origin server (Spaces bucket endpoint, e.g., 'my-space.syd1.digitaloceanspaces.com')
-            ttl: Cache TTL in seconds (default 3600)
-            custom_domain: Custom domain for CDN (optional)
-            certificate_id: SSL certificate UUID for custom domain (optional)
-        """
+        """Create a new CDN endpoint."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2823,14 +2309,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_update_cdn_endpoint", annotations={"title": "Update CDN Endpoint", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_update_cdn_endpoint(endpoint_id: str, ttl: int = -1, custom_domain: str = "", certificate_id: str = "") -> str:
-        """Update a CDN endpoint.
-
-        Args:
-            endpoint_id: CDN endpoint UUID
-            ttl: New cache TTL in seconds (use -1 to skip)
-            custom_domain: New custom domain (optional)
-            certificate_id: New SSL certificate UUID (optional)
-        """
+        """Update a CDN endpoint."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2847,11 +2326,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_delete_cdn_endpoint", annotations={"title": "Delete CDN Endpoint", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_delete_cdn_endpoint(endpoint_id: str) -> str:
-        """Delete a CDN endpoint.
-
-        Args:
-            endpoint_id: CDN endpoint UUID
-        """
+        """Delete a CDN endpoint."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2881,11 +2356,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_list_registry_repositories", annotations={"title": "List Registry Repos", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_list_registry_repositories(registry_name: str) -> str:
-        """List repositories in a container registry.
-
-        Args:
-            registry_name: Registry name
-        """
+        """List repositories in a container registry."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2900,12 +2371,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_list_registry_tags", annotations={"title": "List Registry Tags", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_list_registry_tags(registry_name: str, repository: str) -> str:
-        """List tags for a repository in the container registry.
-
-        Args:
-            registry_name: Registry name
-            repository: Repository name
-        """
+        """List tags for a repository in the container registry."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2920,13 +2386,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_delete_registry_tag", annotations={"title": "Delete Registry Tag", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_delete_registry_tag(registry_name: str, repository: str, tag: str) -> str:
-        """Delete a tag from a container registry repository.
-
-        Args:
-            registry_name: Registry name
-            repository: Repository name
-            tag: Tag name to delete
-        """
+        """Delete a tag from a container registry repository."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2937,11 +2397,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_run_registry_gc", annotations={"title": "Run Registry GC", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
     async def digitalocean_run_registry_gc(registry_name: str) -> str:
-        """Run garbage collection on the container registry to free unused storage.
-
-        Args:
-            registry_name: Registry name
-        """
+        """Run garbage collection on the container registry."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -2978,11 +2434,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_get_app", annotations={"title": "Get App Details", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_get_app(app_id: str) -> str:
-        """Get detailed information about an App Platform app.
-
-        Args:
-            app_id: App UUID
-        """
+        """Get details of an App Platform app."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -3006,14 +2458,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_create_app", annotations={"title": "Create App", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True})
     async def digitalocean_create_app(spec: str) -> str:
-        """Create a new App Platform app from a spec.
-
-        Args:
-            spec: JSON app spec. See DigitalOcean App Platform documentation for format.
-                Minimal example: {"name":"my-app","region":"syd","services":[{"name":"api",
-                "github":{"repo":"user/repo","branch":"main"},"run_command":"npm start",
-                "http_port":8080,"instance_size_slug":"apps-s-1vcpu-0.5gb","instance_count":1}]}
-        """
+        """Create a new App Platform app from a spec."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -3028,12 +2473,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_update_app", annotations={"title": "Update App", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_update_app(app_id: str, spec: str) -> str:
-        """Update an App Platform app's spec (triggers redeployment).
-
-        Args:
-            app_id: App UUID
-            spec: Updated JSON app spec (replaces existing)
-        """
+        """Update an App Platform app's spec (triggers redeployment)."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -3048,11 +2488,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_delete_app", annotations={"title": "Delete App", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_delete_app(app_id: str) -> str:
-        """Delete an App Platform app and all its resources.
-
-        Args:
-            app_id: App UUID
-        """
+        """Delete an App Platform app and all its resources."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -3063,11 +2499,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_list_app_deployments", annotations={"title": "List App Deployments", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_list_app_deployments(app_id: str) -> str:
-        """List deployments for an App Platform app.
-
-        Args:
-            app_id: App UUID
-        """
+        """List deployments for an App Platform app."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -3082,14 +2514,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_get_app_logs", annotations={"title": "Get App Logs", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_get_app_logs(app_id: str, deployment_id: str = "", component_name: str = "", log_type: str = "RUN") -> str:
-        """Get logs for an App Platform app.
-
-        Args:
-            app_id: App UUID
-            deployment_id: Deployment ID (optional, latest if empty)
-            component_name: Component name (optional, all if empty)
-            log_type: Log type: 'BUILD', 'DEPLOY', 'RUN', 'RUN_RESTARTED' (default 'RUN')
-        """
+        """Get logs for an App Platform app."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -3126,11 +2551,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_get_alert_policy", annotations={"title": "Get Alert Policy", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_get_alert_policy(alert_id: str) -> str:
-        """Get details of an alert policy.
-
-        Args:
-            alert_id: Alert policy UUID
-        """
+        """Get details of an alert policy."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -3149,20 +2570,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         alert_type: str, description: str, compare: str, value: float, window: str,
         entities: str = "", tags: str = "", emails: str = "", slack_webhooks: str = "",
     ) -> str:
-        """Create a monitoring alert policy.
-
-        Args:
-            alert_type: Alert type (e.g., 'v1/insights/droplet/cpu', 'v1/insights/droplet/memory_utilization_percent',
-                'v1/insights/droplet/disk_utilization_percent', 'v1/insights/droplet/load_1')
-            description: Human-readable description
-            compare: Comparison: 'GreaterThan' or 'LessThan'
-            value: Threshold value (e.g., 90 for 90% CPU)
-            window: Time window: '5m', '10m', '30m', '1h'
-            entities: Comma-separated droplet IDs (optional, empty = all)
-            tags: Comma-separated tags (optional)
-            emails: Comma-separated email addresses for notifications (optional)
-            slack_webhooks: Comma-separated Slack webhook URLs (optional)
-        """
+        """Create a monitoring alert policy."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -3192,21 +2600,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         window: str, enabled: bool = True, entities: str = "", tags: str = "",
         emails: str = "", slack_webhooks: str = "",
     ) -> str:
-        """Update an alert policy. Replaces the entire policy.
-
-        Args:
-            alert_id: Alert policy UUID
-            alert_type: Alert type
-            description: Description
-            compare: 'GreaterThan' or 'LessThan'
-            value: Threshold value
-            window: Time window: '5m', '10m', '30m', '1h'
-            enabled: Enable/disable (default true)
-            entities: Comma-separated droplet IDs (optional)
-            tags: Comma-separated tags (optional)
-            emails: Comma-separated notification emails (optional)
-            slack_webhooks: Comma-separated Slack webhook URLs (optional)
-        """
+        """Update an alert policy, replacing the entire policy."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -3231,11 +2625,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_delete_alert_policy", annotations={"title": "Delete Alert Policy", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_delete_alert_policy(alert_id: str) -> str:
-        """Delete an alert policy.
-
-        Args:
-            alert_id: Alert policy UUID
-        """
+        """Delete an alert policy."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -3249,18 +2639,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         host_id: str, metric_type: str, start: str = "", end: str = "",
         interface: str = "public", direction: str = "inbound",
     ) -> str:
-        """Get monitoring metrics for a droplet. Requires monitoring agent installed.
-
-        Args:
-            host_id: Droplet ID
-            metric_type: Metric type: 'bandwidth', 'cpu', 'memory_free', 'memory_available',
-                'filesystem_free', 'filesystem_size', 'disk_read', 'disk_write',
-                'load_1', 'load_5', 'load_15'
-            start: Start time ISO 8601 (default: 1 hour ago)
-            end: End time ISO 8601 (default: now)
-            interface: For bandwidth: 'public' or 'private' (default 'public')
-            direction: For bandwidth: 'inbound' or 'outbound' (default 'inbound')
-        """
+        """Get monitoring metrics for a droplet."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -3314,11 +2693,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_get_uptime_check", annotations={"title": "Get Uptime Check", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_get_uptime_check(check_id: str) -> str:
-        """Get details of an uptime check.
-
-        Args:
-            check_id: Uptime check UUID
-        """
+        """Get details of an uptime check."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -3334,14 +2709,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_create_uptime_check(
         name: str, target: str, check_type: str = "https", regions: str = "",
     ) -> str:
-        """Create a new uptime check.
-
-        Args:
-            name: Check name
-            target: URL or IP to monitor (e.g., 'https://example.com')
-            check_type: Check type: 'ping', 'http', 'https', 'tcp' (default 'https')
-            regions: Comma-separated regions: 'us_east', 'us_west', 'eu_west', 'se_asia' (optional, all if empty)
-        """
+        """Create a new uptime check."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -3360,16 +2728,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         check_id: str, name: str = "", target: str = "", check_type: str = "",
         enabled: bool = True, regions: str = "",
     ) -> str:
-        """Update an uptime check.
-
-        Args:
-            check_id: Uptime check UUID
-            name: New name (optional)
-            target: New target URL/IP (optional)
-            check_type: New type: 'ping', 'http', 'https', 'tcp' (optional)
-            enabled: Enable/disable (default true)
-            regions: Comma-separated regions (optional)
-        """
+        """Update an uptime check."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -3388,11 +2747,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_delete_uptime_check", annotations={"title": "Delete Uptime Check", "readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_delete_uptime_check(check_id: str) -> str:
-        """Delete an uptime check.
-
-        Args:
-            check_id: Uptime check UUID
-        """
+        """Delete an uptime check."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -3403,11 +2758,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
 
     @mcp.tool(name="digitalocean_list_uptime_check_alerts", annotations={"title": "List Uptime Alerts", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def digitalocean_list_uptime_check_alerts(check_id: str) -> str:
-        """List alert policies for an uptime check.
-
-        Args:
-            check_id: Uptime check UUID
-        """
+        """List alert policies for an uptime check."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
@@ -3426,18 +2777,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
         comparison: str = "greater_than", threshold: int = 1, period: str = "2m",
         emails: str = "", slack_webhooks: str = "",
     ) -> str:
-        """Create an alert for an uptime check.
-
-        Args:
-            check_id: Uptime check UUID
-            name: Alert name
-            alert_type: Alert type: 'latency', 'down', 'down_global', 'ssl_expiry' (default 'down')
-            comparison: Comparison: 'greater_than', 'less_than' (default 'greater_than')
-            threshold: Threshold value (default 1)
-            period: Check period: '2m', '3m', '5m', '10m', '15m', '30m' (default '2m')
-            emails: Comma-separated email addresses (optional)
-            slack_webhooks: Comma-separated Slack webhook URLs (optional)
-        """
+        """Create an alert for an uptime check."""
         if not do_config.is_configured:
             return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
         try:
