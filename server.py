@@ -52,6 +52,9 @@ print(f"[STARTUP] aws_tools imported at t={time.time() - _module_start_time:.3f}
 from email_tools import register_email_tools, EmailConfig
 print(f"[STARTUP] email_tools imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
+from calendar_tools import register_calendar_tools
+print(f"[STARTUP] calendar_tools imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+
 from jira_tools import register_jira_tools, JiraConfig
 print(f"[STARTUP] jira_tools imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
@@ -214,6 +217,25 @@ if service_enabled("email"):
         traceback.print_exc(file=sys.stderr)
 else:
     print("[STARTUP] Email tools SKIPPED (not in ENABLED_SERVICES)", file=sys.stderr, flush=True)
+    email_config = None
+
+# Register Calendar (Microsoft Graph) tools - reuses email config
+if service_enabled("calendar") or service_enabled("email"):
+    try:
+        if email_config and email_config.is_configured:
+            _cal_tool_count_before = len(mcp._tool_manager._tools)
+            register_calendar_tools(mcp, email_config)
+            _cal_tool_count_after = len(mcp._tool_manager._tools)
+            _cal_tools_added = _cal_tool_count_after - _cal_tool_count_before
+            print(f"[STARTUP] Calendar tools registered ({_cal_tools_added} tools added) at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+        else:
+            print("[STARTUP] Calendar tools SKIPPED (email_config not configured)", file=sys.stderr, flush=True)
+    except Exception as e:
+        import traceback
+        print(f'[STARTUP] Calendar tools registration FAILED: {e}', file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+else:
+    print("[STARTUP] Calendar tools SKIPPED (not in ENABLED_SERVICES)", file=sys.stderr, flush=True)
 
 # Register Jira tools
 if service_enabled("jira"):
