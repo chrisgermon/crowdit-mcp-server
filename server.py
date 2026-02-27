@@ -4793,6 +4793,188 @@ async def gorelo_create_alert(
     except Exception as e:
         return f"Error: {str(e)}"
 
+@mcp.tool(annotations={"readOnlyHint": False})
+async def gorelo_create_client(
+    name: str = Field(..., description="Client/company name"),
+    address: Optional[str] = Field(None, description="Street address"),
+    city: Optional[str] = Field(None, description="City"),
+    state: Optional[str] = Field(None, description="State/province"),
+    post_code: Optional[str] = Field(None, description="Postal/ZIP code"),
+    country: Optional[str] = Field(None, description="Country"),
+    phone: Optional[str] = Field(None, description="Phone number"),
+    website: Optional[str] = Field(None, description="Website URL"),
+    domain: Optional[str] = Field(None, description="Email domain (e.g., 'company.com')"),
+    tax_id: Optional[str] = Field(None, description="Tax ID / ABN"),
+    notes: Optional[str] = Field(None, description="Notes about the client")
+) -> str:
+    """Create a new client in Gorelo."""
+    if not gorelo_config.is_configured:
+        return "Error: Gorelo not configured (missing GORELO_API_KEY)."
+    try:
+        payload = {"name": name}
+        if address:
+            payload["address"] = address
+        if city:
+            payload["city"] = city
+        if state:
+            payload["state"] = state
+        if post_code:
+            payload["postCode"] = post_code
+        if country:
+            payload["country"] = country
+        if phone:
+            payload["phone"] = phone
+        if website:
+            payload["website"] = website
+        if domain:
+            payload["domain"] = domain
+        if tax_id:
+            payload["taxId"] = tax_id
+        if notes:
+            payload["notes"] = notes
+        async with httpx.AsyncClient() as client:
+            response = await client.post(f"{gorelo_config.base_url}/v1/clients", json=payload, headers=gorelo_config.headers())
+            response.raise_for_status()
+            data = response.json()
+        return f"Client '{name}' created successfully (ID: {data.get('id', 'N/A')}).\n\n```json\n{json.dumps(data, indent=2)}\n```"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@mcp.tool(annotations={"readOnlyHint": False})
+async def gorelo_update_client(
+    client_id: int = Field(..., description="Client ID to update"),
+    name: Optional[str] = Field(None, description="Updated client/company name"),
+    address: Optional[str] = Field(None, description="Updated street address"),
+    city: Optional[str] = Field(None, description="Updated city"),
+    state: Optional[str] = Field(None, description="Updated state/province"),
+    post_code: Optional[str] = Field(None, description="Updated postal/ZIP code"),
+    country: Optional[str] = Field(None, description="Updated country"),
+    phone: Optional[str] = Field(None, description="Updated phone number"),
+    website: Optional[str] = Field(None, description="Updated website URL"),
+    domain: Optional[str] = Field(None, description="Updated email domain"),
+    tax_id: Optional[str] = Field(None, description="Updated Tax ID / ABN"),
+    notes: Optional[str] = Field(None, description="Updated notes")
+) -> str:
+    """Update an existing client in Gorelo. Only provided fields will be updated."""
+    if not gorelo_config.is_configured:
+        return "Error: Gorelo not configured (missing GORELO_API_KEY)."
+    try:
+        payload = {}
+        if name is not None:
+            payload["name"] = name
+        if address is not None:
+            payload["address"] = address
+        if city is not None:
+            payload["city"] = city
+        if state is not None:
+            payload["state"] = state
+        if post_code is not None:
+            payload["postCode"] = post_code
+        if country is not None:
+            payload["country"] = country
+        if phone is not None:
+            payload["phone"] = phone
+        if website is not None:
+            payload["website"] = website
+        if domain is not None:
+            payload["domain"] = domain
+        if tax_id is not None:
+            payload["taxId"] = tax_id
+        if notes is not None:
+            payload["notes"] = notes
+        if not payload:
+            return "Error: No fields provided to update."
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(f"{gorelo_config.base_url}/v1/clients/{client_id}", json=payload, headers=gorelo_config.headers())
+            response.raise_for_status()
+            data = response.json()
+        return f"Client {client_id} updated successfully.\n\n```json\n{json.dumps(data, indent=2)}\n```"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@mcp.tool(annotations={"readOnlyHint": False})
+async def gorelo_create_contact(
+    first_name: str = Field(..., description="Contact first name"),
+    last_name: str = Field(..., description="Contact last name"),
+    email: str = Field(..., description="Contact email address"),
+    client_id: Optional[int] = Field(None, description="Client ID to associate the contact with"),
+    client_location_id: Optional[int] = Field(None, description="Client location ID to associate the contact with"),
+    phone: Optional[str] = Field(None, description="Phone number"),
+    mobile: Optional[str] = Field(None, description="Mobile phone number"),
+    title: Optional[str] = Field(None, description="Job title")
+) -> str:
+    """Create a new contact in Gorelo."""
+    if not gorelo_config.is_configured:
+        return "Error: Gorelo not configured (missing GORELO_API_KEY)."
+    try:
+        payload = {
+            "firstName": first_name,
+            "lastName": last_name,
+            "email": email
+        }
+        if client_id is not None:
+            payload["clientId"] = client_id
+        if client_location_id is not None:
+            payload["clientLocationId"] = client_location_id
+        if phone:
+            payload["phone"] = phone
+        if mobile:
+            payload["mobile"] = mobile
+        if title:
+            payload["title"] = title
+        async with httpx.AsyncClient() as client:
+            response = await client.post(f"{gorelo_config.base_url}/v1/contacts", json=payload, headers=gorelo_config.headers())
+            response.raise_for_status()
+            data = response.json()
+        name = f"{data.get('firstName', first_name)} {data.get('lastName', last_name)}".strip()
+        return f"Contact '{name}' created successfully (ID: {data.get('id', 'N/A')}).\n\n```json\n{json.dumps(data, indent=2)}\n```"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@mcp.tool(annotations={"readOnlyHint": False})
+async def gorelo_update_contact(
+    contact_id: int = Field(..., description="Contact ID to update"),
+    first_name: Optional[str] = Field(None, description="Updated first name"),
+    last_name: Optional[str] = Field(None, description="Updated last name"),
+    email: Optional[str] = Field(None, description="Updated email address"),
+    client_id: Optional[int] = Field(None, description="Updated client ID association"),
+    client_location_id: Optional[int] = Field(None, description="Updated client location ID association"),
+    phone: Optional[str] = Field(None, description="Updated phone number"),
+    mobile: Optional[str] = Field(None, description="Updated mobile phone number"),
+    title: Optional[str] = Field(None, description="Updated job title")
+) -> str:
+    """Update an existing contact in Gorelo. Only provided fields will be updated."""
+    if not gorelo_config.is_configured:
+        return "Error: Gorelo not configured (missing GORELO_API_KEY)."
+    try:
+        payload = {}
+        if first_name is not None:
+            payload["firstName"] = first_name
+        if last_name is not None:
+            payload["lastName"] = last_name
+        if email is not None:
+            payload["email"] = email
+        if client_id is not None:
+            payload["clientId"] = client_id
+        if client_location_id is not None:
+            payload["clientLocationId"] = client_location_id
+        if phone is not None:
+            payload["phone"] = phone
+        if mobile is not None:
+            payload["mobile"] = mobile
+        if title is not None:
+            payload["title"] = title
+        if not payload:
+            return "Error: No fields provided to update."
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(f"{gorelo_config.base_url}/v1/contacts/{contact_id}", json=payload, headers=gorelo_config.headers())
+            response.raise_for_status()
+            data = response.json()
+        name = f"{data.get('firstName', '')} {data.get('lastName', '')}".strip() or "Unknown"
+        return f"Contact '{name}' (ID: {contact_id}) updated successfully.\n\n```json\n{json.dumps(data, indent=2)}\n```"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
 
 # ============================================================================
 # n8n Integration (Workflow Automation)
