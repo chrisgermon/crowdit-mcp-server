@@ -61,7 +61,7 @@ print(f"[STARTUP] jira_tools imported at t={time.time() - _module_start_time:.3f
 from linear_tools import register_linear_tools, LinearConfig
 print(f"[STARTUP] linear_tools imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
-from digitalocean_tools import register_digitalocean_tools, DigitalOceanConfig
+from digitalocean_tools import register_digitalocean_tools, DigitalOceanConfig, PrefixedToolRegistrar
 print(f"[STARTUP] digitalocean_tools imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
 # Cloud Run URL for OAuth callback
@@ -138,7 +138,7 @@ def service_enabled(service_name: str) -> bool:
 def _get_enabled_services_description() -> str:
     """Build dynamic instructions string based on enabled services."""
     if ENABLED_SERVICES is None:
-        return "Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, AWS, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), Auvik (Network Management), Metabase (Business Intelligence), Jira (Project Management), Linear (Project Management), and DigitalOcean (Cloud Infrastructure) integration for MSP operations."
+        return "Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, AWS, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), Auvik (Network Management), Metabase (Business Intelligence), Jira (Project Management), Linear (Project Management), DigitalOcean (Cloud Infrastructure), and Crowd IT DigitalOcean (Cloud Infrastructure) integration for MSP operations."
     service_labels = {
         "halopsa": "HaloPSA", "xero": "Xero", "front": "Front",
         "sharepoint": "SharePoint", "quoter": "Quoter", "pax8": "Pax8",
@@ -269,7 +269,7 @@ if service_enabled("linear"):
 else:
     print("[STARTUP] Linear tools SKIPPED (not in ENABLED_SERVICES)", file=sys.stderr, flush=True)
 
-# Register DigitalOcean tools
+# Register DigitalOcean tools (primary account)
 if service_enabled("digitalocean"):
     try:
         do_config = DigitalOceanConfig()
@@ -286,6 +286,30 @@ if service_enabled("digitalocean"):
 else:
     print("[STARTUP] DigitalOcean tools SKIPPED (not in ENABLED_SERVICES)", file=sys.stderr, flush=True)
     do_config = type('DigitalOceanConfig', (), {'is_configured': False})()
+
+# Register Crowd IT DigitalOcean tools (second account)
+if service_enabled("digitalocean"):
+    try:
+        crowdit_do_config = DigitalOceanConfig(
+            secret_name="CROWDIT_DIGITALOCEAN_TOKEN",
+            env_var_name="CROWDIT_DIGITALOCEAN_TOKEN",
+            account_label="Crowd IT DigitalOcean",
+        )
+        _crowdit_do_tool_count_before = len(mcp._tool_manager._tools)
+        crowdit_do_registrar = PrefixedToolRegistrar(
+            mcp, "digitalocean", "crowdit_do", "Crowd IT DO"
+        )
+        register_digitalocean_tools(crowdit_do_registrar, crowdit_do_config)
+        _crowdit_do_tool_count_after = len(mcp._tool_manager._tools)
+        _crowdit_do_tools_added = _crowdit_do_tool_count_after - _crowdit_do_tool_count_before
+        print(f"[STARTUP] Crowd IT DigitalOcean tools registered ({_crowdit_do_tools_added} tools added) at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+    except Exception as e:
+        import traceback
+        print(f'[STARTUP] Crowd IT DigitalOcean tools registration FAILED: {e}', file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        crowdit_do_config = type('DigitalOceanConfig', (), {'is_configured': False})()
+else:
+    crowdit_do_config = type('DigitalOceanConfig', (), {'is_configured': False})()
 
 # ============================================================================
 # Secret Manager Helper
@@ -19980,6 +20004,14 @@ if __name__ == "__main__":
             "env_vars": [],
             "auth_env_vars": ["DIGITALOCEAN_TOKEN"]
         },
+        {
+            "name": "Crowd IT DigitalOcean",
+            "config": crowdit_do_config,
+            "category": "Cloud Infrastructure",
+            "check_type": "api_key",
+            "env_vars": [],
+            "auth_env_vars": ["CROWDIT_DIGITALOCEAN_TOKEN"]
+        },
     ]
 
     async def check_platform_status(platform: dict) -> dict:
@@ -20076,6 +20108,9 @@ if __name__ == "__main__":
             result["endpoint"] = f"https://{config.region}.amazonaws.com (multi-account)"
             result["api_version"] = "boto3"
         elif name == "DigitalOcean":
+            result["endpoint"] = "https://api.digitalocean.com/v2"
+            result["api_version"] = "v2"
+        elif name == "Crowd IT DigitalOcean":
             result["endpoint"] = "https://api.digitalocean.com/v2"
             result["api_version"] = "v2"
 

@@ -26,7 +26,8 @@ Capabilities:
 Authentication: Uses Personal Access Token (Bearer token).
 
 Environment Variables:
-    DIGITALOCEAN_TOKEN: DigitalOcean API personal access token
+    DIGITALOCEAN_TOKEN: DigitalOcean API personal access token (primary account)
+    CROWDIT_DIGITALOCEAN_TOKEN: Crowd IT DigitalOcean API personal access token
 """
 
 import os
@@ -47,8 +48,13 @@ class DigitalOceanConfig:
 
     BASE_URL = "https://api.digitalocean.com/v2"
 
-    def __init__(self):
+    def __init__(self, secret_name: str = "DIGITALOCEAN_TOKEN",
+                 env_var_name: str = "DIGITALOCEAN_TOKEN",
+                 account_label: str = "DigitalOcean"):
         self._token: Optional[str] = None
+        self.secret_name = secret_name
+        self.env_var_name = env_var_name
+        self.account_label = account_label
 
     @property
     def token(self) -> str:
@@ -58,19 +64,23 @@ class DigitalOceanConfig:
         # Try Secret Manager first
         try:
             from app.core.config import get_secret_sync
-            secret = get_secret_sync("DIGITALOCEAN_TOKEN")
+            secret = get_secret_sync(self.secret_name)
             if secret:
                 self._token = secret
                 return secret
         except Exception:
             pass
 
-        self._token = os.getenv("DIGITALOCEAN_TOKEN", "")
+        self._token = os.getenv(self.env_var_name, "")
         return self._token
 
     @property
     def is_configured(self) -> bool:
         return bool(self.token)
+
+    @property
+    def not_configured_error(self) -> str:
+        return f"Error: {self.account_label} not configured. Set {self.env_var_name}."
 
     async def do_request(
         self,
@@ -244,6 +254,46 @@ def format_kubernetes_summary(cluster: dict) -> dict:
 
 
 
+# =============================================================================
+# Multi-Account Tool Registration Helper
+# =============================================================================
+
+class PrefixedToolRegistrar:
+    """Wrapper around MCP that rewrites tool names and titles for multi-account support.
+
+    When registering the same set of DigitalOcean tools for a second account,
+    this proxy intercepts @mcp.tool() calls and rewrites the tool name prefix
+    and title annotations so each account gets its own distinct set of tools.
+
+    Example:
+        registrar = PrefixedToolRegistrar(mcp, "digitalocean", "crowdit_do", "Crowd IT DO")
+        register_digitalocean_tools(registrar, crowdit_config)
+        # Tools become: crowdit_do_get_account, crowdit_do_list_droplets, etc.
+        # Titles become: [Crowd IT DO] Get Account Info, etc.
+    """
+
+    def __init__(self, mcp, old_prefix: str, new_prefix: str, title_label: str = ""):
+        self._mcp = mcp
+        self._old_prefix = old_prefix
+        self._new_prefix = new_prefix
+        self._title_label = title_label
+
+    def tool(self, name=None, annotations=None, **kwargs):
+        # Rewrite tool name prefix
+        if name and name.startswith(self._old_prefix):
+            name = self._new_prefix + name[len(self._old_prefix):]
+
+        # Rewrite title in annotations to include account label
+        if annotations and self._title_label:
+            annotations = dict(annotations)
+            if "title" in annotations:
+                annotations["title"] = f"[{self._title_label}] {annotations['title']}"
+
+        return self._mcp.tool(name=name, annotations=annotations, **kwargs)
+
+    def __getattr__(self, attr):
+        return getattr(self._mcp, attr)
+
 
 # =============================================================================
 # Tool Registration
@@ -269,7 +319,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_account() -> str:
         """Get DigitalOcean account info including email, limits, and status."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", "/account")
             acct = data.get("account", {})
@@ -302,7 +352,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_regions() -> str:
         """List all available DigitalOcean datacenter regions with features and sizes."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", "/regions", params={"per_page": 200})
             regions = []
@@ -331,7 +381,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_sizes() -> str:
         """List all available DigitalOcean droplet sizes (plans) with pricing."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", "/sizes", params={"per_page": 200})
             sizes = []
@@ -373,7 +423,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     ) -> str:
         """List all DigitalOcean droplets with status, region, size, and IP info."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             params = {"per_page": min(per_page, 200), "page": page}
             if tag_name:
@@ -402,7 +452,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_droplet(droplet_id: int) -> str:
         """Get detailed information about a specific DigitalOcean droplet."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/droplets/{droplet_id}")
             d = data.get("droplet", {})
@@ -440,7 +490,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     ) -> str:
         """Create a new DigitalOcean droplet (virtual machine)."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {
                 "name": name, "region": region, "size": size,
@@ -489,7 +539,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_droplet(droplet_id: int) -> str:
         """Permanently delete a DigitalOcean droplet. This is irreversible."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/droplets/{droplet_id}")
             return json.dumps({"status": "success", "message": f"Droplet {droplet_id} deleted."}, indent=2)
@@ -509,7 +559,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_droplet_action(droplet_id: int, action: str) -> str:
         """Perform a power or configuration action on a droplet."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         valid = ["power_on", "power_off", "shutdown", "reboot", "power_cycle",
                  "enable_backups", "disable_backups", "enable_ipv6", "enable_private_networking"]
         if action not in valid:
@@ -538,7 +588,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_resize_droplet(droplet_id: int, size: str, disk: bool = True) -> str:
         """Resize a droplet to a different plan. Must be powered off first."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("POST", f"/droplets/{droplet_id}/actions",
                 json_body={"type": "resize", "size": size, "disk": disk})
@@ -561,7 +611,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_rebuild_droplet(droplet_id: int, image: str) -> str:
         """Rebuild a droplet with a new image. All data will be destroyed."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("POST", f"/droplets/{droplet_id}/actions",
                 json_body={"type": "rebuild", "image": image})
@@ -584,7 +634,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_rename_droplet(droplet_id: int, name: str) -> str:
         """Rename a DigitalOcean droplet."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("POST", f"/droplets/{droplet_id}/actions",
                 json_body={"type": "rename", "name": name})
@@ -607,7 +657,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_snapshot_droplet(droplet_id: int, name: str = "") -> str:
         """Create a snapshot of a droplet. Power off first for consistency."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"type": "snapshot"}
             if name:
@@ -632,7 +682,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_droplet_snapshots(droplet_id: int) -> str:
         """List all snapshots for a specific droplet."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/droplets/{droplet_id}/snapshots", params={"per_page": 100})
             snapshots = [{"id": s.get("id"), "name": s.get("name", ""), "created_at": s.get("created_at", ""),
@@ -655,7 +705,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_droplet_backups(droplet_id: int) -> str:
         """List all backups for a specific droplet."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/droplets/{droplet_id}/backups", params={"per_page": 100})
             backups = [{"id": s.get("id"), "name": s.get("name", ""), "created_at": s.get("created_at", ""),
@@ -678,7 +728,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_droplet_neighbors(droplet_id: int) -> str:
         """List droplets on the same physical hardware as this droplet."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/droplets/{droplet_id}/neighbors")
             neighbors = [format_droplet_summary(d) for d in data.get("droplets", [])]
@@ -697,7 +747,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_domains() -> str:
         """List all domains managed in DigitalOcean DNS."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", "/domains", params={"per_page": 200})
             domains = [{"name": d.get("name", ""), "ttl": d.get("ttl"), "zone_file": d.get("zone_file", "")[:200]}
@@ -713,7 +763,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_domain(domain_name: str) -> str:
         """Get details for a specific domain."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/domains/{domain_name}")
             d = data.get("domain", {})
@@ -728,7 +778,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_create_domain(name: str, ip_address: str = "") -> str:
         """Add a domain to DigitalOcean DNS management."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"name": name}
             if ip_address:
@@ -747,7 +797,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_domain(domain_name: str) -> str:
         """Remove a domain from DigitalOcean DNS and all its records."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/domains/{domain_name}")
             return json.dumps({"status": "success", "message": f"Domain '{domain_name}' and all records deleted."}, indent=2)
@@ -761,7 +811,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_domain_records(domain_name: str, record_type: str = "") -> str:
         """List all DNS records for a domain."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             params = {"per_page": 200}
             if record_type:
@@ -785,7 +835,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     ) -> str:
         """Create a DNS record for a domain."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"type": record_type.upper(), "name": name, "data": data, "ttl": ttl}
             if record_type.upper() in ("MX", "SRV"):
@@ -810,7 +860,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     ) -> str:
         """Update an existing DNS record."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {}
             if record_type:
@@ -839,7 +889,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_domain_record(domain_name: str, record_id: int) -> str:
         """Delete a DNS record."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/domains/{domain_name}/records/{record_id}")
             return json.dumps({"status": "success", "message": f"DNS record {record_id} deleted."}, indent=2)
@@ -857,7 +907,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_firewalls() -> str:
         """List all DigitalOcean cloud firewalls."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", "/firewalls", params={"per_page": 200})
             firewalls = []
@@ -880,7 +930,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_firewall(firewall_id: str) -> str:
         """Get firewall details including all rules."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/firewalls/{firewall_id}")
             fw = data.get("firewall", {})
@@ -905,7 +955,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     ) -> str:
         """Create a new DigitalOcean cloud firewall."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"name": name}
             if inbound_rules:
@@ -935,7 +985,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     ) -> str:
         """Update a firewall, replacing the entire configuration."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"name": name, "inbound_rules": json.loads(inbound_rules), "outbound_rules": json.loads(outbound_rules)}
             if droplet_ids:
@@ -958,7 +1008,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_firewall(firewall_id: str) -> str:
         """Delete a DigitalOcean firewall."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/firewalls/{firewall_id}")
             return json.dumps({"status": "success", "message": f"Firewall {firewall_id} deleted."}, indent=2)
@@ -972,7 +1022,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_add_firewall_droplets(firewall_id: str, droplet_ids: str) -> str:
         """Add droplets to a firewall."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             ids = [int(x.strip()) for x in droplet_ids.split(",") if x.strip()]
             await do_config.do_request("POST", f"/firewalls/{firewall_id}/droplets", json_body={"droplet_ids": ids})
@@ -987,7 +1037,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_remove_firewall_droplets(firewall_id: str, droplet_ids: str) -> str:
         """Remove droplets from a firewall."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             ids = [int(x.strip()) for x in droplet_ids.split(",") if x.strip()]
             await do_config.do_request("DELETE", f"/firewalls/{firewall_id}/droplets", json_body={"droplet_ids": ids})
@@ -1006,7 +1056,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_volumes(region: str = "") -> str:
         """List all block storage volumes."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             params = {"per_page": 200}
             if region:
@@ -1028,7 +1078,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_volume(volume_id: str) -> str:
         """Get details of a block storage volume."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/volumes/{volume_id}")
             v = data.get("volume", {})
@@ -1050,7 +1100,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     ) -> str:
         """Create a new block storage volume."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"name": name, "size_gigabytes": size_gigabytes, "region": region, "filesystem_type": filesystem_type}
             if description:
@@ -1072,7 +1122,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_volume(volume_id: str) -> str:
         """Delete a block storage volume (must be detached first)."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/volumes/{volume_id}")
             return json.dumps({"status": "success", "message": f"Volume {volume_id} deleted."}, indent=2)
@@ -1086,7 +1136,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_attach_volume(volume_id: str, droplet_id: int, region: str = "") -> str:
         """Attach a block storage volume to a droplet."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"type": "attach", "volume_id": volume_id, "droplet_id": droplet_id}
             if region:
@@ -1105,7 +1155,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_detach_volume(volume_id: str, droplet_id: int, region: str = "") -> str:
         """Detach a block storage volume from a droplet."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"type": "detach", "volume_id": volume_id, "droplet_id": droplet_id}
             if region:
@@ -1124,7 +1174,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_volume_snapshots(volume_id: str) -> str:
         """List snapshots for a block storage volume."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/volumes/{volume_id}/snapshots", params={"per_page": 100})
             snapshots = [{"id": s.get("id"), "name": s.get("name", ""), "size_gigabytes": s.get("size_gigabytes"),
@@ -1141,7 +1191,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_create_volume_snapshot(volume_id: str, name: str, tags: str = "") -> str:
         """Create a snapshot of a block storage volume."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"name": name}
             if tags:
@@ -1164,7 +1214,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_kubernetes_clusters() -> str:
         """List all DigitalOcean Kubernetes (DOKS) clusters."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", "/kubernetes/clusters", params={"per_page": 100})
             clusters = [format_kubernetes_summary(c) for c in data.get("kubernetes_clusters", [])]
@@ -1179,7 +1229,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_kubernetes_cluster(cluster_id: str) -> str:
         """Get details of a Kubernetes cluster."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/kubernetes/clusters/{cluster_id}")
             return json.dumps(format_kubernetes_summary(data.get("kubernetes_cluster", {})), indent=2)
@@ -1197,7 +1247,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     ) -> str:
         """Create a new DigitalOcean Kubernetes cluster."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             node_pool = {"name": node_pool_name, "size": node_pool_size, "count": node_pool_count}
             if auto_scale:
@@ -1223,7 +1273,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_kubernetes_cluster(cluster_id: str) -> str:
         """Delete a Kubernetes cluster and all its resources."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/kubernetes/clusters/{cluster_id}")
             return json.dumps({"status": "success", "message": f"Kubernetes cluster {cluster_id} deletion initiated."}, indent=2)
@@ -1237,7 +1287,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_kubernetes_node_pools(cluster_id: str) -> str:
         """List node pools in a Kubernetes cluster."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/kubernetes/clusters/{cluster_id}/node_pools")
             pools = [{"id": np.get("id", ""), "name": np.get("name", ""), "size": np.get("size", ""),
@@ -1260,7 +1310,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     ) -> str:
         """Add a new node pool to a Kubernetes cluster."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"name": name, "size": size, "count": count}
             if auto_scale:
@@ -1283,7 +1333,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_kubernetes_node_pool(cluster_id: str, node_pool_id: str) -> str:
         """Delete a node pool from a Kubernetes cluster."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/kubernetes/clusters/{cluster_id}/node_pools/{node_pool_id}")
             return json.dumps({"status": "success", "message": f"Node pool {node_pool_id} deleted."}, indent=2)
@@ -1297,7 +1347,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_kubernetes_kubeconfig(cluster_id: str) -> str:
         """Get the kubeconfig YAML for a Kubernetes cluster."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             import httpx
             url = f"{do_config.BASE_URL}/kubernetes/clusters/{cluster_id}/kubeconfig"
@@ -1320,7 +1370,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_load_balancers() -> str:
         """List all DigitalOcean load balancers."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", "/load_balancers", params={"per_page": 100})
             lbs = [{"id": lb.get("id", ""), "name": lb.get("name", ""), "ip": lb.get("ip", ""),
@@ -1341,7 +1391,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_load_balancer(lb_id: str) -> str:
         """Get details of a load balancer."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/load_balancers/{lb_id}")
             lb = data.get("load_balancer", {})
@@ -1369,7 +1419,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     ) -> str:
         """Create a new load balancer."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {
                 "name": name, "region": region,
@@ -1402,7 +1452,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     ) -> str:
         """Update a load balancer, replacing the entire configuration."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"name": name, "region": region, "forwarding_rules": json.loads(forwarding_rules),
                 "redirect_http_to_https": redirect_http_to_https}
@@ -1426,7 +1476,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_load_balancer(lb_id: str) -> str:
         """Delete a load balancer."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/load_balancers/{lb_id}")
             return json.dumps({"status": "success", "message": f"Load balancer {lb_id} deleted."}, indent=2)
@@ -1440,7 +1490,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_add_load_balancer_droplets(lb_id: str, droplet_ids: str) -> str:
         """Add droplets to a load balancer."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             ids = [int(x.strip()) for x in droplet_ids.split(",") if x.strip()]
             await do_config.do_request("POST", f"/load_balancers/{lb_id}/droplets", json_body={"droplet_ids": ids})
@@ -1455,7 +1505,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_remove_load_balancer_droplets(lb_id: str, droplet_ids: str) -> str:
         """Remove droplets from a load balancer."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             ids = [int(x.strip()) for x in droplet_ids.split(",") if x.strip()]
             await do_config.do_request("DELETE", f"/load_balancers/{lb_id}/droplets", json_body={"droplet_ids": ids})
@@ -1474,7 +1524,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_database_clusters() -> str:
         """List all managed database clusters (PostgreSQL, MySQL, Redis, MongoDB, Kafka)."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", "/databases", params={"per_page": 100})
             clusters = [format_database_summary(db) for db in data.get("databases", [])]
@@ -1489,7 +1539,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_database_cluster(db_id: str) -> str:
         """Get details of a managed database cluster."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/databases/{db_id}")
             db = data.get("database", {})
@@ -1513,7 +1563,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     ) -> str:
         """Create a new managed database cluster."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"name": name, "engine": engine, "region": region, "size": size, "num_nodes": num_nodes}
             if version:
@@ -1536,7 +1586,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_database_cluster(db_id: str) -> str:
         """Delete a managed database cluster. All data will be destroyed."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/databases/{db_id}")
             return json.dumps({"status": "success", "message": f"Database cluster {db_id} deleted."}, indent=2)
@@ -1550,7 +1600,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_databases(db_id: str) -> str:
         """List all databases within a managed database cluster."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/databases/{db_id}/dbs")
             dbs = [{"name": d.get("name", "")} for d in data.get("dbs", [])]
@@ -1565,7 +1615,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_database_users(db_id: str) -> str:
         """List all users for a managed database cluster."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/databases/{db_id}/users")
             users = [{"name": u.get("name", ""), "role": u.get("role", "")} for u in data.get("users", [])]
@@ -1580,7 +1630,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_add_database_user(db_id: str, name: str) -> str:
         """Add a new user to a managed database cluster."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("POST", f"/databases/{db_id}/users", json_body={"name": name})
             user = data.get("user", {})
@@ -1597,7 +1647,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_database_pools(db_id: str) -> str:
         """List connection pools for a PostgreSQL database cluster."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/databases/{db_id}/pools")
             pools = [{"name": p.get("name", ""), "mode": p.get("mode", ""), "size": p.get("size"),
@@ -1614,7 +1664,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_database_replicas(db_id: str) -> str:
         """List read replicas for a database cluster."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/databases/{db_id}/replicas")
             replicas = [{"name": r.get("name", ""), "region": r.get("region", ""), "size": r.get("size", ""),
@@ -1631,7 +1681,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_database_firewall_rules(db_id: str) -> str:
         """List firewall rules for a database cluster."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/databases/{db_id}/firewall")
             rules = [{"uuid": r.get("uuid", ""), "type": r.get("type", ""), "value": r.get("value", ""),
@@ -1647,7 +1697,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_update_database_firewall(db_id: str, rules: str) -> str:
         """Update firewall rules for a database cluster, replacing all."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("PUT", f"/databases/{db_id}/firewall",
                 json_body={"rules": json.loads(rules)})
@@ -1664,7 +1714,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_resize_database_cluster(db_id: str, size: str, num_nodes: int = 0) -> str:
         """Resize a managed database cluster."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"size": size}
             if num_nodes > 0:
@@ -1682,7 +1732,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_projects() -> str:
         """List all DigitalOcean projects."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", "/projects", params={"per_page": 100})
             projects = [{"id": p.get("id", ""), "name": p.get("name", ""), "description": p.get("description", ""),
@@ -1697,7 +1747,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_project(project_id: str) -> str:
         """Get details for a specific project."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/projects/{project_id}")
             p = data.get("project", {})
@@ -1711,7 +1761,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_create_project(name: str, purpose: str, description: str = "", environment: str = "Development") -> str:
         """Create a new project for organizing resources."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"name": name, "purpose": purpose, "description": description, "environment": environment}
             data = await do_config.do_request("POST", "/projects", json_body=body)
@@ -1724,7 +1774,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_update_project(project_id: str, name: str = "", description: str = "", purpose: str = "", environment: str = "", is_default: bool = False) -> str:
         """Update a project's details."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {}
             if name: body["name"] = name
@@ -1742,7 +1792,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_project_resources(project_id: str) -> str:
         """List all resources assigned to a project."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/projects/{project_id}/resources", params={"per_page": 200})
             resources = [{"urn": r.get("urn", ""), "assigned_at": r.get("assigned_at", ""),
@@ -1755,7 +1805,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_assign_project_resources(project_id: str, urns: str) -> str:
         """Assign resources to a project using URNs."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             urn_list = [u.strip() for u in urns.split(",") if u.strip()]
             data = await do_config.do_request("POST", f"/projects/{project_id}/resources",
@@ -1772,7 +1822,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_ssh_keys() -> str:
         """List all SSH keys on the account."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", "/account/keys", params={"per_page": 200})
             keys = [{"id": k.get("id"), "name": k.get("name", ""), "fingerprint": k.get("fingerprint", ""),
@@ -1785,7 +1835,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_ssh_key(key_id: str) -> str:
         """Get details of an SSH key by ID or fingerprint."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/account/keys/{key_id}")
             k = data.get("ssh_key", {})
@@ -1798,7 +1848,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_create_ssh_key(name: str, public_key: str) -> str:
         """Add an SSH public key to the account."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("POST", "/account/keys", json_body={"name": name, "public_key": public_key})
             k = data.get("ssh_key", {})
@@ -1811,7 +1861,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_ssh_key(key_id: str) -> str:
         """Delete an SSH key from the account."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/account/keys/{key_id}")
             return json.dumps({"status": "success", "message": f"SSH key {key_id} deleted."}, indent=2)
@@ -1826,7 +1876,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_snapshots(resource_type: str = "") -> str:
         """List all snapshots (droplet and volume)."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             params = {"per_page": 200}
             if resource_type:
@@ -1844,7 +1894,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_snapshot(snapshot_id: str) -> str:
         """Get details of a specific snapshot."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/snapshots/{snapshot_id}")
             s = data.get("snapshot", {})
@@ -1859,7 +1909,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_snapshot(snapshot_id: str) -> str:
         """Delete a snapshot permanently."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/snapshots/{snapshot_id}")
             return json.dumps({"status": "success", "message": f"Snapshot {snapshot_id} deleted."}, indent=2)
@@ -1874,7 +1924,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_vpcs() -> str:
         """List all VPCs (Virtual Private Clouds)."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", "/vpcs", params={"per_page": 200})
             vpcs = [{"id": v.get("id", ""), "name": v.get("name", ""), "description": v.get("description", ""),
@@ -1889,7 +1939,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_vpc(vpc_id: str) -> str:
         """Get details of a VPC."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/vpcs/{vpc_id}")
             v = data.get("vpc", {})
@@ -1903,7 +1953,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_create_vpc(name: str, region: str, description: str = "", ip_range: str = "") -> str:
         """Create a new VPC."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"name": name, "region": region}
             if description: body["description"] = description
@@ -1919,7 +1969,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_update_vpc(vpc_id: str, name: str = "", description: str = "") -> str:
         """Update a VPC's name or description."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {}
             if name: body["name"] = name
@@ -1934,7 +1984,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_vpc(vpc_id: str) -> str:
         """Delete a VPC (all resources must be removed first)."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/vpcs/{vpc_id}")
             return json.dumps({"status": "success", "message": f"VPC {vpc_id} deleted."}, indent=2)
@@ -1945,7 +1995,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_vpc_members(vpc_id: str, resource_type: str = "") -> str:
         """List all resources in a VPC."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             params = {"per_page": 200}
             if resource_type:
@@ -1965,7 +2015,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_images(image_type: str = "", private: bool = False, per_page: int = 50, page: int = 1) -> str:
         """List available images (distributions, snapshots, backups)."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             params = {"per_page": min(per_page, 200), "page": page}
             if image_type:
@@ -1988,7 +2038,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_image(image_id: str) -> str:
         """Get details of an image by ID or slug."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/images/{image_id}")
             i = data.get("image", {})
@@ -2005,7 +2055,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_update_image(image_id: int, name: str = "", description: str = "", distribution: str = "") -> str:
         """Update a custom image's metadata."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {}
             if name: body["name"] = name
@@ -2021,7 +2071,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_image(image_id: int) -> str:
         """Delete a custom image."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/images/{image_id}")
             return json.dumps({"status": "success", "message": f"Image {image_id} deleted."}, indent=2)
@@ -2036,7 +2086,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_reserved_ips() -> str:
         """List all reserved (floating) IPs."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", "/reserved_ips", params={"per_page": 200})
             ips = [{"ip": r.get("ip", ""), "region": r.get("region", {}).get("slug", ""),
@@ -2050,7 +2100,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_reserved_ip(ip: str) -> str:
         """Get details of a reserved IP."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/reserved_ips/{ip}")
             r = data.get("reserved_ip", {})
@@ -2063,7 +2113,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_create_reserved_ip(region: str = "", droplet_id: int = 0) -> str:
         """Create a new reserved IP (provide either region or droplet_id)."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {}
             if droplet_id > 0:
@@ -2083,7 +2133,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_reserved_ip(ip: str) -> str:
         """Delete a reserved IP (must be unassigned first)."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/reserved_ips/{ip}")
             return json.dumps({"status": "success", "message": f"Reserved IP {ip} deleted."}, indent=2)
@@ -2094,7 +2144,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_assign_reserved_ip(ip: str, droplet_id: int) -> str:
         """Assign a reserved IP to a droplet."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("POST", f"/reserved_ips/{ip}/actions",
                 json_body={"type": "assign", "droplet_id": droplet_id})
@@ -2108,7 +2158,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_unassign_reserved_ip(ip: str) -> str:
         """Unassign a reserved IP from its current droplet."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("POST", f"/reserved_ips/{ip}/actions",
                 json_body={"type": "unassign"})
@@ -2126,7 +2176,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_tags() -> str:
         """List all tags with resource counts."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", "/tags", params={"per_page": 200})
             tags = [{"name": t.get("name", ""), "resources": t.get("resources", {}).get("count", 0)}
@@ -2139,7 +2189,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_tag(tag_name: str) -> str:
         """Get details of a tag including resource counts."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/tags/{tag_name}")
             t = data.get("tag", {})
@@ -2151,7 +2201,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_create_tag(name: str) -> str:
         """Create a new tag."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("POST", "/tags", json_body={"name": name})
             t = data.get("tag", {})
@@ -2163,7 +2213,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_tag(tag_name: str) -> str:
         """Delete a tag (does not delete tagged resources)."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/tags/{tag_name}")
             return json.dumps({"status": "success", "message": f"Tag '{tag_name}' deleted."}, indent=2)
@@ -2174,7 +2224,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_tag_resources(tag_name: str, resources: str) -> str:
         """Apply a tag to resources."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             res_list = json.loads(resources)
             await do_config.do_request("POST", f"/tags/{tag_name}/resources", json_body={"resources": res_list})
@@ -2188,7 +2238,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_untag_resources(tag_name: str, resources: str) -> str:
         """Remove a tag from resources."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             res_list = json.loads(resources)
             await do_config.do_request("DELETE", f"/tags/{tag_name}/resources", json_body={"resources": res_list})
@@ -2206,7 +2256,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_certificates() -> str:
         """List all SSL/TLS certificates."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", "/certificates", params={"per_page": 200})
             certs = [{"id": c.get("id", ""), "name": c.get("name", ""), "type": c.get("type", ""),
@@ -2221,7 +2271,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_certificate(certificate_id: str) -> str:
         """Get details of a certificate."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/certificates/{certificate_id}")
             c = data.get("certificate", {})
@@ -2236,7 +2286,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_create_certificate(name: str, dns_names: str, cert_type: str = "lets_encrypt") -> str:
         """Create an SSL/TLS certificate (Let's Encrypt or custom)."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"name": name, "type": cert_type,
                 "dns_names": [d.strip() for d in dns_names.split(",") if d.strip()]}
@@ -2251,7 +2301,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_certificate(certificate_id: str) -> str:
         """Delete a certificate."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/certificates/{certificate_id}")
             return json.dumps({"status": "success", "message": f"Certificate {certificate_id} deleted."}, indent=2)
@@ -2266,7 +2316,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_cdn_endpoints() -> str:
         """List all CDN endpoints."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", "/cdn/endpoints", params={"per_page": 200})
             endpoints = [{"id": e.get("id", ""), "origin": e.get("origin", ""), "endpoint": e.get("endpoint", ""),
@@ -2281,7 +2331,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_cdn_endpoint(endpoint_id: str) -> str:
         """Get details of a CDN endpoint."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/cdn/endpoints/{endpoint_id}")
             e = data.get("endpoint", {})
@@ -2295,7 +2345,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_create_cdn_endpoint(origin: str, ttl: int = 3600, custom_domain: str = "", certificate_id: str = "") -> str:
         """Create a new CDN endpoint."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"origin": origin, "ttl": ttl}
             if custom_domain: body["custom_domain"] = custom_domain
@@ -2311,7 +2361,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_update_cdn_endpoint(endpoint_id: str, ttl: int = -1, custom_domain: str = "", certificate_id: str = "") -> str:
         """Update a CDN endpoint."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {}
             if ttl >= 0: body["ttl"] = ttl
@@ -2328,7 +2378,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_cdn_endpoint(endpoint_id: str) -> str:
         """Delete a CDN endpoint."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/cdn/endpoints/{endpoint_id}")
             return json.dumps({"status": "success", "message": f"CDN endpoint {endpoint_id} deleted."}, indent=2)
@@ -2343,7 +2393,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_registry() -> str:
         """Get container registry information for the account."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", "/registry")
             r = data.get("registry", {})
@@ -2358,7 +2408,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_registry_repositories(registry_name: str) -> str:
         """List repositories in a container registry."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/registry/{registry_name}/repositoriesV2", params={"per_page": 100})
             repos = [{"name": r.get("name", ""), "tag_count": r.get("tag_count"),
@@ -2373,7 +2423,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_registry_tags(registry_name: str, repository: str) -> str:
         """List tags for a repository in the container registry."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/registry/{registry_name}/repositories/{repository}/tags",
                 params={"per_page": 100})
@@ -2388,7 +2438,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_registry_tag(registry_name: str, repository: str, tag: str) -> str:
         """Delete a tag from a container registry repository."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/registry/{registry_name}/repositories/{repository}/tags/{tag}")
             return json.dumps({"status": "success", "message": f"Tag '{tag}' deleted. Run garbage collection to free storage."}, indent=2)
@@ -2399,7 +2449,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_run_registry_gc(registry_name: str) -> str:
         """Run garbage collection on the container registry."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("POST", f"/registry/{registry_name}/garbage-collection")
             gc = data.get("garbage_collection", {})
@@ -2417,7 +2467,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_apps() -> str:
         """List all App Platform apps."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", "/apps", params={"per_page": 100})
             apps = [{"id": a.get("id", ""), "name": a.get("spec", {}).get("name", ""),
@@ -2436,7 +2486,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_app(app_id: str) -> str:
         """Get details of an App Platform app."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/apps/{app_id}")
             a = data.get("app", {})
@@ -2460,7 +2510,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_create_app(spec: str) -> str:
         """Create a new App Platform app from a spec."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("POST", "/apps", json_body={"spec": json.loads(spec)})
             a = data.get("app", {})
@@ -2475,7 +2525,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_update_app(app_id: str, spec: str) -> str:
         """Update an App Platform app's spec (triggers redeployment)."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("PUT", f"/apps/{app_id}", json_body={"spec": json.loads(spec)})
             a = data.get("app", {})
@@ -2490,7 +2540,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_app(app_id: str) -> str:
         """Delete an App Platform app and all its resources."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/apps/{app_id}")
             return json.dumps({"status": "success", "message": f"App {app_id} deleted."}, indent=2)
@@ -2501,7 +2551,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_app_deployments(app_id: str) -> str:
         """List deployments for an App Platform app."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/apps/{app_id}/deployments", params={"per_page": 20})
             deployments = [{"id": d.get("id", ""), "phase": d.get("phase", ""),
@@ -2516,7 +2566,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_app_logs(app_id: str, deployment_id: str = "", component_name: str = "", log_type: str = "RUN") -> str:
         """Get logs for an App Platform app."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             endpoint = f"/apps/{app_id}"
             if deployment_id:
@@ -2538,7 +2588,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_alert_policies() -> str:
         """List all monitoring alert policies."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", "/monitoring/alerts", params={"per_page": 200})
             policies = [{"uuid": p.get("uuid", ""), "type": p.get("type", ""), "description": p.get("description", ""),
@@ -2553,7 +2603,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_alert_policy(alert_id: str) -> str:
         """Get details of an alert policy."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/monitoring/alerts/{alert_id}")
             p = data.get("policy", {})
@@ -2572,7 +2622,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     ) -> str:
         """Create a monitoring alert policy."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"type": alert_type, "description": description, "compare": compare,
                 "value": value, "window": window, "enabled": True}
@@ -2602,7 +2652,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     ) -> str:
         """Update an alert policy, replacing the entire policy."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"type": alert_type, "description": description, "compare": compare,
                 "value": value, "window": window, "enabled": enabled}
@@ -2627,7 +2677,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_alert_policy(alert_id: str) -> str:
         """Delete an alert policy."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/monitoring/alerts/{alert_id}")
             return json.dumps({"status": "success", "message": f"Alert policy {alert_id} deleted."}, indent=2)
@@ -2641,7 +2691,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     ) -> str:
         """Get monitoring metrics for a droplet."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             from datetime import datetime, timezone, timedelta
             now = datetime.now(timezone.utc)
@@ -2681,7 +2731,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_uptime_checks() -> str:
         """List all uptime checks."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", "/uptime/checks", params={"per_page": 200})
             checks = [{"id": c.get("id", ""), "name": c.get("name", ""), "type": c.get("type", ""),
@@ -2695,7 +2745,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_get_uptime_check(check_id: str) -> str:
         """Get details of an uptime check."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/uptime/checks/{check_id}")
             c = data.get("check", {})
@@ -2711,7 +2761,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     ) -> str:
         """Create a new uptime check."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"name": name, "target": target, "type": check_type, "enabled": True}
             if regions:
@@ -2730,7 +2780,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     ) -> str:
         """Update an uptime check."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"enabled": enabled}
             if name: body["name"] = name
@@ -2749,7 +2799,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_delete_uptime_check(check_id: str) -> str:
         """Delete an uptime check."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             await do_config.do_request("DELETE", f"/uptime/checks/{check_id}")
             return json.dumps({"status": "success", "message": f"Uptime check {check_id} deleted."}, indent=2)
@@ -2760,7 +2810,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     async def digitalocean_list_uptime_check_alerts(check_id: str) -> str:
         """List alert policies for an uptime check."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             data = await do_config.do_request("GET", f"/uptime/checks/{check_id}/alerts")
             alerts = [{"id": a.get("id", ""), "name": a.get("name", ""), "type": a.get("type", ""),
@@ -2779,7 +2829,7 @@ def register_digitalocean_tools(mcp, do_config: 'DigitalOceanConfig'):
     ) -> str:
         """Create an alert for an uptime check."""
         if not do_config.is_configured:
-            return "Error: DigitalOcean not configured. Set DIGITALOCEAN_TOKEN."
+            return do_config.not_configured_error
         try:
             body = {"name": name, "type": alert_type, "comparison": comparison,
                 "threshold": threshold, "period": period}
