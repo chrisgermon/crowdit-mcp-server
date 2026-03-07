@@ -18032,9 +18032,17 @@ if __name__ == "__main__":
         # Initialize FastMCP's session manager via its lifespan handler
         # This is required for FastMCP 2.x
         async with mcp_app.lifespan(app):
-            # Initialize all configs now that the server is ready
-            _initialize_configs_once()
-            print(f"[STARTUP] Configs initialized at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+            # Run config initialization in background so health checks respond immediately
+            # This prevents Cloud Run startup timeout when Secret Manager calls are slow
+            async def _init_configs_background():
+                try:
+                    await asyncio.to_thread(_initialize_configs_once)
+                    print(f"[STARTUP] Configs initialized (background) at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+                except Exception as e:
+                    print(f"[STARTUP] Config init error (background): {e}", file=sys.stderr, flush=True)
+
+            asyncio.create_task(_init_configs_background())
+            print(f"[STARTUP] Config init started in background at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
             yield
 
     app = Starlette(
