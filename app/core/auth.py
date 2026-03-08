@@ -31,6 +31,11 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
     Supports multiple API keys via the MCP_API_KEYS secret (comma-separated).
     Falls back to the legacy MCP_API_KEY secret/env var for backward compatibility.
     Both secrets are merged, so you can use either or both simultaneously.
+
+    When running on Cloud Run with --no-allow-unauthenticated, requests have
+    already been authenticated by Cloud Run IAM. In this case, the API key is
+    optional — if provided it must be valid, but if omitted the request is
+    allowed through (Cloud Run IAM is sufficient).
     """
 
     # Paths that don't require API key authentication
@@ -48,10 +53,15 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         self._last_load_attempt = 0.0
         self._load_error: str | None = None
 
+        # Detect Cloud Run environment — K_SERVICE is always set on Cloud Run
+        self._on_cloud_run = bool(os.getenv("K_SERVICE"))
+
+        if self._on_cloud_run:
+            logger.info("[AUTH] Running on Cloud Run — API key is optional (Cloud Run IAM provides authentication)")
         if self._seed_key:
-            logger.info("API Key authentication enabled (will merge with Secret Manager on first request)")
+            logger.info("[AUTH] API Key authentication enabled (will merge with Secret Manager on first request)")
         else:
-            logger.info("API Keys will be loaded from Secret Manager on first request")
+            logger.info("[AUTH] API Keys will be loaded from Secret Manager on first request")
 
     def _load_keys_sync(self):
         """Load and merge keys from all sources (runs in thread pool)."""
@@ -156,9 +166,13 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             if auth_header.startswith("Bearer "):
                 provided_key = auth_header[7:].strip()
 
-        if not provided_key or provided_key not in self._valid_keys:
+        if provided_key:
+            # Key was provided — it must be valid regardless of environment
+            if provided_key in self._valid_keys:
+                return await call_next(request)
+            # Invalid key — reject
             client_host = request.client.host if request.client else "unknown"
-            masked_provided = _mask_key(provided_key) if provided_key else "(none)"
+            masked_provided = _mask_key(provided_key)
             masked_valid = ", ".join(_mask_key(k) for k in self._valid_keys)
             logger.warning(
                 f"[AUTH] 401 Unauthorized: {request.method} {path} from {client_host} — "
@@ -166,4 +180,16 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             )
             return PlainTextResponse("Unauthorized - Invalid or missing API key", status_code=401)
 
-        return await call_next(request)
+        # No API key provided
+        if self._on_cloud_run:
+            # On Cloud Run with --no-allow-unauthenticated, the request has
+            # already been authenticated by Cloud Run IAM at the infrastructure
+            # level. Allow it through without an API key.
+            return await call_next(request)
+
+        # Not on Cloud Run and no key provided — reject
+        client_host = request.client.host if request.client else "unknown"
+        logger.warning(
+            f"[AUTH] 401 Unauthorized (no key): {request.method} {path} from {client_host}"
+        )
+        return PlainTextResponse("Unauthorized - Invalid or missing API key", status_code=401)
