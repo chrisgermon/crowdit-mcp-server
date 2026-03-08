@@ -10,8 +10,38 @@ print("[STARTUP] sys imported", file=sys.stderr, flush=True)
 import os
 print(f"[STARTUP] os imported, PORT={os.getenv('PORT')}, __name__={__name__}", file=sys.stderr, flush=True)
 
-# Note: Removed quick socket server that was causing Cloud Run health check failures
-# uvicorn with /health route will handle health checks properly
+# Start a lightweight HTTP health check server IMMEDIATELY so Cloud Run health probes
+# pass while the rest of the module loads (~15k lines of tool registrations).
+# This uses http.server.HTTPServer (proper HTTP, not raw sockets) with SO_REUSEADDR
+# so uvicorn can rebind to the same port later.
+_quick_health_server = None
+if __name__ == "__main__":
+    import threading
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    class _QuickHealthHandler(BaseHTTPRequestHandler):
+        """Minimal handler that responds 200 OK to any request."""
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"OK")
+
+        def log_message(self, *args):
+            pass  # Suppress request logs
+
+    _quick_port = int(os.getenv("PORT", 8080))
+    try:
+        # Set allow_reuse_address on the class before instantiation
+        # (HTTPServer.__init__ calls bind() which needs SO_REUSEADDR already set)
+        HTTPServer.allow_reuse_address = True
+        _quick_health_server = HTTPServer(("0.0.0.0", _quick_port), _QuickHealthHandler)
+        _quick_health_thread = threading.Thread(target=_quick_health_server.serve_forever, daemon=True)
+        _quick_health_thread.start()
+        print(f"[STARTUP] Quick health server listening on 0.0.0.0:{_quick_port}", file=sys.stderr, flush=True)
+    except Exception as _e:
+        print(f"[STARTUP] Quick health server failed to start: {_e}", file=sys.stderr, flush=True)
+        _quick_health_server = None
 
 # Now continue with normal imports
 print("[STARTUP] Python starting full initialization...", file=sys.stderr, flush=True)
@@ -18076,13 +18106,16 @@ if __name__ == "__main__":
     # Mount MCP app to handle all other paths (including /mcp, /sse)
     app.mount("/", mcp_app)
 
-    # Shut down the quick socket server if it was started
-    # (This should no longer be needed with the refactored approach above)
-    print(f"[STARTUP] Skipping quick socket server shutdown at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+    # Shut down the quick health server before uvicorn binds to the same port
+    if _quick_health_server is not None:
+        print(f"[STARTUP] Shutting down quick health server at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+        _quick_health_server.shutdown()
+        _quick_health_server.server_close()
+        print(f"[STARTUP] Quick health server stopped at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
     # NOTE: Configs are initialized during lifespan startup (after FastMCP init)
     # Health checks still work immediately as they don't depend on configs
-    
+
     print(f"[STARTUP] Starting uvicorn at t={time.time() - _module_start_time:.3f}s - listening on 0.0.0.0:{port}", file=sys.stderr, flush=True)
     sys.stderr.flush()
     sys.stdout.flush()
