@@ -1,10 +1,19 @@
 import os
+import time
+import asyncio
 import logging
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import PlainTextResponse
 from app.core.config import get_secret_sync
 
 logger = logging.getLogger(__name__)
+
+
+def _mask_key(key: str) -> str:
+    """Mask a key for safe logging: show first 4 and last 4 chars."""
+    if len(key) <= 10:
+        return key[:2] + "***" + key[-2:] if len(key) > 4 else "***"
+    return key[:4] + "***" + key[-4:]
 
 
 def _parse_keys(raw: str) -> set:
@@ -27,73 +36,133 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
     # Paths that don't require API key authentication
     PUBLIC_PATHS = {"/health", "/status", "/callback", "/sharepoint-callback", "/"}
 
+    # Minimum seconds between Secret Manager retry attempts after a failure
+    _RETRY_COOLDOWN = 30
+
     def __init__(self, app, api_key: str = None):
         super().__init__(app)
         # Seed from the legacy single-key param/env (may be empty)
-        self._seed_key = api_key or os.getenv("MCP_API_KEY")
+        self._seed_key = (api_key or os.getenv("MCP_API_KEY") or "").strip() or None
         self._valid_keys: set = set()
         self._keys_loaded = False
+        self._last_load_attempt = 0.0
+        self._load_error: str | None = None
 
         if self._seed_key:
-            logger.info("🔐 API Key authentication enabled (will merge with Secret Manager on first request)")
+            logger.info("API Key authentication enabled (will merge with Secret Manager on first request)")
         else:
-            logger.info("🔑 API Keys will be loaded from Secret Manager on first request")
+            logger.info("API Keys will be loaded from Secret Manager on first request")
 
-    def _load_keys(self):
-        """Load and merge keys from all sources (called once on first request)."""
+    def _load_keys_sync(self):
+        """Load and merge keys from all sources (runs in thread pool)."""
         keys = set()
+        sources = []
 
         # 1. Legacy single key from env / constructor arg
         if self._seed_key:
             keys.add(self._seed_key)
+            sources.append(f"env/constructor: {_mask_key(self._seed_key)}")
 
         # 2. Legacy single key from Secret Manager (MCP_API_KEY)
-        legacy = get_secret_sync("MCP_API_KEY")
-        if legacy:
-            keys.update(_parse_keys(legacy))
+        try:
+            legacy = get_secret_sync("MCP_API_KEY")
+            if legacy:
+                parsed = _parse_keys(legacy)
+                keys.update(parsed)
+                sources.append(f"MCP_API_KEY secret: {len(parsed)} key(s) [{', '.join(_mask_key(k) for k in parsed)}]")
+            else:
+                sources.append("MCP_API_KEY secret: empty/not found")
+        except Exception as e:
+            sources.append(f"MCP_API_KEY secret: ERROR - {e}")
+            self._load_error = str(e)
 
         # 3. Multi-key secret (MCP_API_KEYS) — comma or newline separated
-        multi = get_secret_sync("MCP_API_KEYS")
-        if multi:
-            keys.update(_parse_keys(multi))
+        try:
+            multi = get_secret_sync("MCP_API_KEYS")
+            if multi:
+                parsed = _parse_keys(multi)
+                keys.update(parsed)
+                sources.append(f"MCP_API_KEYS secret: {len(parsed)} key(s) [{', '.join(_mask_key(k) for k in parsed)}]")
+            else:
+                sources.append("MCP_API_KEYS secret: empty/not found")
+        except Exception as e:
+            sources.append(f"MCP_API_KEYS secret: ERROR - {e}")
+            self._load_error = str(e)
 
         self._valid_keys = keys
-        self._keys_loaded = True
+        self._last_load_attempt = time.monotonic()
+
+        # Log detailed results
+        for src in sources:
+            logger.info(f"[AUTH] Key source: {src}")
 
         if keys:
-            logger.info(f"🔐 {len(keys)} API key(s) loaded and active")
+            logger.info(f"[AUTH] {len(keys)} unique API key(s) loaded and active")
+            self._keys_loaded = True
+            self._load_error = None
         else:
-            logger.warning("⚠️ No API keys configured — endpoints are unprotected!")
+            # DON'T set _keys_loaded = True on failure — allow retry
+            logger.warning("[AUTH] No API keys loaded from any source! Will retry on next request.")
 
-    @property
-    def valid_keys(self) -> set:
-        """Lazily load all valid API keys on first request."""
-        if not self._keys_loaded:
-            self._load_keys()
-        return self._valid_keys
+    async def _ensure_keys_loaded(self):
+        """Ensure keys are loaded, using thread pool to avoid blocking the event loop."""
+        if self._keys_loaded:
+            return
+
+        # Cooldown: don't retry too frequently after failures
+        now = time.monotonic()
+        if self._last_load_attempt > 0 and (now - self._last_load_attempt) < self._RETRY_COOLDOWN:
+            return
+
+        logger.info("[AUTH] Loading API keys from Secret Manager (async)...")
+        try:
+            await asyncio.to_thread(self._load_keys_sync)
+        except Exception as e:
+            logger.error(f"[AUTH] Failed to load keys: {e}")
+            self._last_load_attempt = time.monotonic()
+            self._load_error = str(e)
 
     async def dispatch(self, request, call_next):
         path = request.url.path
+
+        # Allow CORS preflight requests through without authentication
+        # OPTIONS requests don't carry auth headers and must pass for CORS to work
+        if request.method == "OPTIONS":
+            return await call_next(request)
 
         # Allow public paths without authentication
         if path in self.PUBLIC_PATHS:
             return await call_next(request)
 
+        # Ensure keys are loaded (non-blocking)
+        await self._ensure_keys_loaded()
+
         # If no keys configured, allow all requests (backward compatible)
-        if not self.valid_keys:
+        if not self._valid_keys:
+            if self._load_error:
+                logger.warning(f"[AUTH] Allowing request to {path} — no keys loaded (last error: {self._load_error})")
             return await call_next(request)
 
         # Check for API key in query params or headers
         provided_key = (
             request.query_params.get("api_key") or
             request.headers.get("X-API-Key") or
-            request.headers.get("Authorization", "").replace("Bearer ", "")
-        )
+            ""
+        ).strip()
 
-        if provided_key not in self.valid_keys:
+        # Extract Bearer token from Authorization header if no key found yet
+        if not provided_key:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                provided_key = auth_header[7:].strip()
+
+        if not provided_key or provided_key not in self._valid_keys:
+            client_host = request.client.host if request.client else "unknown"
+            masked_provided = _mask_key(provided_key) if provided_key else "(none)"
+            masked_valid = ", ".join(_mask_key(k) for k in self._valid_keys)
             logger.warning(
-                f"🚫 Unauthorized request to {path} from "
-                f"{request.client.host if request.client else 'unknown'}"
+                f"[AUTH] 401 Unauthorized: {request.method} {path} from {client_host} — "
+                f"provided key: {masked_provided}, valid keys: [{masked_valid}]"
             )
             return PlainTextResponse("Unauthorized - Invalid or missing API key", status_code=401)
 
