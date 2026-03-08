@@ -75,6 +75,11 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         path = request.url.path
 
+        # Allow CORS preflight requests through without authentication
+        # OPTIONS requests don't carry auth headers and must pass for CORS to work
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
         # Allow public paths without authentication
         if path in self.PUBLIC_PATHS:
             return await call_next(request)
@@ -87,13 +92,20 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         provided_key = (
             request.query_params.get("api_key") or
             request.headers.get("X-API-Key") or
-            request.headers.get("Authorization", "").replace("Bearer ", "")
+            ""
         )
 
-        if provided_key not in self.valid_keys:
+        # Extract Bearer token from Authorization header if no key found yet
+        if not provided_key:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                provided_key = auth_header[7:]  # len("Bearer ") == 7
+
+        if not provided_key or provided_key not in self.valid_keys:
+            client_host = request.client.host if request.client else "unknown"
             logger.warning(
-                f"🚫 Unauthorized request to {path} from "
-                f"{request.client.host if request.client else 'unknown'}"
+                f"Unauthorized {request.method} {path} from {client_host} "
+                f"(key provided: {bool(provided_key)})"
             )
             return PlainTextResponse("Unauthorized - Invalid or missing API key", status_code=401)
 

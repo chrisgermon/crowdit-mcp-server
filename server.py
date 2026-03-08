@@ -18091,19 +18091,15 @@ if __name__ == "__main__":
     )
     print(f"[STARTUP] Starlette app created at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
-    # Add CORS Middleware to allow embedding in other sites
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],  # Allow all origins for flexibility
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
     # Add API Key middleware for MCP endpoint protection
+    # NOTE: This is on the parent Starlette app, so it runs before MCP routes
     app.add_middleware(APIKeyMiddleware, api_key=api_key)
 
-    # Mount MCP app to handle all other paths (including /mcp, /sse)
+    # Mount MCP app with CORS configured via FastMCP's middleware parameter
+    # IMPORTANT: Do NOT add CORSMiddleware to the parent Starlette app - FastMCP's
+    # http_app() already handles CORS internally. Double-layering CORS middleware
+    # causes conflicts (404s on OPTIONS preflight, broken .well-known routes).
+    # See: https://github.com/jlowin/fastmcp/issues/840
     app.mount("/", mcp_app)
 
     # Shut down the quick health server before uvicorn binds to the same port
