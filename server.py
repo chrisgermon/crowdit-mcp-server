@@ -20,12 +20,24 @@ if __name__ == "__main__":
     from http.server import HTTPServer, BaseHTTPRequestHandler
 
     class _QuickHealthHandler(BaseHTTPRequestHandler):
-        """Minimal handler that responds 200 OK to any request."""
+        """Minimal handler that responds during startup while uvicorn initializes."""
         def do_GET(self):
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
             self.wfile.write(b"OK")
+
+        def do_POST(self):
+            # MCP clients send POST to /mcp during startup - return a proper
+            # JSON-RPC error instead of 501 so clients know to retry.
+            content_length = int(self.headers.get("Content-Length", 0))
+            if content_length:
+                self.rfile.read(content_length)  # drain the body
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Retry-After", "10")
+            self.end_headers()
+            self.wfile.write(b'{"jsonrpc":"2.0","error":{"code":-32000,"message":"Server is starting up, please retry in a few seconds"},"id":null}')
 
         def log_message(self, *args):
             pass  # Suppress request logs
