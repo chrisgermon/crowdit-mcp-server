@@ -41,6 +41,10 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
     # Paths that don't require API key authentication
     PUBLIC_PATHS = {"/health", "/status", "/callback", "/sharepoint-callback", "/", "/debug/mcp"}
 
+    # Path prefixes that don't require API key authentication
+    # .well-known paths are OAuth discovery endpoints required by MCP spec
+    PUBLIC_PREFIXES = ("/.well-known/",)
+
     # Minimum seconds between Secret Manager retry attempts after a failure
     _RETRY_COOLDOWN = 30
 
@@ -150,7 +154,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Allow public paths without authentication
-        if path in self.PUBLIC_PATHS:
+        if path in self.PUBLIC_PATHS or path.startswith(self.PUBLIC_PREFIXES):
             return await call_next(request)
 
         # Ensure keys are loaded (non-blocking)
