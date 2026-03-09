@@ -39,7 +39,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
     """
 
     # Paths that don't require API key authentication
-    PUBLIC_PATHS = {"/health", "/status", "/callback", "/sharepoint-callback", "/"}
+    PUBLIC_PATHS = {"/health", "/status", "/callback", "/sharepoint-callback", "/", "/debug/mcp"}
 
     # Minimum seconds between Secret Manager retry attempts after a failure
     _RETRY_COOLDOWN = 30
@@ -134,6 +134,15 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request, call_next):
         path = request.url.path
+
+        # Log all requests to /mcp for debugging Claude connector issues
+        if path.startswith("/mcp"):
+            client_host = request.client.host if request.client else "unknown"
+            logger.info(
+                f"[AUTH] MCP request: {request.method} {path} from {client_host} "
+                f"headers={dict((k, v) for k, v in request.headers.items() if k.lower() in ('content-type', 'accept', 'authorization', 'x-api-key', 'origin', 'user-agent'))} "
+                f"on_cloud_run={self._on_cloud_run}"
+            )
 
         # Allow CORS preflight requests through without authentication
         # OPTIONS requests don't carry auth headers and must pass for CORS to work

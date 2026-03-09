@@ -15708,7 +15708,7 @@ if __name__ == "__main__":
     import uvicorn
     from starlette.applications import Starlette
     from starlette.routing import Route, Mount
-    from starlette.responses import PlainTextResponse, HTMLResponse
+    from starlette.responses import PlainTextResponse, HTMLResponse, JSONResponse
     from starlette.middleware import Middleware
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.middleware.cors import CORSMiddleware
@@ -15742,6 +15742,32 @@ if __name__ == "__main__":
     async def health_route(request):
         # Just return OK immediately - configs will initialize lazily in background
         return PlainTextResponse("OK")
+
+    async def mcp_debug_route(request):
+        """Diagnostic endpoint to verify MCP server connectivity.
+        Hit this from a browser to confirm the server is reachable and auth is working."""
+        import json as _json
+        info = {
+            "status": "ok",
+            "server": "crowdit-mcp-server",
+            "mcp_endpoint": "/mcp",
+            "transport": "streamable-http",
+            "stateless": True,
+            "cloud_run": bool(os.getenv("K_SERVICE")),
+            "k_service": os.getenv("K_SERVICE", "not-set"),
+            "tool_count": len(mcp._tool_manager._tools),
+            "request_info": {
+                "method": request.method,
+                "path": str(request.url.path),
+                "client": request.client.host if request.client else "unknown",
+                "headers": {
+                    k: v for k, v in request.headers.items()
+                    if k.lower() in ("content-type", "accept", "authorization", "origin", "user-agent", "x-api-key")
+                },
+            },
+            "hint": "Use POST /mcp with Content-Type: application/json for MCP JSON-RPC calls"
+        }
+        return JSONResponse(info)
     
     async def callback_route(request):
         code = request.query_params.get("code")
@@ -18086,6 +18112,7 @@ if __name__ == "__main__":
             Route("/api/test-all-connections", api_test_all_connections_route),
             Route("/api/status", api_status_json_route),
             Route("/config", api_config_update_route, methods=["POST"]),
+            Route("/debug/mcp", mcp_debug_route),
         ],
         lifespan=minimal_lifespan,
     )
