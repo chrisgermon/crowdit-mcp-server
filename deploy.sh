@@ -163,14 +163,14 @@ gcloud run deploy $SERVICE_NAME \
     --platform=managed \
     --allow-unauthenticated \
     --port=8080 \
-    --memory=1Gi \
-    --cpu=1 \
+    --memory=2Gi \
+    --cpu=2 \
     --timeout=300 \
     --concurrency=80 \
-    --min-instances=0 \
+    --min-instances=1 \
     --max-instances=3 \
     --cpu-boost \
-    --set-env-vars="BIGQUERY_PROJECT_ID=$PROJECT_ID,BIGQUERY_JOB_PROJECT_ID=$PROJECT_ID,BIGQUERY_DATA_PROJECT_ID=vision-radiology,CIPP_TENANT_ID=299ea2a8-99a3-426c-9836-8a5c6eafe007,CIPP_CLIENT_ID=728a6a60-ba98-472f-b06a-3fb726ad8270,CIPP_API_URL=https://cippq7gcl.azurewebsites.net,NINJAONE_REGION=oc"
+    --set-env-vars="BIGQUERY_PROJECT_ID=$PROJECT_ID,BIGQUERY_JOB_PROJECT_ID=$PROJECT_ID,BIGQUERY_DATA_PROJECT_ID=vision-radiology,CIPP_TENANT_ID=299ea2a8-99a3-426c-9836-8a5c6eafe007,CIPP_CLIENT_ID=728a6a60-ba98-472f-b06a-3fb726ad8270,CIPP_API_URL=https://cippq7gcl.azurewebsites.net,NINJAONE_REGION=oc,CLOUD_RUN_URL=https://crowdit-mcp-server-348600156950.australia-southeast1.run.app"
 
 # Get service URL
 SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=$REGION --format='value(status.url)')

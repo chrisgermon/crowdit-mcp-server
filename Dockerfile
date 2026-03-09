@@ -50,7 +50,7 @@ WORKDIR /app
 
 # Copy application code LAST (changes most frequently)
 # This ensures code changes don't invalidate dependency cache
-COPY server.py azure_tools.py aws_tools.py email_tools.py calendar_tools.py jira_tools.py linear_tools.py digitalocean_tools.py ./
+COPY server_fast.py server.py azure_tools.py aws_tools.py email_tools.py calendar_tools.py jira_tools.py linear_tools.py digitalocean_tools.py ./
 COPY app ./app
 
 # Pre-compile application bytecode to speed up cold starts
@@ -62,5 +62,6 @@ ENV PORT=8080
 ENV PYTHONUNBUFFERED=1
 ENV UVICORN_TIMEOUT_KEEP_ALIVE=5
 
-# Use exec form for proper signal handling
-CMD ["python", "-u", "server.py"]
+# Use fast entry point - starts uvicorn immediately, loads tools in background
+# Falls back: server_fast.py → imports server.py as module → tools available in ~15s
+CMD ["python", "-u", "server_fast.py"]
