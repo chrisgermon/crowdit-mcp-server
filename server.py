@@ -20,24 +20,42 @@ if __name__ == "__main__":
     from http.server import HTTPServer, BaseHTTPRequestHandler
 
     class _QuickHealthHandler(BaseHTTPRequestHandler):
-        """Minimal handler that responds during startup while uvicorn initializes."""
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.end_headers()
-            self.wfile.write(b"OK")
+        """Minimal handler that keeps Cloud Run health checks happy during startup.
 
-        def do_POST(self):
-            # MCP clients send POST to /mcp during startup - return a proper
-            # JSON-RPC error instead of 501 so clients know to retry.
-            content_length = int(self.headers.get("Content-Length", 0))
-            if content_length:
-                self.rfile.read(content_length)  # drain the body
+        CRITICAL: Only respond 200 to the health probe path (/ and /health).
+        Everything else MUST return 503 + Retry-After so MCP clients retry
+        after the real server (uvicorn) is ready. Returning fake 200s for
+        .well-known/* or /mcp poisons the client's discovery/connection flow.
+        """
+
+        # Only these paths get 200 during startup (Cloud Run health probes)
+        _HEALTH_PATHS = frozenset({"/", "/health", "/favicon.ico"})
+
+        def _send_503_starting(self):
+            """Return 503 Service Unavailable with Retry-After for any non-health path."""
             self.send_response(503)
             self.send_header("Content-Type", "application/json")
             self.send_header("Retry-After", "10")
             self.end_headers()
-            self.wfile.write(b'{"jsonrpc":"2.0","error":{"code":-32000,"message":"Server is starting up, please retry in a few seconds"},"id":null}')
+            self.wfile.write(b'{"error":"Server is starting up, please retry in a few seconds"}')
+
+        def do_GET(self):
+            if self.path.split("?")[0] in self._HEALTH_PATHS:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"OK")
+            else:
+                # .well-known/*, /mcp (GET for SSE), /debug/mcp, etc.
+                # Must NOT return 200 with fake content — it breaks MCP discovery
+                self._send_503_starting()
+
+        def do_POST(self):
+            # Drain the request body to avoid connection issues
+            content_length = int(self.headers.get("Content-Length", 0))
+            if content_length:
+                self.rfile.read(content_length)
+            self._send_503_starting()
 
         def log_message(self, *args):
             pass  # Suppress request logs
