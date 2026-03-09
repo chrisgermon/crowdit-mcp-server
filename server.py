@@ -446,17 +446,14 @@ def _initialize_configs_once():
     global rds_config, maxotel_config, ubuntu_config, visionrad_config
     global cipp_config, salesforce_config, gcloud_config, dicker_config, ingram_config
     global carbon_config, ninjaone_config, auvik_config, gorelo_config, _configs_initialized
-    
+
     if _configs_initialized:
         return
-    
-    _configs_initialized = True
-    
+
     try:
         halopsa_config = HaloPSAConfig()
         xero_config = XeroConfig()
         front_config = FrontConfig()
-        sharepoint_config = SharePointConfig()
         bigquery_config = BigQueryConfig()
         rds_config = RDSConfig()
         maxotel_config = MaxotelConfig()
@@ -470,8 +467,8 @@ def _initialize_configs_once():
         carbon_config = CarbonConfig()
         ninjaone_config = NinjaOneConfig()
         auvik_config = AuvikConfig()
-        metabase_config = MetabaseConfig()
         gorelo_config = GoreloConfig()
+        _configs_initialized = True
     except Exception as e:
         logger.error(f"Error during lazy config initialization: {e}", exc_info=True)
 
@@ -17979,10 +17976,8 @@ if __name__ == "__main__":
         "halopsa": ("HaloPSAConfig", "halopsa_config"),
         "xero": ("XeroConfig", "xero_config"),
         "front": ("FrontConfig", "front_config"),
-        "sharepoint": ("SharePointConfig", "sharepoint_config"),
         "bigquery": ("BigQueryConfig", "bigquery_config"),
         "rds": ("RDSConfig", "rds_config"),
-        "forticloud": ("FortiCloudConfig", "forticloud_config"),
         "maxotel": ("MaxotelConfig", "maxotel_config"),
         "ubuntu": ("UbuntuConfig", "ubuntu_config"),
         "visionrad": ("VisionRadConfig", "visionrad_config"),
@@ -17994,7 +17989,6 @@ if __name__ == "__main__":
         "carbon": ("CarbonConfig", "carbon_config"),
         "ninjaone": ("NinjaOneConfig", "ninjaone_config"),
         "auvik": ("AuvikConfig", "auvik_config"),
-        "metabase": ("MetabaseConfig", "metabase_config"),
         "gorelo": ("GoreloConfig", "gorelo_config"),
         "n8n": ("N8NConfig", "n8n_config"),
         "pax8": ("Pax8Config", "pax8_config"),
