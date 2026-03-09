@@ -125,7 +125,7 @@ from digitalocean_tools import register_digitalocean_tools, DigitalOceanConfig, 
 print(f"[STARTUP] digitalocean_tools imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
 # Cloud Run URL for OAuth callback
-CLOUD_RUN_URL = os.getenv("CLOUD_RUN_URL", "https://crowdit-mcp-server-lypf4vkh4q-ts.a.run.app")
+CLOUD_RUN_URL = os.getenv("CLOUD_RUN_URL", "https://crowdit-mcp-server-348600156950.australia-southeast1.run.app")
 
 # =============================================================================
 # Service Filtering - Reduce token usage by only loading needed services
@@ -18182,5 +18182,4 @@ if __name__ == "__main__":
         access_log=False,      # Disable access logs
         log_level="info"       # Set appropriate log level
     )
-
 
