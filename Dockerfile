@@ -15,7 +15,8 @@ COPY requirements.lock ./
 # Using pre-resolved requirements skips dependency resolution (saves ~30s)
 RUN uv venv /opt/venv && \
     . /opt/venv/bin/activate && \
-    uv pip install --no-cache -r requirements.lock
+    uv pip install --no-cache -r requirements.lock && \
+    python -m compileall -q /opt/venv/lib/
 
 # Stage 2: Runtime stage - minimal image with pre-installed deps
 FROM python:3.11-slim AS runtime
@@ -51,6 +52,10 @@ WORKDIR /app
 # This ensures code changes don't invalidate dependency cache
 COPY server.py azure_tools.py aws_tools.py email_tools.py calendar_tools.py jira_tools.py linear_tools.py digitalocean_tools.py ./
 COPY app ./app
+
+# Pre-compile application bytecode to speed up cold starts
+# This avoids Python parsing 28K+ lines of source on every container start
+RUN python -m compileall -q .
 
 # Runtime configuration
 ENV PORT=8080
