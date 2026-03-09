@@ -161,7 +161,7 @@ gcloud run deploy $SERVICE_NAME \
     --region=$REGION \
     --source=. \
     --platform=managed \
-    --no-allow-unauthenticated \
+    --allow-unauthenticated \
     --port=8080 \
     --memory=1Gi \
     --cpu=1 \
