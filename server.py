@@ -222,7 +222,6 @@ else:
 mcp = FastMCP(
     name="crowdit-mcp-server",
     instructions=_get_enabled_services_description(),
-    stateless_http=True  # Required for Cloud Run - enables stateless sessions
 )
 print(f"[STARTUP] FastMCP instance created at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
@@ -15762,7 +15761,7 @@ if __name__ == "__main__":
 
     # Get FastMCP's HTTP app
     print(f"[STARTUP] Creating FastMCP HTTP app at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
-    mcp_app = mcp.http_app()
+    mcp_app = mcp.http_app(stateless_http=True)  # Required for Cloud Run - no sticky sessions
     print(f"[STARTUP] FastMCP HTTP app created at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
     
     # Starlette route handlers
