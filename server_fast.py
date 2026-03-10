@@ -110,6 +110,15 @@ def _load_tools_background():
         if hasattr(source_mcp, '_instructions') and source_mcp._instructions:
             mcp._instructions = source_mcp._instructions
 
+        # Initialize lazy configs in the loaded module so tools never see None.
+        # When running server_fast we never run server.py's lifespan, so
+        # _initialize_configs_once() would otherwise never run → 'NoneType' has no attribute 'is_configured'.
+        try:
+            server_module._initialize_configs_once()
+            print(f"[FAST] Configs initialized at {_t()}", file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"[FAST] Config init warning: {e}", file=sys.stderr, flush=True)
+
         # Store reference to server module for config access
         # (needed by status page, callbacks, etc.)
         _load_tools_background.server_module = server_module

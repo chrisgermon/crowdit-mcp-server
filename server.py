@@ -418,11 +418,18 @@ class HaloPSAConfig:
             self._token_expiry = datetime.now() + timedelta(seconds=expires_in - 60)
             return self._access_token
 
+# Sentinel for configs that failed to initialize - avoids 'NoneType' has no attribute 'is_configured'
+class _UnconfiguredSentinel:
+    is_configured = False
+    def __getattr__(self, name):
+        raise RuntimeError("Integration config failed to load. Check server logs for initialization errors.")
+
 # Lazy initialization: configs will be created on first use
 # This prevents module import from blocking server startup on Cloud Run
 halopsa_config = None
 xero_config = None
 front_config = None
+sharepoint_config = None
 bigquery_config = None
 rds_config = None
 maxotel_config = None
@@ -436,21 +443,23 @@ ingram_config = None
 carbon_config = None
 ninjaone_config = None
 auvik_config = None
+metabase_config = None
 gorelo_config = None
 
 _configs_initialized = False
 
 def _initialize_configs_once():
     """Initialize all configs once on first use."""
-    global halopsa_config, xero_config, front_config, bigquery_config
+    global halopsa_config, xero_config, front_config, sharepoint_config, bigquery_config
     global rds_config, maxotel_config, ubuntu_config, visionrad_config
     global cipp_config, salesforce_config, gcloud_config, dicker_config, ingram_config
-    global carbon_config, ninjaone_config, auvik_config, gorelo_config, _configs_initialized
+    global carbon_config, ninjaone_config, auvik_config, metabase_config, gorelo_config, _configs_initialized
     
     if _configs_initialized:
         return
     
     _configs_initialized = True
+    _sentinel = _UnconfiguredSentinel()
     
     try:
         halopsa_config = HaloPSAConfig()
@@ -474,6 +483,14 @@ def _initialize_configs_once():
         gorelo_config = GoreloConfig()
     except Exception as e:
         logger.error(f"Error during lazy config initialization: {e}", exc_info=True)
+        # Ensure no config stays None so tools can safely call .is_configured (use globals() to avoid UnboundLocalError)
+        g = globals()
+        for key in ("halopsa_config", "xero_config", "front_config", "sharepoint_config", "bigquery_config",
+                    "rds_config", "maxotel_config", "ubuntu_config", "visionrad_config", "cipp_config",
+                    "salesforce_config", "gcloud_config", "dicker_config", "ingram_config", "carbon_config",
+                    "ninjaone_config", "auvik_config", "metabase_config", "gorelo_config"):
+            if g.get(key) is None:
+                g[key] = _sentinel
 
 # For backwards compatibility, also keep the original function but make it non-blocking
 def initialize_all_configs():

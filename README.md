@@ -52,6 +52,39 @@ Automatically deployed to Cloud Run on push to `main` branch.
 
 **Cloud Run URL:** https://crowdit-mcp-server-348600156950.australia-southeast1.run.app
 
+## Connecting from Claude Code (or Claude desktop)
+
+If you see **"There was an error connecting to the MCP server. Please check your server URL and make sure your server handles auth correctly"** after being sent to a `start-auth` URL, Claude is trying to use **OAuth** to connect. This server does **not** use OAuth for the MCP endpoint — it uses **API key** auth (or Cloud Run IAM when deployed).
+
+**Fix:** Configure the connection so Claude sends your API key on every request. That way Claude will not open the OAuth flow.
+
+1. **Get an API key**  
+   Use a key that is configured on the server (from Secret Manager `MCP_API_KEY` / `MCP_API_KEYS` or env var `MCP_API_KEY`). If no keys are set, the server may allow unauthenticated access (e.g. when using Cloud Run IAM).
+
+2. **Add the server with an auth header**  
+   In Claude Code, add the MCP server with the **URL** and a **header** so the client does not attempt OAuth:
+
+   - **URL:** `https://crowdit-mcp-server-348600156950.australia-southeast1.run.app/mcp`
+   - **Transport:** streamable-http (or HTTP, if that’s the only option).
+   - **Header:**  
+     - `Authorization: Bearer YOUR_MCP_API_KEY`  
+     or  
+     - `X-API-Key: YOUR_MCP_API_KEY`
+
+   Example (if your client supports it):
+   ```bash
+   claude mcp add crowdit https://crowdit-mcp-server-348600156950.australia-southeast1.run.app/mcp -t http -H "Authorization: Bearer YOUR_MCP_API_KEY"
+   ```
+
+   If you use a config file (e.g. `.mcp.json` or Cursor/Claude settings), set:
+   - `url`: `https://crowdit-mcp-server-348600156950.australia-southeast1.run.app/mcp`
+   - `headers`: `{ "Authorization": "Bearer YOUR_MCP_API_KEY" }` or `{ "X-API-Key": "YOUR_MCP_API_KEY" }`
+
+3. **Use the full `/mcp` path**  
+   The MCP endpoint is `/mcp`, not the root URL. Use `...run.app/mcp` as above.
+
+Once the API key is sent in the header, Claude should connect without opening the start-auth page.
+
 ## Local Development
 
 ```bash
@@ -74,9 +107,20 @@ ENABLED_SERVICES=halopsa,xero python server.py
 
 Available service names: `halopsa`, `xero`, `front`, `sharepoint`, `quoter`, `pax8`, `bigquery`, `aws_rds`, `aws`, `azure`, `forticloud`, `maxotel`, `ubuntu`, `visionrad`, `cipp`, `salesforce`, `gcp`, `dicker`, `ingram`, `carbon`, `ninjaone`, `crowdit`, `auvik`, `metabase`, `n8n`, `gorelo`, `email`, `jira`, `linear`, `digitalocean`, `github`, `server`, `cloud_run`
 
-### Option 2: Use separate MCP servers per service
+### Option 2: Split into separate MCP servers (best token use and startup)
 
-For the lowest token usage, run individual MCP servers per integration (e.g., one for HaloPSA, one for Xero). This way each Claude session only loads the tools it actually needs.
+For the **lowest token usage** and **fastest startup**, run one MCP server per integration (e.g. one for HaloPSA, one for Xero). Each client then connects only to the servers it needs, so:
+
+- **Token use**: Only that server’s tool definitions are sent each turn (e.g. ~70 tools instead of 500+).
+- **Startup**: Smaller servers start much faster than the full monolithic server.
+- **Reliability**: A failure in one integration doesn’t affect others.
+
+Ways to do it:
+
+- **Same codebase, multiple processes**: Run the same app multiple times with different `ENABLED_SERVICES` (e.g. `ENABLED_SERVICES=halopsa` on port 8081, `ENABLED_SERVICES=xero` on 8082) and point clients at the appropriate URL.
+- **Split repos/deployments**: Maintain separate small MCP servers per integration and deploy them independently (e.g. separate Cloud Run services). Best long-term for many teams; more ops overhead.
+
+Until you split, **Option 1 (ENABLED_SERVICES)** is the simplest way to cut tokens and speed up the single server.
 
 ## Environment Variables
 
