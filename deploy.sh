@@ -133,6 +133,7 @@ echo "   - n8n: N8N_API_URL, N8N_API_KEY (from n8n instance API settings)"
 echo "   - VisionRad: VISIONRAD_HOSTNAME, VISIONRAD_USERNAME, VISIONRAD_PRIVATE_KEY (SSH access)"
 echo "   - Salesforce: SALESFORCE_INSTANCE_URL, SALESFORCE_CLIENT_ID, SALESFORCE_CLIENT_SECRET, SALESFORCE_REFRESH_TOKEN"
 echo "   - NinjaOne: NINJAONE_CLIENT_ID, NINJAONE_CLIENT_SECRET (from NinjaOne API settings)"
+echo "   - Gorelo: GORELO_API_KEY (from Gorelo API settings)"
 echo ""
 
 # Grant Cloud Run service account access to Secret Manager
