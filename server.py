@@ -4712,7 +4712,7 @@ async def front_list_tags() -> str:
 
 class GoreloConfig:
     def __init__(self):
-        self.api_key = os.getenv("GORELO_API_KEY", "")
+        self.api_key = os.getenv("GORELO_API_KEY", "") or get_secret_sync("GORELO_API_KEY") or ""
         self.base_url = "https://api.usw.gorelo.io"
 
     @property
