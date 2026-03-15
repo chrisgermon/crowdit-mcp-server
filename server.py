@@ -1,6 +1,6 @@
 """
 Crowd IT Unified MCP Server
-Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, AWS, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), Auvik (Network Management), Jira (Project Management), Linear (Project Management), and DigitalOcean (Cloud Infrastructure) integration.
+Centralized MCP server for Cloud Run - HaloPSA, Xero, Front, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, AWS, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), Auvik (Network Management), Jira (Project Management), Linear (Project Management), DigitalOcean (Cloud Infrastructure), and Proxmox VE (Virtualization) integration.
 """
 
 # Absolute first thing - print to both stdout and stderr
@@ -124,6 +124,9 @@ print(f"[STARTUP] linear_tools imported at t={time.time() - _module_start_time:.
 from digitalocean_tools import register_digitalocean_tools, DigitalOceanConfig, PrefixedToolRegistrar
 print(f"[STARTUP] digitalocean_tools imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
 
+from proxmox_tools import register_proxmox_tools, ProxmoxConfig
+print(f"[STARTUP] proxmox_tools imported at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+
 # Cloud Run URL for OAuth callback
 CLOUD_RUN_URL = os.getenv("CLOUD_RUN_URL", "https://crowdit-mcp-server-348600156950.australia-southeast1.run.app")
 
@@ -138,7 +141,7 @@ CLOUD_RUN_URL = os.getenv("CLOUD_RUN_URL", "https://crowdit-mcp-server-348600156
 #   halopsa, xero, front, quoter, pax8, bigquery, aws_rds, aws,
 #   azure, maxotel, ubuntu, visionrad, cipp, salesforce, gcp,
 #   dicker, ingram, carbon, ninjaone, crowdit, auvik, n8n, gorelo,
-#   email, jira, linear, digitalocean, github, server, cloud_run
+#   email, jira, linear, digitalocean, proxmox, github, server, cloud_run
 #
 _enabled_services_raw = os.getenv("ENABLED_SERVICES", "all").strip().lower()
 if _enabled_services_raw in ("all", "", "*"):
@@ -182,6 +185,7 @@ _EXTERNAL_SERVICE_MAP = {
     "jira": "jira",
     "linear": "linear",
     "digitalocean": "digitalocean",
+    "proxmox": "proxmox",
 }
 
 
@@ -195,7 +199,7 @@ def service_enabled(service_name: str) -> bool:
 def _get_enabled_services_description() -> str:
     """Build dynamic instructions string based on enabled services."""
     if ENABLED_SERVICES is None:
-        return "Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, AWS, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), Auvik (Network Management), Metabase (Business Intelligence), Jira (Project Management), Linear (Project Management), DigitalOcean (Cloud Infrastructure), and Crowd IT DigitalOcean (Cloud Infrastructure) integration for MSP operations."
+        return "Crowd IT Unified MCP Server - HaloPSA, Xero, Front, SharePoint, Quoter, Pax8, BigQuery, Maxotel VoIP, Ubuntu Server (SSH), CIPP (M365), Salesforce, n8n (Workflow Automation), GCloud CLI, Azure, AWS, Dicker Data, Ingram Micro, Aussie Broadband Carbon, NinjaOne (RMM), Auvik (Network Management), Metabase (Business Intelligence), Jira (Project Management), Linear (Project Management), DigitalOcean (Cloud Infrastructure), Crowd IT DigitalOcean (Cloud Infrastructure), and Proxmox VE (Virtualization) integration for MSP operations."
     service_labels = {
         "halopsa": "HaloPSA", "xero": "Xero", "front": "Front",
         "quoter": "Quoter", "pax8": "Pax8",
@@ -207,7 +211,7 @@ def _get_enabled_services_description() -> str:
         "ninjaone": "NinjaOne", "crowdit": "Crowd IT", "auvik": "Auvik",
         "n8n": "n8n", "gorelo": "Gorelo",
         "email": "Email (Graph)", "jira": "Jira", "linear": "Linear",
-        "digitalocean": "DigitalOcean", "github": "GitHub",
+        "digitalocean": "DigitalOcean", "proxmox": "Proxmox VE", "github": "GitHub",
         "server": "Server Status", "cloud_run": "Cloud Run",
     }
     enabled_labels = [service_labels.get(s, s) for s in sorted(ENABLED_SERVICES) if s in service_labels]
@@ -366,6 +370,24 @@ if service_enabled("digitalocean"):
         crowdit_do_config = type('DigitalOceanConfig', (), {'is_configured': False})()
 else:
     crowdit_do_config = type('DigitalOceanConfig', (), {'is_configured': False})()
+
+# Register Proxmox VE tools
+if service_enabled("proxmox"):
+    try:
+        proxmox_config = ProxmoxConfig()
+        _proxmox_tool_count_before = len(mcp._tool_manager._tools)
+        register_proxmox_tools(mcp, proxmox_config)
+        _proxmox_tool_count_after = len(mcp._tool_manager._tools)
+        _proxmox_tools_added = _proxmox_tool_count_after - _proxmox_tool_count_before
+        print(f"[STARTUP] Proxmox VE tools registered ({_proxmox_tools_added} tools added) at t={time.time() - _module_start_time:.3f}s", file=sys.stderr, flush=True)
+    except Exception as e:
+        import traceback
+        print(f'[STARTUP] Proxmox VE tools registration FAILED: {e}', file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        proxmox_config = type('ProxmoxConfig', (), {'is_configured': False})()
+else:
+    print("[STARTUP] Proxmox VE tools SKIPPED (not in ENABLED_SERVICES)", file=sys.stderr, flush=True)
+    proxmox_config = type('ProxmoxConfig', (), {'is_configured': False})()
 
 # ============================================================================
 # Secret Manager Helper
@@ -16558,6 +16580,14 @@ if __name__ == "__main__":
             "env_vars": [],
             "auth_env_vars": ["CROWDIT_DIGITALOCEAN_TOKEN"]
         },
+        {
+            "name": "Proxmox VE",
+            "config": proxmox_config,
+            "category": "Cloud Infrastructure",
+            "check_type": "api_key",
+            "env_vars": ["PROXMOX_HOST"],
+            "auth_env_vars": ["PROXMOX_TOKEN_ID", "PROXMOX_TOKEN_SECRET"]
+        },
     ]
 
     async def check_platform_status(platform: dict) -> dict:
@@ -16658,6 +16688,9 @@ if __name__ == "__main__":
             result["api_version"] = "v2"
         elif name == "Crowd IT DigitalOcean":
             result["endpoint"] = "https://api.digitalocean.com/v2"
+            result["api_version"] = "v2"
+        elif name == "Proxmox VE":
+            result["endpoint"] = getattr(config, 'base_url', 'https://<host>:8006/api2/json')
             result["api_version"] = "v2"
 
         if not config.is_configured:
