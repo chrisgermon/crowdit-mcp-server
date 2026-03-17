@@ -12,6 +12,7 @@ dependencies = [
     "google-cloud-secret-manager>=2.20.0",
     "google-cloud-bigquery>=3.25.0",
     "google-auth>=2.29.0",
+    "google-cloud-compute>=1.19.0",
     "asyncssh>=2.14.0",
     "pymysql>=1.1.0",
     "google-cloud-build>=3.20.0",
@@ -45,4 +46,5 @@ only-include = [
     "notion_tools.py",
     "digitalocean_tools.py",
     "proxmox_tools.py",
+    "gcp_compute_tools.py",
 ]
