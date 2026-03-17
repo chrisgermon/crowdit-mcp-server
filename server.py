@@ -4,15 +4,12 @@ import importlib
 
 from fastmcp import FastMCP
 
-
 logger = logging.getLogger(__name__)
-
 
 mcp = FastMCP(
     name="crowdit-mcp-server",
     instructions="Crowd IT Unified MCP Server",
 )
-
 
 _configs_initialized = False
 _aws_config = None
@@ -27,7 +24,6 @@ _proxmox_config = None
 def _initialize_configs_once() -> None:
     global _configs_initialized
     global _aws_config, _email_config, _jira_config, _linear_config, _notion_config, _do_config, _proxmox_config
-
     if _configs_initialized:
         return
 
@@ -107,6 +103,7 @@ def _register_tools() -> None:
         ("notion", "notion_tools", "register_notion_tools", (_notion_config,)),
         ("digitalocean", "digitalocean_tools", "register_digitalocean_tools", (_do_config,)),
         ("proxmox", "proxmox_tools", "register_proxmox_tools", (_proxmox_config,)),
+        ("gcp_compute", "gcp_compute_tools", "register_gcp_compute_tools", ()),
     ]
 
     for service, module_name, register_name, args in registrations:
@@ -125,10 +122,8 @@ def _register_tools() -> None:
 
 _register_tools()
 
-
 if __name__ == "__main__":
     import uvicorn
-
     port = int(os.getenv("PORT", 8080))
     app = mcp.http_app(stateless_http=True)
     uvicorn.run(app, host="0.0.0.0", port=port, access_log=False, log_level="info")
