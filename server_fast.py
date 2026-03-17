@@ -187,6 +187,22 @@ class SimpleAPIKeyMiddleware(BaseHTTPMiddleware):
         if path in self.PUBLIC_PATHS or path.startswith("/.well-known/"):
             return await call_next(request)
 
+        if path == "/mcp":
+            accept = (request.headers.get("Accept") or "").lower()
+            required = ("application/json", "text/event-stream")
+            if not all(r in accept for r in required):
+                merged = accept
+                for r in required:
+                    if r not in merged:
+                        merged = f"{merged}, {r}" if merged else r
+                headers = []
+                for k, v in request.scope.get("headers", []):
+                    if k.lower() == b"accept":
+                        continue
+                    headers.append((k, v))
+                headers.append((b"accept", merged.encode("utf-8")))
+                request.scope["headers"] = headers
+
         # Lazy load keys on first protected request
         if self._valid_keys is None:
             await asyncio.to_thread(self._load_keys)
