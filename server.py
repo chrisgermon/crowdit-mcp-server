@@ -21,11 +21,12 @@ _do_config = None
 _proxmox_config = None
 _xero_config = None
 _gorelo_config = None
+_pax8_config = None
 
 
 def _initialize_configs_once() -> None:
     global _configs_initialized
-    global _aws_config, _email_config, _jira_config, _linear_config, _notion_config, _do_config, _proxmox_config, _xero_config, _gorelo_config
+    global _aws_config, _email_config, _jira_config, _linear_config, _notion_config, _do_config, _proxmox_config, _xero_config, _gorelo_config, _pax8_config
     if _configs_initialized:
         return
 
@@ -92,6 +93,13 @@ def _initialize_configs_once() -> None:
         logger.warning(f"Failed to init GoreloConfig: {e}")
         _gorelo_config = None
 
+    try:
+        from pax8_tools import Pax8Config
+        _pax8_config = Pax8Config()
+    except Exception as e:
+        logger.warning(f"Failed to init Pax8Config: {e}")
+        _pax8_config = None
+
     _configs_initialized = True
 
 
@@ -122,6 +130,7 @@ def _register_tools() -> None:
         ("xero", "xero_tools", "register_xero_tools", (_xero_config,)),
         ("gcp_compute", "gcp_compute_tools", "register_gcp_compute_tools", ()),
         ("gorelo", "gorelo_tools", "register_gorelo_tools", (_gorelo_config,)),
+        ("pax8", "pax8_tools", "register_pax8_tools", (_pax8_config,)),
     ]
 
     for service, module_name, register_name, args in registrations:
