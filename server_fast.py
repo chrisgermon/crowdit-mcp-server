@@ -235,17 +235,92 @@ class SimpleAPIKeyMiddleware(BaseHTTPMiddleware):
 # Route handlers
 # ============================================================================
 
+def _get_integration_statuses() -> list[dict]:
+    """Check each integration's config status."""
+    statuses = []
+    server_mod = getattr(_load_tools_background, "server_module", None)
+    if not server_mod:
+        return statuses
+
+    integrations = [
+        ("AWS", "_aws_config"),
+        ("Azure", None),  # ADC on Cloud Run
+        ("Email / Calendar", "_email_config"),
+        ("Jira", "_jira_config"),
+        ("Linear", "_linear_config"),
+        ("Notion", "_notion_config"),
+        ("DigitalOcean", "_do_config"),
+        ("Proxmox", "_proxmox_config"),
+        ("Xero", "_xero_config"),
+        ("GCP Compute", None),  # ADC on Cloud Run
+        ("Gorelo", "_gorelo_config"),
+        ("Pax8", "_pax8_config"),
+        ("NetBird", "_netbird_config"),
+    ]
+
+    for name, config_attr in integrations:
+        if config_attr is None:
+            # ADC-based services — always available on Cloud Run
+            statuses.append({"name": name, "status": "ok", "detail": "ADC (Cloud Run)"})
+            continue
+        cfg = getattr(server_mod, config_attr, None)
+        if cfg is None:
+            statuses.append({"name": name, "status": "error", "detail": "Config failed to load"})
+        elif hasattr(cfg, "is_configured") and cfg.is_configured:
+            statuses.append({"name": name, "status": "ok", "detail": "Configured"})
+        else:
+            statuses.append({"name": name, "status": "not_configured", "detail": "Missing credentials"})
+
+    return statuses
+
+
 async def home_route(request):
     loaded = _tools_loaded.is_set()
     status = "ready" if loaded and not _tools_loading_error else "loading" if not loaded else "error"
-    return HTMLResponse(f"""<html><body>
+
+    integrations_html = ""
+    if loaded and not _tools_loading_error:
+        integrations = _get_integration_statuses()
+        rows = ""
+        for i in integrations:
+            if i["status"] == "ok":
+                badge = '<span style="color:#16a34a;font-weight:bold">&#x2713; Connected</span>'
+            elif i["status"] == "not_configured":
+                badge = '<span style="color:#d97706;font-weight:bold">&#x26A0; Not Configured</span>'
+            else:
+                badge = '<span style="color:#dc2626;font-weight:bold">&#x2717; Error</span>'
+            rows += f"<tr><td>{i['name']}</td><td>{badge}</td><td style='color:#6b7280'>{i['detail']}</td></tr>\n"
+        integrations_html = f"""
+        <h2 style="margin-top:1.5em">Integrations</h2>
+        <table style="border-collapse:collapse;width:100%;max-width:600px">
+        <tr style="border-bottom:2px solid #e5e7eb;text-align:left"><th style="padding:8px">Service</th><th style="padding:8px">Status</th><th style="padding:8px">Detail</th></tr>
+        {rows}
+        </table>"""
+
+    return HTMLResponse(f"""<html>
+<head><meta charset="utf-8"><title>Crowd IT MCP Server</title>
+<style>body{{font-family:system-ui,sans-serif;max-width:700px;margin:2em auto;padding:0 1em}}
+table td,table th{{padding:8px;border-bottom:1px solid #e5e7eb}}</style></head>
+<body>
 <h1>Crowd IT MCP Server</h1>
-<p>Status: <b>{status}</b> | Tools: {_tool_count}</p>
+<p>Status: <b>{status}</b> | Tools: <b>{_tool_count}</b> | Uptime: {round(time.time() - _start)}s</p>
 <p>MCP endpoint: <code>/mcp</code> (streamable-http)</p>
+{integrations_html}
 </body></html>""")
 
 async def health_route(request):
     return PlainTextResponse("OK")
+
+async def status_route(request):
+    """JSON status endpoint for programmatic access."""
+    loaded = _tools_loaded.is_set()
+    return JSONResponse({
+        "status": "ready" if loaded and not _tools_loading_error else "loading" if not loaded else "error",
+        "tool_count": _tool_count,
+        "uptime_seconds": round(time.time() - _start, 1),
+        "integrations": _get_integration_statuses() if loaded and not _tools_loading_error else [],
+    })
+
 
 async def debug_mcp_route(request):
     return JSONResponse({
@@ -290,6 +365,7 @@ if __name__ == "__main__":
         routes=[
             Route("/", home_route),
             Route("/health", health_route),
+            Route("/status", status_route),
             Route("/debug/mcp", debug_mcp_route),
         ],
         lifespan=lifespan,
