@@ -246,7 +246,6 @@ def _get_integration_statuses() -> list[dict]:
         ("AWS", "_aws_config"),
         ("Azure", None),  # ADC on Cloud Run
         ("Email / Calendar", "_email_config"),
-        ("Jira", "_jira_config"),
         ("Linear", "_linear_config"),
         ("Notion", "_notion_config"),
         ("DigitalOcean", "_do_config"),
@@ -256,6 +255,11 @@ def _get_integration_statuses() -> list[dict]:
         ("Gorelo", "_gorelo_config"),
         ("Pax8", "_pax8_config"),
         ("NetBird", "_netbird_config"),
+        ("CIPP", "_cipp_config"),
+        ("Cloudflare", "_cloudflare_config"),
+        ("Acronis", "_acronis_config"),
+        ("Partner Center", "_partner_center_config"),
+        ("Teams", "_teams_config"),
     ]
 
     for name, config_attr in integrations:

@@ -14,7 +14,6 @@ mcp = FastMCP(
 _configs_initialized = False
 _aws_config = None
 _email_config = None
-_jira_config = None
 _linear_config = None
 _notion_config = None
 _do_config = None
@@ -23,11 +22,16 @@ _xero_config = None
 _gorelo_config = None
 _pax8_config = None
 _netbird_config = None
+_cipp_config = None
+_cloudflare_config = None
+_acronis_config = None
+_partner_center_config = None
+_teams_config = None
 
 
 def _initialize_configs_once() -> None:
     global _configs_initialized
-    global _aws_config, _email_config, _jira_config, _linear_config, _notion_config, _do_config, _proxmox_config, _xero_config, _gorelo_config, _pax8_config, _netbird_config
+    global _aws_config, _email_config, _linear_config, _notion_config, _do_config, _proxmox_config, _xero_config, _gorelo_config, _pax8_config, _netbird_config, _cipp_config, _cloudflare_config, _acronis_config, _partner_center_config, _teams_config
     if _configs_initialized:
         return
 
@@ -44,13 +48,6 @@ def _initialize_configs_once() -> None:
     except Exception as e:
         logger.warning(f"Failed to init EmailConfig: {e}")
         _email_config = None
-
-    try:
-        from jira_tools import JiraConfig
-        _jira_config = JiraConfig()
-    except Exception as e:
-        logger.warning(f"Failed to init JiraConfig: {e}")
-        _jira_config = None
 
     try:
         from linear_tools import LinearConfig
@@ -108,6 +105,41 @@ def _initialize_configs_once() -> None:
         logger.warning(f"Failed to init NetBirdConfig: {e}")
         _netbird_config = None
 
+    try:
+        from cipp_tools import CIPPConfig
+        _cipp_config = CIPPConfig()
+    except Exception as e:
+        logger.warning(f"Failed to init CIPPConfig: {e}")
+        _cipp_config = None
+
+    try:
+        from cloudflare_tools import CloudflareConfig
+        _cloudflare_config = CloudflareConfig()
+    except Exception as e:
+        logger.warning(f"Failed to init CloudflareConfig: {e}")
+        _cloudflare_config = None
+
+    try:
+        from acronis_tools import AcronisConfig
+        _acronis_config = AcronisConfig()
+    except Exception as e:
+        logger.warning(f"Failed to init AcronisConfig: {e}")
+        _acronis_config = None
+
+    try:
+        from partner_center_tools import PartnerCenterConfig
+        _partner_center_config = PartnerCenterConfig()
+    except Exception as e:
+        logger.warning(f"Failed to init PartnerCenterConfig: {e}")
+        _partner_center_config = None
+
+    try:
+        from teams_tools import TeamsConfig
+        _teams_config = TeamsConfig()
+    except Exception as e:
+        logger.warning(f"Failed to init TeamsConfig: {e}")
+        _teams_config = None
+
     _configs_initialized = True
 
 
@@ -130,7 +162,6 @@ def _register_tools() -> None:
         ("azure", "azure_tools", "register_azure_tools", ()),
         ("email", "email_tools", "register_email_tools", (_email_config,)),
         ("calendar", "calendar_tools", "register_calendar_tools", (_email_config,)),
-        ("jira", "jira_tools", "register_jira_tools", (_jira_config,)),
         ("linear", "linear_tools", "register_linear_tools", (_linear_config,)),
         ("notion", "notion_tools", "register_notion_tools", (_notion_config,)),
         ("digitalocean", "digitalocean_tools", "register_digitalocean_tools", (_do_config,)),
@@ -140,6 +171,11 @@ def _register_tools() -> None:
         ("gorelo", "gorelo_tools", "register_gorelo_tools", (_gorelo_config,)),
         ("pax8", "pax8_tools", "register_pax8_tools", (_pax8_config,)),
         ("netbird", "netbird_tools", "register_netbird_tools", (_netbird_config,)),
+        ("cipp", "cipp_tools", "register_cipp_tools", (_cipp_config,)),
+        ("cloudflare", "cloudflare_tools", "register_cloudflare_tools", (_cloudflare_config,)),
+        ("acronis", "acronis_tools", "register_acronis_tools", (_acronis_config,)),
+        ("partner_center", "partner_center_tools", "register_partner_center_tools", (_partner_center_config,)),
+        ("teams", "teams_tools", "register_teams_tools", (_teams_config,)),
     ]
 
     for service, module_name, register_name, args in registrations:
