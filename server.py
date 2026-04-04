@@ -177,6 +177,7 @@ def _register_tools() -> None:
         ("acronis", "acronis_tools", "register_acronis_tools", (_acronis_config,)),
         ("partner_center", "partner_center_tools", "register_partner_center_tools", (_partner_center_config,)),
         ("teams", "teams_tools", "register_teams_tools", (_teams_config,)),
+        ("cloudbuild", "cloudbuild_tools", "register_cloudbuild_tools", ()),
     ]
 
     for service, module_name, register_name, args in registrations:

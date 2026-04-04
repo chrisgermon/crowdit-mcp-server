@@ -15,7 +15,7 @@ dependencies = [
     "google-cloud-compute>=1.19.0",
     "asyncssh>=2.14.0",
     "pymysql>=1.1.0",
-    "google-cloud-build>=3.20.0",
+    "google-cloud-build>=3.24.0",
     # Azure SDK dependencies
     "azure-identity>=1.15.0",
     "azure-mgmt-resource>=23.0.0",
