@@ -168,6 +168,7 @@ def _register_tools() -> None:
         ("proxmox", "proxmox_tools", "register_proxmox_tools", (_proxmox_config,)),
         ("xero", "xero_tools", "register_xero_tools", (_xero_config,)),
         ("gcp_compute", "gcp_compute_tools", "register_gcp_compute_tools", ()),
+        ("bigquery", "bigquery_tools", "register_bigquery_tools", ()),
         ("gorelo", "gorelo_tools", "register_gorelo_tools", (_gorelo_config,)),
         ("pax8", "pax8_tools", "register_pax8_tools", (_pax8_config,)),
         ("netbird", "netbird_tools", "register_netbird_tools", (_netbird_config,)),
