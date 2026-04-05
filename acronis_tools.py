@@ -46,6 +46,7 @@ class AcronisConfig:
         self._client_secret = ""
         self._access_token = None
         self._token_expiry = None
+        self._tenant_id = None
         self._secrets_loaded = False
 
     def _load_secrets(self):
@@ -76,6 +77,11 @@ class AcronisConfig:
         self._load_secrets()
         return all([self.api_url, self._client_id, self._client_secret])
 
+    @property
+    def tenant_id(self) -> Optional[str]:
+        """Return the tenant ID associated with the API client (extracted from token)."""
+        return self._tenant_id
+
     async def get_access_token(self) -> str:
         """Get valid access token, requesting new one if expired."""
         if self._access_token and self._token_expiry and datetime.now() < self._token_expiry:
@@ -97,6 +103,10 @@ class AcronisConfig:
             data = resp.json()
             self._access_token = data["access_token"]
             self._token_expiry = datetime.now() + timedelta(seconds=data.get("expires_in", 3600) - 60)
+            # Extract tenant_id from the token scope (format: "scope:tenant_id")
+            scope = data.get("scope", "")
+            if ":" in scope:
+                self._tenant_id = scope.split(":")[-1]
             return self._access_token
 
 
@@ -144,9 +154,12 @@ def register_acronis_tools(mcp, config: "AcronisConfig") -> None:
         if not config.is_configured:
             return NOT_CONFIGURED_MSG
         try:
-            params = {}
-            if parent_id:
-                params["parent_id"] = parent_id
+            # Ensure token is fetched so we have the root tenant_id
+            await config.get_access_token()
+            pid = parent_id or config.tenant_id
+            if not pid:
+                return "Error: Could not determine root tenant ID. Provide parent_id explicitly."
+            params = {"parent_id": pid}
             resp = await _acr_request(config, "GET", "/api/2/tenants", params=params)
             resp.raise_for_status()
             data = resp.json()
@@ -218,9 +231,11 @@ def register_acronis_tools(mcp, config: "AcronisConfig") -> None:
         if not config.is_configured:
             return NOT_CONFIGURED_MSG
         try:
-            params = {}
-            if tenant_id:
-                params["tenant_id"] = tenant_id
+            await config.get_access_token()
+            tid = tenant_id or config.tenant_id
+            if not tid:
+                return "Error: Could not determine tenant ID. Provide tenant_id explicitly."
+            params = {"tenant_id": tid}
             resp = await _acr_request(config, "GET", "/api/2/users", params=params)
             resp.raise_for_status()
             data = resp.json()
@@ -261,7 +276,7 @@ def register_acronis_tools(mcp, config: "AcronisConfig") -> None:
                 params["type"] = type
             if severity:
                 params["severity"] = severity
-            resp = await _acr_request(config, "GET", "/api/2/alerts", params=params)
+            resp = await _acr_request(config, "GET", "/api/alert_manager/v1/alerts", params=params)
             resp.raise_for_status()
             data = resp.json()
             return json.dumps(data, indent=2)
@@ -276,7 +291,7 @@ def register_acronis_tools(mcp, config: "AcronisConfig") -> None:
         if not config.is_configured:
             return NOT_CONFIGURED_MSG
         try:
-            resp = await _acr_request(config, "GET", f"/api/2/alerts/{alert_id}")
+            resp = await _acr_request(config, "GET", f"/api/alert_manager/v1/alerts/{alert_id}")
             resp.raise_for_status()
             data = resp.json()
             return json.dumps(data, indent=2)
@@ -301,7 +316,7 @@ def register_acronis_tools(mcp, config: "AcronisConfig") -> None:
                 params["status"] = status
             if type:
                 params["type"] = type
-            resp = await _acr_request(config, "GET", "/api/2/activities", params=params)
+            resp = await _acr_request(config, "GET", "/api/task_manager/v2/activities", params=params)
             resp.raise_for_status()
             data = resp.json()
             return json.dumps(data, indent=2)
@@ -316,7 +331,7 @@ def register_acronis_tools(mcp, config: "AcronisConfig") -> None:
         if not config.is_configured:
             return NOT_CONFIGURED_MSG
         try:
-            resp = await _acr_request(config, "GET", f"/api/2/activities/{activity_id}")
+            resp = await _acr_request(config, "GET", f"/api/task_manager/v2/activities/{activity_id}")
             resp.raise_for_status()
             data = resp.json()
             return json.dumps(data, indent=2)
@@ -341,7 +356,7 @@ def register_acronis_tools(mcp, config: "AcronisConfig") -> None:
                 params["type"] = type
             if tenant_id:
                 params["tenant_id"] = tenant_id
-            resp = await _acr_request(config, "GET", "/api/2/resources", params=params)
+            resp = await _acr_request(config, "GET", "/api/resource_management/v4/resources", params=params)
             resp.raise_for_status()
             data = resp.json()
             return json.dumps(data, indent=2)
@@ -356,7 +371,7 @@ def register_acronis_tools(mcp, config: "AcronisConfig") -> None:
         if not config.is_configured:
             return NOT_CONFIGURED_MSG
         try:
-            resp = await _acr_request(config, "GET", f"/api/2/resources/{resource_id}")
+            resp = await _acr_request(config, "GET", f"/api/resource_management/v4/resources/{resource_id}")
             resp.raise_for_status()
             data = resp.json()
             return json.dumps(data, indent=2)
@@ -378,7 +393,7 @@ def register_acronis_tools(mcp, config: "AcronisConfig") -> None:
             params = {}
             if tenant_id:
                 params["tenant_id"] = tenant_id
-            resp = await _acr_request(config, "GET", "/api/2/plans", params=params)
+            resp = await _acr_request(config, "GET", "/api/policy_management/v4/policies", params=params)
             resp.raise_for_status()
             data = resp.json()
             return json.dumps(data, indent=2)
@@ -393,7 +408,7 @@ def register_acronis_tools(mcp, config: "AcronisConfig") -> None:
         if not config.is_configured:
             return NOT_CONFIGURED_MSG
         try:
-            resp = await _acr_request(config, "GET", f"/api/2/plans/{plan_id}")
+            resp = await _acr_request(config, "GET", f"/api/policy_management/v4/policies/{plan_id}")
             resp.raise_for_status()
             data = resp.json()
             return json.dumps(data, indent=2)
@@ -445,7 +460,7 @@ def register_acronis_tools(mcp, config: "AcronisConfig") -> None:
             params = {}
             if status:
                 params["status"] = status
-            resp = await _acr_request(config, "GET", "/api/2/tasks", params=params)
+            resp = await _acr_request(config, "GET", "/api/task_manager/v2/tasks", params=params)
             resp.raise_for_status()
             data = resp.json()
             return json.dumps(data, indent=2)
@@ -466,7 +481,7 @@ def register_acronis_tools(mcp, config: "AcronisConfig") -> None:
                 "resource_id": resource_id,
                 "plan_id": plan_id,
             }
-            resp = await _acr_request(config, "POST", "/api/2/tasks", json_data=payload)
+            resp = await _acr_request(config, "POST", "/api/task_manager/v2/tasks", json_data=payload)
             resp.raise_for_status()
             data = resp.json()
             return json.dumps(data, indent=2)
@@ -488,7 +503,7 @@ def register_acronis_tools(mcp, config: "AcronisConfig") -> None:
             params = {}
             if tenant_id:
                 params["tenant_id"] = tenant_id
-            resp = await _acr_request(config, "GET", "/api/2/agents", params=params)
+            resp = await _acr_request(config, "GET", "/api/agent_manager/v2/agents", params=params)
             resp.raise_for_status()
             data = resp.json()
             return json.dumps(data, indent=2)
