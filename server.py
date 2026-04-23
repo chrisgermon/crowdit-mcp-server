@@ -162,6 +162,7 @@ def _register_tools() -> None:
         ("azure", "azure_tools", "register_azure_tools", ()),
         ("email", "email_tools", "register_email_tools", (_email_config,)),
         ("calendar", "calendar_tools", "register_calendar_tools", (_email_config,)),
+        ("todo", "todo_tools", "register_todo_tools", (_email_config,)),
         ("linear", "linear_tools", "register_linear_tools", (_linear_config,)),
         ("notion", "notion_tools", "register_notion_tools", (_notion_config,)),
         ("digitalocean", "digitalocean_tools", "register_digitalocean_tools", (_do_config,)),
