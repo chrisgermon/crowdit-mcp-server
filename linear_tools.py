@@ -11,11 +11,23 @@ Capabilities:
 - List teams, projects, cycles, labels, and users
 - Get workflow states for teams
 - View authenticated user info
+- Connect to multiple Linear workspaces/accounts (multi-tenant)
 
-Authentication: Uses a Personal API key passed via Bearer token.
+Authentication: Uses Personal API keys, one per tenant/workspace.
 
-Environment Variables:
-    LINEAR_API_KEY: Personal API key from Linear (Settings > Account > Security & Access)
+Multi-tenant configuration (any of the following sources):
+    LINEAR_TENANTS: JSON mapping of tenant name -> api key (or object with
+        {"api_key": "..."}). e.g. {"crowdit":"lin_api_...","acme":"lin_api_..."}
+        May also be stored in Google Secret Manager under the same name.
+    LINEAR_API_KEY_<NAME>: Per-tenant env vars (e.g. LINEAR_API_KEY_CROWDIT).
+        The suffix is lower-cased and becomes the tenant name.
+    LINEAR_API_KEY: Legacy single-tenant key, registered as tenant "default".
+    LINEAR_DEFAULT_TENANT: Name of the tenant to use when callers don't
+        specify one. Defaults to "default" if present, otherwise the first
+        registered tenant.
+
+Every tool accepts an optional ``tenant`` argument to target a specific
+workspace. When omitted, the default tenant is used.
 """
 
 import os
@@ -33,36 +45,150 @@ LINEAR_GRAPHQL_ENDPOINT = "https://api.linear.app/graphql"
 # =============================================================================
 
 class LinearConfig:
-    """Linear API configuration using Personal API key."""
+    """Linear API configuration supporting multiple tenants/workspaces.
+
+    Each tenant is a named workspace with its own Personal API key. Callers
+    select a tenant via the ``tenant`` argument on each tool; when omitted,
+    the configured default tenant is used.
+    """
 
     def __init__(self):
-        self._api_key: Optional[str] = None
+        self._tenants: Optional[Dict[str, str]] = None  # name -> api_key
+        self._default_tenant: Optional[str] = None
+        self._loaded = False
 
-    @property
-    def api_key(self) -> str:
-        if self._api_key:
-            return self._api_key
-
-        # Try Secret Manager first
+    @staticmethod
+    def _read_secret_or_env(key: str) -> Optional[str]:
+        """Read a value from Google Secret Manager, falling back to env."""
         try:
             from app.core.config import get_secret_sync
-            secret = get_secret_sync("LINEAR_API_KEY")
+            secret = get_secret_sync(key)
             if secret:
-                self._api_key = secret
                 return secret
         except Exception:
             pass
+        value = os.getenv(key)
+        return value if value else None
 
-        self._api_key = os.getenv("LINEAR_API_KEY", "")
-        return self._api_key
+    def _load(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        tenants: Dict[str, str] = {}
+
+        # 1. LINEAR_TENANTS JSON (env or Secret Manager)
+        tenants_json = self._read_secret_or_env("LINEAR_TENANTS")
+        if tenants_json:
+            try:
+                parsed = json.loads(tenants_json)
+                if isinstance(parsed, dict):
+                    for name, value in parsed.items():
+                        api_key: Optional[str] = None
+                        if isinstance(value, str):
+                            api_key = value
+                        elif isinstance(value, dict):
+                            api_key = (
+                                value.get("api_key")
+                                or value.get("apiKey")
+                                or value.get("key")
+                                or value.get("token")
+                            )
+                        if name and api_key:
+                            tenants[str(name).strip()] = api_key
+                else:
+                    logger.warning("LINEAR_TENANTS must be a JSON object")
+            except Exception as e:
+                logger.warning(f"Failed to parse LINEAR_TENANTS: {e}")
+
+        # 2. Per-tenant env vars LINEAR_API_KEY_<NAME>
+        for env_name, value in os.environ.items():
+            if env_name.startswith("LINEAR_API_KEY_") and value:
+                suffix = env_name[len("LINEAR_API_KEY_"):].strip()
+                if not suffix:
+                    continue
+                tenant_name = suffix.lower()
+                tenants.setdefault(tenant_name, value)
+
+        # 3. Legacy LINEAR_API_KEY -> "default" tenant
+        legacy = self._read_secret_or_env("LINEAR_API_KEY")
+        if legacy and "default" not in tenants:
+            tenants["default"] = legacy
+
+        self._tenants = tenants
+
+        # Resolve default tenant
+        configured_default = (os.getenv("LINEAR_DEFAULT_TENANT") or "").strip().lower()
+        if configured_default and configured_default in tenants:
+            self._default_tenant = configured_default
+        elif "default" in tenants:
+            self._default_tenant = "default"
+        elif tenants:
+            self._default_tenant = next(iter(tenants))
+        else:
+            self._default_tenant = None
+
+    @property
+    def tenants(self) -> Dict[str, str]:
+        self._load()
+        return dict(self._tenants or {})
+
+    @property
+    def tenant_names(self) -> List[str]:
+        return sorted(self.tenants.keys())
+
+    @property
+    def default_tenant(self) -> Optional[str]:
+        self._load()
+        return self._default_tenant
 
     @property
     def is_configured(self) -> bool:
-        return bool(self.api_key)
+        return bool(self.tenants)
 
-    async def graphql_request(self, query: str, variables: dict = None) -> dict:
-        """Execute a GraphQL request against the Linear API."""
+    def resolve(self, tenant: Optional[str] = None) -> str:
+        """Return the canonical name of the tenant to use.
+
+        Raises RuntimeError if no tenants are configured, or KeyError with a
+        helpful message listing available tenants if an unknown name is given.
+        """
+        self._load()
+        tenants = self._tenants or {}
+        if not tenants:
+            raise RuntimeError(
+                "Linear not configured. Set LINEAR_API_KEY or LINEAR_TENANTS."
+            )
+
+        if tenant is None or str(tenant).strip() == "":
+            if not self._default_tenant:
+                raise RuntimeError("Linear has no default tenant configured.")
+            return self._default_tenant
+
+        requested = str(tenant).strip()
+        if requested in tenants:
+            return requested
+        lowered = requested.lower()
+        for name in tenants:
+            if name.lower() == lowered:
+                return name
+        available = ", ".join(sorted(tenants.keys())) or "(none)"
+        raise KeyError(
+            f"Unknown Linear tenant '{requested}'. Available tenants: {available}"
+        )
+
+    def api_key(self, tenant: Optional[str] = None) -> str:
+        name = self.resolve(tenant)
+        return (self._tenants or {})[name]
+
+    async def graphql_request(
+        self,
+        query: str,
+        variables: dict = None,
+        tenant: Optional[str] = None,
+    ) -> dict:
+        """Execute a GraphQL request against the Linear API for the given tenant."""
         import httpx
+
+        api_key = self.api_key(tenant)
 
         payload: Dict[str, Any] = {"query": query}
         if variables:
@@ -74,7 +200,7 @@ class LinearConfig:
                 json=payload,
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"{self.api_key}",
+                    "Authorization": f"{api_key}",
                 }
             )
             response.raise_for_status()
@@ -86,6 +212,23 @@ class LinearConfig:
                 raise Exception(f"GraphQL errors: {'; '.join(error_messages)}")
 
             return result.get("data", {})
+
+
+def _resolve_tenant_or_error(linear_config: 'LinearConfig', tenant: Optional[str]):
+    """Resolve tenant for a tool call. Returns (name, error_message).
+
+    On success, error_message is None. On failure, name is None and
+    error_message contains a user-facing message suitable for tool output.
+    """
+    if not linear_config.is_configured:
+        return None, (
+            "Error: Linear not configured. Set LINEAR_API_KEY, "
+            "LINEAR_TENANTS, or LINEAR_API_KEY_<NAME> env vars/secrets."
+        )
+    try:
+        return linear_config.resolve(tenant), None
+    except (KeyError, RuntimeError) as e:
+        return None, f"Error: {str(e)}"
 
 
 # =============================================================================
@@ -232,6 +375,47 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
     """Register all Linear tools with the MCP server."""
 
     # =========================================================================
+    # TENANTS (MULTI-WORKSPACE)
+    # =========================================================================
+
+    @mcp.tool(
+        name="linear_list_tenants",
+        annotations={
+            "title": "List Configured Linear Tenants",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False
+        }
+    )
+    async def linear_list_tenants() -> str:
+        """List the Linear tenants/workspaces configured on this server.
+
+        Each Linear tool accepts an optional ``tenant`` argument whose value
+        must match one of the names returned here. When omitted, the default
+        tenant is used.
+
+        Returns the list of tenant names and identifies the default tenant.
+        Does NOT return API keys.
+        """
+        if not linear_config.is_configured:
+            return json.dumps({
+                "configured": False,
+                "message": (
+                    "Linear not configured. Set LINEAR_API_KEY, "
+                    "LINEAR_TENANTS, or LINEAR_API_KEY_<NAME> env vars/secrets."
+                ),
+                "tenants": [],
+            }, indent=2)
+
+        return json.dumps({
+            "configured": True,
+            "default": linear_config.default_tenant,
+            "total": len(linear_config.tenant_names),
+            "tenants": linear_config.tenant_names,
+        }, indent=2)
+
+    # =========================================================================
     # VIEWER (AUTHENTICATED USER)
     # =========================================================================
 
@@ -245,14 +429,22 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
             "openWorldHint": True
         }
     )
-    async def linear_get_viewer() -> str:
+    async def linear_get_viewer(
+        tenant: Optional[str] = None
+    ) -> str:
         """Get the currently authenticated Linear user's profile.
+
+        Args:
+            tenant: Optional Linear tenant/workspace name. Use
+                linear_list_tenants to see available tenants. Defaults to
+                the configured default tenant.
 
         Returns the user's name, email, display name, and active status.
         Useful for verifying the connection and getting the current user's ID.
         """
-        if not linear_config.is_configured:
-            return "Error: Linear not configured. Set LINEAR_API_KEY."
+        resolved, err = _resolve_tenant_or_error(linear_config, tenant)
+        if err:
+            return err
 
         try:
             data = await linear_config.graphql_request("""
@@ -268,12 +460,13 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
                         organization { id name urlKey }
                     }
                 }
-            """)
+            """, tenant=resolved)
 
             viewer = data.get("viewer", {})
             org = viewer.get("organization", {})
 
             return json.dumps({
+                "tenant": resolved,
                 "user": {
                     "id": viewer.get("id", ""),
                     "name": viewer.get("name", ""),
@@ -307,14 +500,21 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
             "openWorldHint": True
         }
     )
-    async def linear_list_teams() -> str:
+    async def linear_list_teams(
+        tenant: Optional[str] = None
+    ) -> str:
         """List all teams in the Linear workspace.
+
+        Args:
+            tenant: Optional Linear tenant/workspace name. Defaults to the
+                configured default tenant.
 
         Returns team names, keys, descriptions, and member counts.
         Team IDs are needed when creating issues.
         """
-        if not linear_config.is_configured:
-            return "Error: Linear not configured. Set LINEAR_API_KEY."
+        resolved, err = _resolve_tenant_or_error(linear_config, tenant)
+        if err:
+            return err
 
         try:
             data = await linear_config.graphql_request("""
@@ -332,7 +532,7 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
                         }
                     }
                 }
-            """)
+            """, tenant=resolved)
 
             teams = []
             for t in data.get("teams", {}).get("nodes", []):
@@ -354,7 +554,11 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
                 }
                 teams.append(team)
 
-            return json.dumps({"total": len(teams), "teams": teams}, indent=2)
+            return json.dumps({
+                "tenant": resolved,
+                "total": len(teams),
+                "teams": teams,
+            }, indent=2)
 
         except Exception as e:
             return f"Error listing Linear teams: {str(e)}"
@@ -374,19 +578,23 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
         }
     )
     async def linear_list_workflow_states(
-        team_id: Optional[str] = None
+        team_id: Optional[str] = None,
+        tenant: Optional[str] = None
     ) -> str:
         """List workflow states, optionally filtered by team.
 
         Args:
             team_id: Optional team ID to filter states for a specific team.
+            tenant: Optional Linear tenant/workspace name. Defaults to the
+                configured default tenant.
 
         Returns workflow states with their names, types (triage, backlog, unstarted,
         started, completed, cancelled), and positions.
         State IDs are needed when creating or updating issues.
         """
-        if not linear_config.is_configured:
-            return "Error: Linear not configured. Set LINEAR_API_KEY."
+        resolved, err = _resolve_tenant_or_error(linear_config, tenant)
+        if err:
+            return err
 
         try:
             if team_id:
@@ -408,7 +616,7 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
                 """
                 variables = None
 
-            data = await linear_config.graphql_request(query, variables)
+            data = await linear_config.graphql_request(query, variables, tenant=resolved)
 
             states = []
             for s in data.get("workflowStates", {}).get("nodes", []):
@@ -425,7 +633,11 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
             # Sort by team then position
             states.sort(key=lambda s: (s.get("team", ""), s.get("position", 0)))
 
-            return json.dumps({"total": len(states), "states": states}, indent=2)
+            return json.dumps({
+                "tenant": resolved,
+                "total": len(states),
+                "states": states,
+            }, indent=2)
 
         except Exception as e:
             return f"Error listing workflow states: {str(e)}"
@@ -453,7 +665,8 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
         priority: Optional[int] = None,
         label_name: Optional[str] = None,
         project_id: Optional[str] = None,
-        first: int = 25
+        first: int = 25,
+        tenant: Optional[str] = None
     ) -> str:
         """Search and filter Linear issues.
 
@@ -467,11 +680,14 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
             label_name: Filter by label name.
             project_id: Filter by project ID.
             first: Number of results to return (default 25, max 50).
+            tenant: Optional Linear tenant/workspace name. Defaults to the
+                configured default tenant.
 
         Returns a list of matching issues with key details.
         """
-        if not linear_config.is_configured:
-            return "Error: Linear not configured. Set LINEAR_API_KEY."
+        resolved, err = _resolve_tenant_or_error(linear_config, tenant)
+        if err:
+            return err
 
         try:
             # Build the filter object
@@ -511,7 +727,7 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
                 data = await linear_config.graphql_request(gql_query, {
                     "query": query,
                     "first": first,
-                })
+                }, tenant=resolved)
                 issues_data = data.get("searchIssues", {}).get("nodes", [])
             else:
                 # Use filtered issues query
@@ -529,7 +745,7 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
                 if filters:
                     variables["filter"] = filters
 
-                data = await linear_config.graphql_request(gql_query, variables)
+                data = await linear_config.graphql_request(gql_query, variables, tenant=resolved)
                 issues_data = data.get("issues", {}).get("nodes", [])
 
             issues = []
@@ -550,6 +766,7 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
                 issues.append(formatted)
 
             return json.dumps({
+                "tenant": resolved,
                 "total": len(issues),
                 "issues": issues
             }, indent=2)
@@ -573,18 +790,22 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
     )
     async def linear_get_issue(
         issue_id: str,
-        include_comments: bool = False
+        include_comments: bool = False,
+        tenant: Optional[str] = None
     ) -> str:
         """Get detailed information about a specific Linear issue.
 
         Args:
             issue_id: The issue ID (UUID) or identifier (e.g., "ENG-123").
             include_comments: Whether to include the issue's comments (default False).
+            tenant: Optional Linear tenant/workspace name. Defaults to the
+                configured default tenant.
 
         Returns full issue details including description, state, assignee, labels, etc.
         """
-        if not linear_config.is_configured:
-            return "Error: Linear not configured. Set LINEAR_API_KEY."
+        resolved, err = _resolve_tenant_or_error(linear_config, tenant)
+        if err:
+            return err
 
         try:
             comments_fragment = ""
@@ -610,13 +831,14 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
                 }}
             """
 
-            data = await linear_config.graphql_request(gql_query, {"id": issue_id})
+            data = await linear_config.graphql_request(gql_query, {"id": issue_id}, tenant=resolved)
 
             issue = data.get("issue")
             if not issue:
                 return f"Error: Issue '{issue_id}' not found."
 
             result = _format_issue(issue)
+            result["tenant"] = resolved
 
             if include_comments:
                 comments = []
@@ -662,7 +884,8 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
         cycle_id: Optional[str] = None,
         due_date: Optional[str] = None,
         estimate: Optional[int] = None,
-        parent_id: Optional[str] = None
+        parent_id: Optional[str] = None,
+        tenant: Optional[str] = None
     ) -> str:
         """Create a new Linear issue.
 
@@ -679,11 +902,14 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
             due_date: Due date in YYYY-MM-DD format.
             estimate: Story point estimate.
             parent_id: Parent issue ID to create as a sub-issue.
+            tenant: Optional Linear tenant/workspace name. Defaults to the
+                configured default tenant. The team_id must belong to this tenant.
 
         Returns the created issue details including its identifier and URL.
         """
-        if not linear_config.is_configured:
-            return "Error: Linear not configured. Set LINEAR_API_KEY."
+        resolved, err = _resolve_tenant_or_error(linear_config, tenant)
+        if err:
+            return err
 
         try:
             input_data: Dict[str, Any] = {
@@ -723,7 +949,7 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
                 }}
             """
 
-            data = await linear_config.graphql_request(gql_query, {"input": input_data})
+            data = await linear_config.graphql_request(gql_query, {"input": input_data}, tenant=resolved)
 
             result = data.get("issueCreate", {})
             if not result.get("success"):
@@ -732,6 +958,7 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
             issue = result.get("issue", {})
             formatted = _format_issue(issue)
             formatted["_status"] = "created"
+            formatted["tenant"] = resolved
 
             return json.dumps(formatted, indent=2)
 
@@ -763,7 +990,8 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
         project_id: Optional[str] = None,
         cycle_id: Optional[str] = None,
         due_date: Optional[str] = None,
-        estimate: Optional[int] = None
+        estimate: Optional[int] = None,
+        tenant: Optional[str] = None
     ) -> str:
         """Update an existing Linear issue.
 
@@ -779,11 +1007,14 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
             cycle_id: Cycle ID to move to.
             due_date: Due date in YYYY-MM-DD format.
             estimate: Story point estimate.
+            tenant: Optional Linear tenant/workspace name. Defaults to the
+                configured default tenant.
 
         Returns the updated issue details.
         """
-        if not linear_config.is_configured:
-            return "Error: Linear not configured. Set LINEAR_API_KEY."
+        resolved, err = _resolve_tenant_or_error(linear_config, tenant)
+        if err:
+            return err
 
         try:
             input_data: Dict[str, Any] = {}
@@ -826,7 +1057,7 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
             data = await linear_config.graphql_request(gql_query, {
                 "id": issue_id,
                 "input": input_data,
-            })
+            }, tenant=resolved)
 
             result = data.get("issueUpdate", {})
             if not result.get("success"):
@@ -835,6 +1066,7 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
             issue = result.get("issue", {})
             formatted = _format_issue(issue)
             formatted["_status"] = "updated"
+            formatted["tenant"] = resolved
 
             return json.dumps(formatted, indent=2)
 
@@ -857,18 +1089,22 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
     )
     async def linear_add_comment(
         issue_id: str,
-        body: str
+        body: str,
+        tenant: Optional[str] = None
     ) -> str:
         """Add a comment to a Linear issue.
 
         Args:
             issue_id: The issue ID (UUID) or identifier (e.g., "ENG-123") to comment on.
             body: Comment body in markdown format.
+            tenant: Optional Linear tenant/workspace name. Defaults to the
+                configured default tenant.
 
         Returns the created comment details.
         """
-        if not linear_config.is_configured:
-            return "Error: Linear not configured. Set LINEAR_API_KEY."
+        resolved, err = _resolve_tenant_or_error(linear_config, tenant)
+        if err:
+            return err
 
         try:
             gql_query = """
@@ -891,7 +1127,7 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
                     "issueId": issue_id,
                     "body": body,
                 }
-            })
+            }, tenant=resolved)
 
             result = data.get("commentCreate", {})
             if not result.get("success"):
@@ -903,6 +1139,7 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
 
             return json.dumps({
                 "_status": "comment_added",
+                "tenant": resolved,
                 "commentId": comment.get("id", ""),
                 "body": comment.get("body", ""),
                 "author": user.get("name", "") if user else "",
@@ -932,18 +1169,22 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
     )
     async def linear_list_projects(
         first: int = 25,
-        include_completed: bool = False
+        include_completed: bool = False,
+        tenant: Optional[str] = None
     ) -> str:
         """List projects in the Linear workspace.
 
         Args:
             first: Number of projects to return (default 25, max 50).
             include_completed: Whether to include completed/cancelled projects (default False).
+            tenant: Optional Linear tenant/workspace name. Defaults to the
+                configured default tenant.
 
         Returns a list of projects with their names, status, progress, and leads.
         """
-        if not linear_config.is_configured:
-            return "Error: Linear not configured. Set LINEAR_API_KEY."
+        resolved, err = _resolve_tenant_or_error(linear_config, tenant)
+        if err:
+            return err
 
         try:
             first = min(first, 50)
@@ -975,7 +1216,7 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
                 }}
             """
 
-            data = await linear_config.graphql_request(gql_query, {"first": first})
+            data = await linear_config.graphql_request(gql_query, {"first": first}, tenant=resolved)
 
             projects = []
             for p in data.get("projects", {}).get("nodes", []):
@@ -986,6 +1227,7 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
                 projects.append(formatted)
 
             return json.dumps({
+                "tenant": resolved,
                 "total": len(projects),
                 "projects": projects
             }, indent=2)
@@ -1010,7 +1252,8 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
     async def linear_list_cycles(
         team_id: Optional[str] = None,
         include_completed: bool = False,
-        first: int = 10
+        first: int = 10,
+        tenant: Optional[str] = None
     ) -> str:
         """List cycles (sprints) in the Linear workspace.
 
@@ -1018,11 +1261,14 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
             team_id: Optional team ID to filter cycles for a specific team.
             include_completed: Whether to include completed cycles (default False).
             first: Number of cycles to return (default 10, max 50).
+            tenant: Optional Linear tenant/workspace name. Defaults to the
+                configured default tenant.
 
         Returns a list of cycles with their names, dates, and progress.
         """
-        if not linear_config.is_configured:
-            return "Error: Linear not configured. Set LINEAR_API_KEY."
+        resolved, err = _resolve_tenant_or_error(linear_config, tenant)
+        if err:
+            return err
 
         try:
             first = min(first, 50)
@@ -1055,7 +1301,7 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
             if filters:
                 variables["filter"] = filters
 
-            data = await linear_config.graphql_request(gql_query, variables)
+            data = await linear_config.graphql_request(gql_query, variables, tenant=resolved)
 
             cycles = []
             for c in data.get("cycles", {}).get("nodes", []):
@@ -1073,7 +1319,11 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
                     cycle["completedAt"] = c["completedAt"]
                 cycles.append(cycle)
 
-            return json.dumps({"total": len(cycles), "cycles": cycles}, indent=2)
+            return json.dumps({
+                "tenant": resolved,
+                "total": len(cycles),
+                "cycles": cycles,
+            }, indent=2)
 
         except Exception as e:
             return f"Error listing Linear cycles: {str(e)}"
@@ -1093,18 +1343,22 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
         }
     )
     async def linear_list_labels(
-        team_id: Optional[str] = None
+        team_id: Optional[str] = None,
+        tenant: Optional[str] = None
     ) -> str:
         """List issue labels in the Linear workspace.
 
         Args:
             team_id: Optional team ID to filter labels for a specific team.
+            tenant: Optional Linear tenant/workspace name. Defaults to the
+                configured default tenant.
 
         Returns all available labels with IDs, names, colors, and parent groups.
         Label IDs are needed when creating or updating issues with labels.
         """
-        if not linear_config.is_configured:
-            return "Error: Linear not configured. Set LINEAR_API_KEY."
+        resolved, err = _resolve_tenant_or_error(linear_config, tenant)
+        if err:
+            return err
 
         try:
             if team_id:
@@ -1134,7 +1388,7 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
                 """
                 variables = None
 
-            data = await linear_config.graphql_request(query, variables)
+            data = await linear_config.graphql_request(query, variables, tenant=resolved)
 
             labels = []
             for l in data.get("issueLabels", {}).get("nodes", []):
@@ -1153,7 +1407,11 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
                     label["team"] = team.get("name", "")
                 labels.append(label)
 
-            return json.dumps({"total": len(labels), "labels": labels}, indent=2)
+            return json.dumps({
+                "tenant": resolved,
+                "total": len(labels),
+                "labels": labels,
+            }, indent=2)
 
         except Exception as e:
             return f"Error listing Linear labels: {str(e)}"
@@ -1173,18 +1431,22 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
         }
     )
     async def linear_list_users(
-        include_disabled: bool = False
+        include_disabled: bool = False,
+        tenant: Optional[str] = None
     ) -> str:
         """List users in the Linear workspace.
 
         Args:
             include_disabled: Whether to include disabled/deactivated users (default False).
+            tenant: Optional Linear tenant/workspace name. Defaults to the
+                configured default tenant.
 
         Returns user IDs, names, emails, and roles.
         User IDs are needed when assigning issues.
         """
-        if not linear_config.is_configured:
-            return "Error: Linear not configured. Set LINEAR_API_KEY."
+        resolved, err = _resolve_tenant_or_error(linear_config, tenant)
+        if err:
+            return err
 
         try:
             if include_disabled:
@@ -1208,7 +1470,7 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
                 }}
             """
 
-            data = await linear_config.graphql_request(gql_query)
+            data = await linear_config.graphql_request(gql_query, tenant=resolved)
 
             users = []
             for u in data.get("users", {}).get("nodes", []):
@@ -1225,7 +1487,11 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
                     user["guest"] = True
                 users.append(user)
 
-            return json.dumps({"total": len(users), "users": users}, indent=2)
+            return json.dumps({
+                "tenant": resolved,
+                "total": len(users),
+                "users": users,
+            }, indent=2)
 
         except Exception as e:
             return f"Error listing Linear users: {str(e)}"
@@ -1245,17 +1511,21 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
         }
     )
     async def linear_archive_issue(
-        issue_id: str
+        issue_id: str,
+        tenant: Optional[str] = None
     ) -> str:
         """Archive a Linear issue.
 
         Args:
             issue_id: The issue ID (UUID) or identifier (e.g., "ENG-123") to archive.
+            tenant: Optional Linear tenant/workspace name. Defaults to the
+                configured default tenant.
 
         Returns confirmation of the archive operation.
         """
-        if not linear_config.is_configured:
-            return "Error: Linear not configured. Set LINEAR_API_KEY."
+        resolved, err = _resolve_tenant_or_error(linear_config, tenant)
+        if err:
+            return err
 
         try:
             gql_query = """
@@ -1266,12 +1536,13 @@ def register_linear_tools(mcp, linear_config: 'LinearConfig'):
                 }
             """
 
-            data = await linear_config.graphql_request(gql_query, {"id": issue_id})
+            data = await linear_config.graphql_request(gql_query, {"id": issue_id}, tenant=resolved)
 
             result = data.get("issueArchive", {})
             if result.get("success"):
                 return json.dumps({
                     "_status": "archived",
+                    "tenant": resolved,
                     "issueId": issue_id,
                     "message": f"Issue '{issue_id}' has been archived."
                 }, indent=2)

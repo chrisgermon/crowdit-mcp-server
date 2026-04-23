@@ -126,6 +126,40 @@ Until you split, **Option 1 (ENABLED_SERVICES)** is the simplest way to cut toke
 
 See Google Secret Manager in `crowdmcp` project for required secrets.
 
+### Linear (multi-tenant)
+
+The Linear integration can connect to **multiple Linear workspaces / accounts**.
+Each workspace is called a *tenant* and has its own Personal API key. Every
+`linear_*` tool accepts an optional `tenant` argument; when omitted, the
+configured default tenant is used. Use `linear_list_tenants` to see what's
+configured.
+
+Configure tenants via any of the following (combined, in this priority order):
+
+1. **`LINEAR_TENANTS`** - JSON mapping of tenant name → API key. Stored in
+   Google Secret Manager or as an env var.
+
+   ```json
+   {
+     "crowdit": "lin_api_xxxxxxxxxxxxxxxxxxxx",
+     "acme":    "lin_api_yyyyyyyyyyyyyyyyyyyy"
+   }
+   ```
+
+   Each value may also be an object: `{"api_key": "lin_api_..."}`.
+
+2. **`LINEAR_API_KEY_<NAME>`** - Per-tenant env vars. The suffix becomes the
+   tenant name (lower-cased). For example, `LINEAR_API_KEY_ACME=lin_api_...`
+   registers a tenant called `acme`.
+
+3. **`LINEAR_API_KEY`** - Legacy single-tenant key. Registered as the tenant
+   named `default`. Existing single-workspace deployments keep working with no
+   changes.
+
+**`LINEAR_DEFAULT_TENANT`** optionally names the tenant to use when a tool
+call omits `tenant`. If unset, `default` is used if present, otherwise the
+first registered tenant.
+
 ## API Specifications
 
 - **ingram.json** - OpenAPI 3.0 specification for Ingram Micro Reseller API v6 (Australia)
