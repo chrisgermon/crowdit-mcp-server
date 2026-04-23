@@ -55,6 +55,7 @@ class LinearConfig:
     def __init__(self):
         self._tenants: Optional[Dict[str, str]] = None  # name -> api_key
         self._default_tenant: Optional[str] = None
+        self._default_tenant_error: Optional[str] = None
         self._loaded = False
 
     @staticmethod
@@ -93,8 +94,9 @@ class LinearConfig:
                                 or value.get("key")
                                 or value.get("token")
                             )
-                        if name and api_key:
-                            tenants[str(name).strip()] = api_key
+                        normalized = str(name).strip().lower() if name else ""
+                        if normalized and api_key:
+                            tenants[normalized] = api_key
                 else:
                     logger.warning("LINEAR_TENANTS must be a JSON object")
             except Exception as e:
@@ -116,10 +118,23 @@ class LinearConfig:
 
         self._tenants = tenants
 
-        # Resolve default tenant
-        configured_default = (os.getenv("LINEAR_DEFAULT_TENANT") or "").strip().lower()
-        if configured_default and configured_default in tenants:
-            self._default_tenant = configured_default
+        # Resolve default tenant. Tenant names are all stored lower-cased, so
+        # we normalize LINEAR_DEFAULT_TENANT the same way. If it is set but
+        # does not match any configured tenant, fail fast rather than silently
+        # falling back to "default" or the first tenant.
+        configured_default_raw = (os.getenv("LINEAR_DEFAULT_TENANT") or "").strip()
+        configured_default = configured_default_raw.lower()
+        if configured_default:
+            if configured_default in tenants:
+                self._default_tenant = configured_default
+            else:
+                available = ", ".join(sorted(tenants.keys())) or "(none)"
+                self._default_tenant = None
+                self._default_tenant_error = (
+                    f"LINEAR_DEFAULT_TENANT={configured_default_raw!r} does not "
+                    f"match any configured Linear tenant. Available: {available}"
+                )
+                logger.error(self._default_tenant_error)
         elif "default" in tenants:
             self._default_tenant = "default"
         elif tenants:
@@ -159,6 +174,8 @@ class LinearConfig:
             )
 
         if tenant is None or str(tenant).strip() == "":
+            if self._default_tenant_error:
+                raise RuntimeError(self._default_tenant_error)
             if not self._default_tenant:
                 raise RuntimeError("Linear has no default tenant configured.")
             return self._default_tenant
