@@ -378,3 +378,162 @@ def register_gorelo_tools(mcp, config: "GoreloConfig") -> None:
             return f"Contact '{cname}' (ID: {contact_id}) updated successfully.\n\n```json\n{json.dumps(data, indent=2)}\n```"
         except Exception as e:
             return f"Error: {str(e)}"
+
+    @mcp.tool(annotations={"readOnlyHint": True})
+    async def gorelo_list_ticket_statuses() -> str:
+        """List all Gorelo ticket statuses."""
+        if not config.is_configured:
+            return "Error: Gorelo not configured."
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{config.base_url}/v1/tickets/statuses", headers=config.headers())
+                response.raise_for_status()
+                statuses = response.json()
+            if not statuses:
+                return "No ticket statuses found."
+            results = []
+            for s in statuses:
+                results.append(f"- **{s.get('name', 'Unknown')}** (ID: `{s.get('id', 'N/A')}`)")
+            return f"## Gorelo Ticket Statuses ({len(statuses)} total)\n\n" + "\n".join(results)
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    @mcp.tool(annotations={"readOnlyHint": True})
+    async def gorelo_list_ticket_tags() -> str:
+        """List all Gorelo ticket tags."""
+        if not config.is_configured:
+            return "Error: Gorelo not configured."
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{config.base_url}/v1/tickets/tags", headers=config.headers())
+                response.raise_for_status()
+                tags = response.json()
+            if not tags:
+                return "No ticket tags found."
+            results = []
+            for t in tags:
+                results.append(f"- **{t.get('name', 'Unknown')}** (ID: `{t.get('id', 'N/A')}`)")
+            return f"## Gorelo Ticket Tags ({len(tags)} total)\n\n" + "\n".join(results)
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    @mcp.tool(annotations={"readOnlyHint": True})
+    async def gorelo_list_ticket_types() -> str:
+        """List all Gorelo ticket types."""
+        if not config.is_configured:
+            return "Error: Gorelo not configured."
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{config.base_url}/v1/tickets/types", headers=config.headers())
+                response.raise_for_status()
+                types_ = response.json()
+            if not types_:
+                return "No ticket types found."
+            results = []
+            for t in types_:
+                results.append(f"- **{t.get('name', 'Unknown')}** (ID: `{t.get('id', 'N/A')}`)")
+            return f"## Gorelo Ticket Types ({len(types_)} total)\n\n" + "\n".join(results)
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    @mcp.tool(annotations={"readOnlyHint": False})
+    async def gorelo_create_ticket(
+        subject: str = Field(..., description="Ticket subject/title"),
+        client_id: int = Field(..., description="Client ID the ticket belongs to"),
+        description: Optional[str] = Field(None, description="Ticket description/body"),
+        contact_id: Optional[int] = Field(None, description="Contact ID to associate with the ticket"),
+        client_location_id: Optional[int] = Field(None, description="Client location ID"),
+        type_id: Optional[int] = Field(None, description="Ticket type ID (see gorelo_list_ticket_types)"),
+        status_id: Optional[int] = Field(None, description="Ticket status ID (see gorelo_list_ticket_statuses)"),
+        priority: Optional[str] = Field(None, description="Ticket priority (e.g., 'low', 'medium', 'high', 'critical')"),
+        assignee_user_id: Optional[int] = Field(None, description="User ID to assign the ticket to"),
+        tag_ids: Optional[str] = Field(None, description="Comma-separated list of ticket tag IDs"),
+        extra_fields: Optional[str] = Field(None, description="JSON string of additional fields to include in the payload")
+    ) -> str:
+        """Create a new ticket in Gorelo."""
+        if not config.is_configured:
+            return "Error: Gorelo not configured (missing GORELO_API_KEY)."
+        try:
+            payload = {"subject": subject, "clientId": client_id}
+            if description is not None:
+                payload["description"] = description
+            if contact_id is not None:
+                payload["contactId"] = contact_id
+            if client_location_id is not None:
+                payload["clientLocationId"] = client_location_id
+            if type_id is not None:
+                payload["typeId"] = type_id
+            if status_id is not None:
+                payload["statusId"] = status_id
+            if priority is not None:
+                payload["priority"] = priority
+            if assignee_user_id is not None:
+                payload["assigneeUserId"] = assignee_user_id
+            if tag_ids:
+                parsed_tags = []
+                for t in tag_ids.split(","):
+                    t = t.strip()
+                    if not t:
+                        continue
+                    try:
+                        parsed_tags.append(int(t))
+                    except ValueError:
+                        parsed_tags.append(t)
+                payload["tagIds"] = parsed_tags
+            if extra_fields:
+                try:
+                    extra = json.loads(extra_fields)
+                    if isinstance(extra, dict):
+                        payload.update(extra)
+                    else:
+                        return "Error: extra_fields must be a JSON object."
+                except json.JSONDecodeError as e:
+                    return f"Error: extra_fields is not valid JSON: {e}"
+            async with httpx.AsyncClient() as client:
+                response = await client.post(f"{config.base_url}/v1/tickets", json=payload, headers=config.headers())
+                response.raise_for_status()
+                data = response.json() if response.content else {}
+            ticket_id = data.get("id", "N/A") if isinstance(data, dict) else "N/A"
+            return f"Ticket '{subject}' created successfully (ID: {ticket_id}).\n\n```json\n{json.dumps(data, indent=2)}\n```"
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    @mcp.tool(annotations={"readOnlyHint": True})
+    async def gorelo_list_organization_users() -> str:
+        """List all users in the Gorelo organization."""
+        if not config.is_configured:
+            return "Error: Gorelo not configured."
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{config.base_url}/v1/organization/users", headers=config.headers())
+                response.raise_for_status()
+                users = response.json()
+            if not users:
+                return "No organization users found."
+            results = []
+            for u in users[:100]:
+                name = f"{u.get('firstName', '')} {u.get('lastName', '')}".strip() or u.get('name') or u.get('email', 'Unknown')
+                email = u.get('email', 'N/A')
+                results.append(f"- **{name}** ({email}) - ID: `{u.get('id', 'N/A')}`")
+            return f"## Gorelo Organization Users ({len(users)} total)\n\n" + "\n".join(results)
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    @mcp.tool(annotations={"readOnlyHint": True})
+    async def gorelo_list_organization_groups() -> str:
+        """List all groups in the Gorelo organization."""
+        if not config.is_configured:
+            return "Error: Gorelo not configured."
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{config.base_url}/v1/organization/groups", headers=config.headers())
+                response.raise_for_status()
+                groups = response.json()
+            if not groups:
+                return "No organization groups found."
+            results = []
+            for g in groups:
+                results.append(f"- **{g.get('name', 'Unknown')}** (ID: `{g.get('id', 'N/A')}`)")
+            return f"## Gorelo Organization Groups ({len(groups)} total)\n\n" + "\n".join(results)
+        except Exception as e:
+            return f"Error: {str(e)}"
