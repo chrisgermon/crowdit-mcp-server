@@ -837,8 +837,6 @@ def register_todo_tools(mcp, email_config):
         # Safety cap on total pages per list so a runaway list can't exhaust
         # memory or rate limits.
         max_pages = 20
-        # Cache the access token across pages so nextLink follow-ups reuse it.
-        access_token: Optional[str] = None
         for lst in lists_data.get("value", []):
             if len(matches) >= top:
                 break
@@ -887,9 +885,10 @@ def register_todo_tools(mcp, email_config):
                 next_link = tdata.get("@odata.nextLink")
                 if not next_link or len(matches) >= top:
                     break
-                if access_token is None:
-                    access_token = await email_config.get_access_token()
+                # Re-fetch the token each page so EmailConfig's internal
+                # cache+refresh handles expiry across long-running searches.
                 try:
+                    access_token = await email_config.get_access_token()
                     async with httpx.AsyncClient(timeout=30.0) as client:
                         resp = await client.get(
                             next_link,
