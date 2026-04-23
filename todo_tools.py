@@ -31,6 +31,8 @@ from datetime import datetime
 from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
 
@@ -101,8 +103,10 @@ async def _resolve_list_id(
         if lst.get("displayName", "").lower() == normalized.lower():
             return lst["id"]
 
-    # Last resort: looks like an id already (long base64-ish string)?
-    if len(normalized) > 20 and "=" in normalized:
+    # Last resort: looks like an id already? Accept either base64-style
+    # opaque ids (contain "=" padding) or GUID-style ids (36 chars with
+    # dashes, as returned by some Graph endpoints).
+    if "=" in normalized or len(normalized) >= 30:
         return normalized
 
     available = ", ".join(
@@ -830,36 +834,37 @@ def register_todo_tools(mcp, email_config):
         # Graph's /todo/lists/{id}/tasks endpoint silently caps $top below
         # what's requested (typically ~100); match todo_list_tasks' ceiling.
         page_size = 100
-        # Safety cap so a runaway list can't exhaust memory or rate limits.
-        max_per_list = 2000
+        # Safety cap on total pages per list so a runaway list can't exhaust
+        # memory or rate limits.
+        max_pages = 20
+        # Cache the access token across pages so nextLink follow-ups reuse it.
+        access_token: Optional[str] = None
         for lst in lists_data.get("value", []):
             if len(matches) >= top:
                 break
             list_id = lst["id"]
             list_name = lst.get("displayName") or lst.get("wellknownListName")
 
-            skip = 0
-            while skip < max_per_list and len(matches) < top:
-                params: dict[str, Any] = {"$top": page_size, "$skip": skip}
-                if not include_completed:
-                    params["$filter"] = "status ne 'completed'"
+            # First page via graph_request so we use the shared auth layer.
+            params: dict[str, Any] = {"$top": page_size}
+            if not include_completed:
+                params["$filter"] = "status ne 'completed'"
 
-                try:
-                    tdata = await email_config.graph_request(
-                        "GET",
-                        f"/todo/lists/{list_id}/tasks",
-                        user_id=user_id or None,
-                        params=params,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Skipping list %s during search at skip=%d: %s",
-                        list_name,
-                        skip,
-                        exc,
-                    )
-                    break
+            try:
+                tdata = await email_config.graph_request(
+                    "GET",
+                    f"/todo/lists/{list_id}/tasks",
+                    user_id=user_id or None,
+                    params=params,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Skipping list %s during search: %s", list_name, exc
+                )
+                continue
 
+            pages = 0
+            while pages < max_pages and len(matches) < top:
                 batch = tdata.get("value", [])
                 if not batch:
                     break
@@ -876,13 +881,28 @@ def register_todo_tools(mcp, email_config):
                         if len(matches) >= top:
                             break
 
-                # Use @odata.nextLink as the authoritative "more pages" signal;
-                # Graph may return fewer than requested, so batch size alone
-                # can't tell us we're done. Advance $skip by the actual batch
-                # size received, not the page we asked for.
-                if not tdata.get("@odata.nextLink"):
+                # Follow @odata.nextLink verbatim: the To Do endpoint's $skip
+                # support is unreliable, so the server-provided opaque URL
+                # (which carries a $skiptoken) is the only safe continuation.
+                next_link = tdata.get("@odata.nextLink")
+                if not next_link or len(matches) >= top:
                     break
-                skip += len(batch)
+                if access_token is None:
+                    access_token = await email_config.get_access_token()
+                try:
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        resp = await client.get(
+                            next_link,
+                            headers={"Authorization": f"Bearer {access_token}"},
+                        )
+                        resp.raise_for_status()
+                        tdata = resp.json()
+                except Exception as exc:
+                    logger.warning(
+                        "Pagination failed for list %s: %s", list_name, exc
+                    )
+                    break
+                pages += 1
 
         return (
             f"🔍 {len(matches)} match(es) for '{query}'\n\n"
