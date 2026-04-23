@@ -28,6 +28,7 @@ import json
 import logging
 from datetime import datetime
 from typing import Any, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,17 @@ def _parse_datetime(value: Optional[str], timezone: str) -> Optional[dict[str, s
             f"Invalid datetime '{value}'. Use 'YYYY-MM-DD' or "
             f"'YYYY-MM-DDTHH:MM:SS'. ({exc})"
         ) from exc
+    # If the input carried a UTC offset (e.g. "...Z" or "+10:00"), preserve the
+    # actual instant by converting into the caller's timezone before stripping
+    # tzinfo. Naive inputs are treated as already being wall time in `timezone`.
+    if dt.tzinfo is not None:
+        try:
+            target_tz = ZoneInfo(timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(
+                f"Invalid timezone '{timezone}': {exc}"
+            ) from exc
+        dt = dt.astimezone(target_tz).replace(tzinfo=None)
     return {
         "dateTime": dt.strftime("%Y-%m-%dT%H:%M:%S"),
         "timeZone": timezone,
@@ -805,41 +817,54 @@ def register_todo_tools(mcp, email_config):
             return f"❌ Error listing task lists: {e}"
 
         matches: list[dict[str, Any]] = []
+        page_size = 200
+        # Safety cap so a runaway list can't exhaust memory or rate limits.
+        max_per_list = 2000
         for lst in lists_data.get("value", []):
+            if len(matches) >= top:
+                break
             list_id = lst["id"]
             list_name = lst.get("displayName") or lst.get("wellknownListName")
 
-            params: dict[str, Any] = {"$top": 200}
-            if not include_completed:
-                params["$filter"] = "status ne 'completed'"
+            skip = 0
+            while skip < max_per_list and len(matches) < top:
+                params: dict[str, Any] = {"$top": page_size, "$skip": skip}
+                if not include_completed:
+                    params["$filter"] = "status ne 'completed'"
 
-            try:
-                tdata = await email_config.graph_request(
-                    "GET",
-                    f"/todo/lists/{list_id}/tasks",
-                    user_id=user_id or None,
-                    params=params,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Skipping list %s during search: %s", list_name, exc
-                )
-                continue
+                try:
+                    tdata = await email_config.graph_request(
+                        "GET",
+                        f"/todo/lists/{list_id}/tasks",
+                        user_id=user_id or None,
+                        params=params,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Skipping list %s during search at skip=%d: %s",
+                        list_name,
+                        skip,
+                        exc,
+                    )
+                    break
 
-            for task in tdata.get("value", []):
-                haystacks = [
-                    (task.get("title") or "").lower(),
-                    ((task.get("body") or {}).get("content") or "").lower(),
-                ]
-                if any(q in h for h in haystacks):
-                    summary = _format_task_summary(task)
-                    summary["list_name"] = list_name
-                    summary["list_id"] = list_id
-                    matches.append(summary)
-                    if len(matches) >= top:
-                        break
-            if len(matches) >= top:
-                break
+                batch = tdata.get("value", [])
+                for task in batch:
+                    haystacks = [
+                        (task.get("title") or "").lower(),
+                        ((task.get("body") or {}).get("content") or "").lower(),
+                    ]
+                    if any(q in h for h in haystacks):
+                        summary = _format_task_summary(task)
+                        summary["list_name"] = list_name
+                        summary["list_id"] = list_id
+                        matches.append(summary)
+                        if len(matches) >= top:
+                            break
+
+                if len(batch) < page_size:
+                    break
+                skip += page_size
 
         return (
             f"🔍 {len(matches)} match(es) for '{query}'\n\n"
