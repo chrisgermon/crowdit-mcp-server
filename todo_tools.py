@@ -861,8 +861,11 @@ def register_todo_tools(mcp, email_config):
                 )
                 continue
 
-            pages = 0
-            while pages < max_pages and len(matches) < top:
+            # First page is already in tdata; subsequent pages come from
+            # @odata.nextLink. Track total pages fetched so the safety cap is
+            # enforced *before* spending another Graph call.
+            pages_fetched = 1
+            while True:
                 batch = tdata.get("value", [])
                 if not batch:
                     break
@@ -879,11 +882,15 @@ def register_todo_tools(mcp, email_config):
                         if len(matches) >= top:
                             break
 
+                if len(matches) >= top:
+                    break
                 # Follow @odata.nextLink verbatim: the To Do endpoint's $skip
                 # support is unreliable, so the server-provided opaque URL
                 # (which carries a $skiptoken) is the only safe continuation.
                 next_link = tdata.get("@odata.nextLink")
-                if not next_link or len(matches) >= top:
+                if not next_link:
+                    break
+                if pages_fetched >= max_pages:
                     break
                 # Re-fetch the token each page so EmailConfig's internal
                 # cache+refresh handles expiry across long-running searches.
@@ -901,7 +908,7 @@ def register_todo_tools(mcp, email_config):
                         "Pagination failed for list %s: %s", list_name, exc
                     )
                     break
-                pages += 1
+                pages_fetched += 1
 
         return (
             f"🔍 {len(matches)} match(es) for '{query}'\n\n"
