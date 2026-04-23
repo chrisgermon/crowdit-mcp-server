@@ -454,21 +454,21 @@ def register_gorelo_tools(mcp, config: "GoreloConfig") -> None:
         if not config.is_configured:
             return "Error: Gorelo not configured (missing GORELO_API_KEY)."
         try:
-            payload = {"subject": subject, "clientId": client_id}
+            typed = {"subject": subject, "clientId": client_id}
             if description is not None:
-                payload["description"] = description
+                typed["description"] = description
             if contact_id is not None:
-                payload["contactId"] = contact_id
+                typed["contactId"] = contact_id
             if client_location_id is not None:
-                payload["clientLocationId"] = client_location_id
+                typed["clientLocationId"] = client_location_id
             if type_id is not None:
-                payload["typeId"] = type_id
+                typed["typeId"] = type_id
             if status_id is not None:
-                payload["statusId"] = status_id
+                typed["statusId"] = status_id
             if priority is not None:
-                payload["priority"] = priority
+                typed["priority"] = priority
             if assignee_user_id is not None:
-                payload["assigneeUserId"] = assignee_user_id
+                typed["assigneeUserId"] = assignee_user_id
             if tag_ids:
                 parsed_tags = []
                 for t in tag_ids.split(","):
@@ -478,17 +478,21 @@ def register_gorelo_tools(mcp, config: "GoreloConfig") -> None:
                     try:
                         parsed_tags.append(int(t))
                     except ValueError:
-                        parsed_tags.append(t)
-                payload["tagIds"] = parsed_tags
+                        return f"Error: tag_ids must be numeric IDs; got '{t}'."
+                typed["tagIds"] = parsed_tags
+            payload: dict = {}
             if extra_fields:
                 try:
                     extra = json.loads(extra_fields)
-                    if isinstance(extra, dict):
-                        payload.update(extra)
-                    else:
-                        return "Error: extra_fields must be a JSON object."
                 except json.JSONDecodeError as e:
                     return f"Error: extra_fields is not valid JSON: {e}"
+                if not isinstance(extra, dict):
+                    return "Error: extra_fields must be a JSON object."
+                conflicts = sorted(set(extra) & set(typed))
+                if conflicts:
+                    return f"Error: extra_fields cannot override typed parameters: {', '.join(conflicts)}"
+                payload.update(extra)
+            payload.update(typed)
             async with httpx.AsyncClient() as client:
                 response = await client.post(f"{config.base_url}/v1/tickets", json=payload, headers=config.headers())
                 response.raise_for_status()
@@ -532,7 +536,7 @@ def register_gorelo_tools(mcp, config: "GoreloConfig") -> None:
             if not groups:
                 return "No organization groups found."
             results = []
-            for g in groups:
+            for g in groups[:100]:
                 results.append(f"- **{g.get('name', 'Unknown')}** (ID: `{g.get('id', 'N/A')}`)")
             return f"## Gorelo Organization Groups ({len(groups)} total)\n\n" + "\n".join(results)
         except Exception as e:
