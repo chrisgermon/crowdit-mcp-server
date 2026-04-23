@@ -817,7 +817,9 @@ def register_todo_tools(mcp, email_config):
             return f"❌ Error listing task lists: {e}"
 
         matches: list[dict[str, Any]] = []
-        page_size = 200
+        # Graph's /todo/lists/{id}/tasks endpoint silently caps $top below
+        # what's requested (typically ~100); match todo_list_tasks' ceiling.
+        page_size = 100
         # Safety cap so a runaway list can't exhaust memory or rate limits.
         max_per_list = 2000
         for lst in lists_data.get("value", []):
@@ -849,6 +851,8 @@ def register_todo_tools(mcp, email_config):
                     break
 
                 batch = tdata.get("value", [])
+                if not batch:
+                    break
                 for task in batch:
                     haystacks = [
                         (task.get("title") or "").lower(),
@@ -862,9 +866,13 @@ def register_todo_tools(mcp, email_config):
                         if len(matches) >= top:
                             break
 
-                if len(batch) < page_size:
+                # Use @odata.nextLink as the authoritative "more pages" signal;
+                # Graph may return fewer than requested, so batch size alone
+                # can't tell us we're done. Advance $skip by the actual batch
+                # size received, not the page we asked for.
+                if not tdata.get("@odata.nextLink"):
                     break
-                skip += page_size
+                skip += len(batch)
 
         return (
             f"🔍 {len(matches)} match(es) for '{query}'\n\n"
