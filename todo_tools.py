@@ -24,6 +24,7 @@ Environment Variables (same as email_tools):
     EMAIL_USER_ID: Default user to access (e.g., chris@crowdit.com.au)
 """
 
+import hashlib
 import json
 import logging
 from datetime import datetime
@@ -127,6 +128,14 @@ def _parse_datetime(value: Optional[str], timezone: str) -> Optional[dict[str, s
     """
     if not value:
         return None
+    # Validate timezone up-front for every code path so a bad IANA name
+    # (e.g. "Foo/Bar") fails loudly here instead of silently reaching Graph.
+    try:
+        target_tz = ZoneInfo(timezone)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(
+            f"Invalid timezone '{timezone}': {exc}"
+        ) from exc
     s = value.strip()
     if len(s) == 10 and s[4] == "-" and s[7] == "-":
         s = f"{s}T00:00:00"
@@ -141,12 +150,6 @@ def _parse_datetime(value: Optional[str], timezone: str) -> Optional[dict[str, s
     # actual instant by converting into the caller's timezone before stripping
     # tzinfo. Naive inputs are treated as already being wall time in `timezone`.
     if dt.tzinfo is not None:
-        try:
-            target_tz = ZoneInfo(timezone)
-        except ZoneInfoNotFoundError as exc:
-            raise ValueError(
-                f"Invalid timezone '{timezone}': {exc}"
-            ) from exc
         dt = dt.astimezone(target_tz).replace(tzinfo=None)
     return {
         "dateTime": dt.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -544,11 +547,18 @@ def register_todo_tools(mcp, email_config):
                 c.strip() for c in categories.split(",") if c.strip()
             ]
         if linked_url:
+            # Graph requires externalId on linkedResource; a stable hash of the
+            # URL gives idempotent identification without needing to track
+            # external ids ourselves.
+            external_id = "crowdit-mcp-" + hashlib.sha1(
+                linked_url.encode("utf-8")
+            ).hexdigest()[:16]
             payload["linkedResources"] = [
                 {
                     "webUrl": linked_url,
                     "applicationName": "Crowd IT MCP",
                     "displayName": linked_url_title or linked_url,
+                    "externalId": external_id,
                 }
             ]
 
