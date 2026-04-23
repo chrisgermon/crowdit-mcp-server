@@ -244,7 +244,12 @@ def _resolve_tenant_or_error(linear_config: 'LinearConfig', tenant: Optional[str
         )
     try:
         return linear_config.resolve(tenant), None
-    except (KeyError, RuntimeError) as e:
+    except KeyError as e:
+        # KeyError.__str__ wraps the message in extra quotes via repr(),
+        # so pull the raw message from args[0] for a clean display.
+        message = e.args[0] if e.args else str(e)
+        return None, f"Error: {message}"
+    except RuntimeError as e:
         return None, f"Error: {str(e)}"
 
 
