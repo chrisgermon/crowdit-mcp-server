@@ -27,11 +27,12 @@ _cloudflare_config = None
 _acronis_config = None
 _partner_center_config = None
 _teams_config = None
+_ovh_config = None
 
 
 def _initialize_configs_once() -> None:
     global _configs_initialized
-    global _aws_config, _email_config, _linear_config, _notion_config, _do_config, _proxmox_config, _xero_config, _gorelo_config, _pax8_config, _netbird_config, _cipp_config, _cloudflare_config, _acronis_config, _partner_center_config, _teams_config
+    global _aws_config, _email_config, _linear_config, _notion_config, _do_config, _proxmox_config, _xero_config, _gorelo_config, _pax8_config, _netbird_config, _cipp_config, _cloudflare_config, _acronis_config, _partner_center_config, _teams_config, _ovh_config
     if _configs_initialized:
         return
 
@@ -140,6 +141,13 @@ def _initialize_configs_once() -> None:
         logger.warning(f"Failed to init TeamsConfig: {e}")
         _teams_config = None
 
+    try:
+        from ovh_tools import OVHConfig
+        _ovh_config = OVHConfig()
+    except Exception as e:
+        logger.warning(f"Failed to init OVHConfig: {e}")
+        _ovh_config = None
+
     _configs_initialized = True
 
 
@@ -179,6 +187,7 @@ def _register_tools() -> None:
         ("partner_center", "partner_center_tools", "register_partner_center_tools", (_partner_center_config,)),
         ("teams", "teams_tools", "register_teams_tools", (_teams_config,)),
         ("cloudbuild", "cloudbuild_tools", "register_cloudbuild_tools", ()),
+        ("ovh", "ovh_tools", "register_ovh_tools", (_ovh_config,)),
     ]
 
     for service, module_name, register_name, args in registrations:
