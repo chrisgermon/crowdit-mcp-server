@@ -80,8 +80,8 @@ class OVHCloudConfig:
                 self.application_secret = get_secret_sync("OVH_APPLICATION_SECRET") or ""
             if not self.consumer_key:
                 self.consumer_key = get_secret_sync("OVH_CONSUMER_KEY") or ""
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to load OVH secrets from Secret Manager: {e}")
         self._secrets_loaded = True
 
     @property
