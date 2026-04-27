@@ -47,4 +47,5 @@ only-include = [
     "digitalocean_tools.py",
     "proxmox_tools.py",
     "gcp_compute_tools.py",
+    "ovhcloud_tools.py",
 ]

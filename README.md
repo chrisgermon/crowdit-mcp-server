@@ -30,6 +30,7 @@ Unified MCP (Model Context Protocol) server for Crowd IT business integrations.
 - **Azure** - Resource management, VNets, NSGs, VMs, storage, cost management, Azure AD
 - **FortiCloud** - Fortinet device management, VPN status, alerts, logs, configuration
 - **GCP** - Google Cloud Platform VM management, logs, gcloud CLI
+- **OVHCloud** - Public Cloud (instances, volumes, images, flavors), dedicated servers, VPS, domains & DNS, IPs, vRack, billing
 - **Ubuntu Server** - Remote server management via SSH
 - **VisionRad Server** - Remote server management, BigQuery sync status
 
@@ -105,7 +106,7 @@ Set the `ENABLED_SERVICES` environment variable to only load the services you ne
 ENABLED_SERVICES=halopsa,xero python server.py
 ```
 
-Available service names: `halopsa`, `xero`, `front`, `sharepoint`, `quoter`, `pax8`, `bigquery`, `aws_rds`, `aws`, `azure`, `forticloud`, `maxotel`, `ubuntu`, `visionrad`, `cipp`, `salesforce`, `gcp`, `dicker`, `ingram`, `carbon`, `ninjaone`, `crowdit`, `auvik`, `metabase`, `n8n`, `gorelo`, `email`, `jira`, `linear`, `digitalocean`, `github`, `server`, `cloud_run`
+Available service names: `halopsa`, `xero`, `front`, `sharepoint`, `quoter`, `pax8`, `bigquery`, `aws_rds`, `aws`, `azure`, `forticloud`, `maxotel`, `ubuntu`, `visionrad`, `cipp`, `salesforce`, `gcp`, `dicker`, `ingram`, `carbon`, `ninjaone`, `crowdit`, `auvik`, `metabase`, `n8n`, `gorelo`, `email`, `jira`, `linear`, `digitalocean`, `ovhcloud`, `github`, `server`, `cloud_run`
 
 ### Option 2: Split into separate MCP servers (best token use and startup)
 
@@ -159,6 +160,19 @@ Configure tenants via any of the following (combined, in this priority order):
 **`LINEAR_DEFAULT_TENANT`** optionally names the tenant to use when a tool
 call omits `tenant`. If unset, `default` is used if present, otherwise the
 first registered tenant.
+
+### OVHCloud
+
+The OVHCloud integration uses OVH's signed-request authentication. Create an
+application at https://www.ovh.com/auth/api/createApp (or the regional
+equivalent), then issue a consumer key (`/auth/credential`) with the rules you
+need. Set the following secrets / env vars:
+
+- `OVH_APPLICATION_KEY`
+- `OVH_APPLICATION_SECRET`
+- `OVH_CONSUMER_KEY`
+- `OVH_ENDPOINT` (optional, default `ovh-eu`; one of: `ovh-eu`, `ovh-us`,
+  `ovh-ca`, `kimsufi-eu`, `kimsufi-ca`, `soyoustart-eu`, `soyoustart-ca`)
 
 ## API Specifications
 
