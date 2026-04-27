@@ -30,7 +30,7 @@ Unified MCP (Model Context Protocol) server for Crowd IT business integrations.
 - **Azure** - Resource management, VNets, NSGs, VMs, storage, cost management, Azure AD
 - **FortiCloud** - Fortinet device management, VPN status, alerts, logs, configuration
 - **GCP** - Google Cloud Platform VM management, logs, gcloud CLI
-- **OVHcloud** - Account, billing, dedicated servers, VPS, Public Cloud (instances/flavors/images/snapshots/volumes/Kube), domains/DNS, IP blocks, vRack, web hosting, Email Pro/Exchange, telephony, support tickets
+- **OVHCloud** - Public Cloud (instances, volumes, images, flavors), dedicated servers, VPS, domains & DNS, IPs, vRack, billing
 - **Ubuntu Server** - Remote server management via SSH
 - **VisionRad Server** - Remote server management, BigQuery sync status
 
@@ -106,7 +106,7 @@ Set the `ENABLED_SERVICES` environment variable to only load the services you ne
 ENABLED_SERVICES=halopsa,xero python server.py
 ```
 
-Available service names: `halopsa`, `xero`, `front`, `sharepoint`, `quoter`, `pax8`, `bigquery`, `aws_rds`, `aws`, `azure`, `forticloud`, `maxotel`, `ubuntu`, `visionrad`, `cipp`, `salesforce`, `gcp`, `dicker`, `ingram`, `carbon`, `ninjaone`, `crowdit`, `auvik`, `metabase`, `n8n`, `gorelo`, `email`, `jira`, `linear`, `digitalocean`, `github`, `server`, `cloud_run`, `ovh`
+Available service names: `halopsa`, `xero`, `front`, `sharepoint`, `quoter`, `pax8`, `bigquery`, `aws_rds`, `aws`, `azure`, `forticloud`, `maxotel`, `ubuntu`, `visionrad`, `cipp`, `salesforce`, `gcp`, `dicker`, `ingram`, `carbon`, `ninjaone`, `crowdit`, `auvik`, `metabase`, `n8n`, `gorelo`, `email`, `jira`, `linear`, `digitalocean`, `ovhcloud`, `github`, `server`, `cloud_run`
 
 ### Option 2: Split into separate MCP servers (best token use and startup)
 
@@ -161,25 +161,18 @@ Configure tenants via any of the following (combined, in this priority order):
 call omits `tenant`. If unset, `default` is used if present, otherwise the
 first registered tenant.
 
-### OVHcloud
+### OVHCloud
 
-The OVH integration uses the standard application key + application secret +
-consumer key flow. To enable it, set these environment variables (or store
-them in Google Secret Manager under the same names):
+The OVHCloud integration uses OVH's signed-request authentication. Create an
+application at https://www.ovh.com/auth/api/createApp (or the regional
+equivalent), then issue a consumer key (`/auth/credential`) with the rules you
+need. Set the following secrets / env vars:
 
-| Secret / Env Var          | Required | Description                                                                       |
-|---------------------------|----------|-----------------------------------------------------------------------------------|
-| `OVH_APPLICATION_KEY`     | yes      | Application key from https://eu.api.ovh.com/createApp/ (or your region)            |
-| `OVH_APPLICATION_SECRET`  | yes      | Application secret                                                                 |
-| `OVH_CONSUMER_KEY`        | yes      | Long-lived consumer key issued via `/auth/credential`                              |
-| `OVH_ENDPOINT`            | no       | Region: `ovh-eu` (default), `ovh-ca`, `ovh-us`, `kimsufi-eu/ca`, `soyoustart-eu/ca` |
-
-To mint a consumer key with the rights you want, POST to `/auth/credential`
-on the chosen endpoint with the application key as `X-Ovh-Application` and a
-JSON body listing the methods/paths to allow (e.g. `GET /*`, `POST /*`,
-`PUT /*`, `DELETE /*`). Visit the returned `validationUrl`, log in to your
-OVH account to validate the key, then store `consumerKey` as
-`OVH_CONSUMER_KEY`.
+- `OVH_APPLICATION_KEY`
+- `OVH_APPLICATION_SECRET`
+- `OVH_CONSUMER_KEY`
+- `OVH_ENDPOINT` (optional, default `ovh-eu`; one of: `ovh-eu`, `ovh-us`,
+  `ovh-ca`, `kimsufi-eu`, `kimsufi-ca`, `soyoustart-eu`, `soyoustart-ca`)
 
 ## API Specifications
 

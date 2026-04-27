@@ -50,7 +50,7 @@ WORKDIR /app
 
 # Copy application code LAST (changes most frequently)
 # This ensures code changes don't invalidate dependency cache
-COPY server_fast.py server.py azure_tools.py aws_tools.py email_tools.py calendar_tools.py todo_tools.py linear_tools.py notion_tools.py digitalocean_tools.py proxmox_tools.py gcp_compute_tools.py bigquery_tools.py xero_tools.py gorelo_tools.py pax8_tools.py netbird_tools.py cipp_tools.py cloudflare_tools.py acronis_tools.py partner_center_tools.py teams_tools.py cloudbuild_tools.py ovh_tools.py ./
+COPY server_fast.py server.py azure_tools.py aws_tools.py email_tools.py calendar_tools.py todo_tools.py linear_tools.py notion_tools.py digitalocean_tools.py proxmox_tools.py gcp_compute_tools.py bigquery_tools.py xero_tools.py gorelo_tools.py pax8_tools.py netbird_tools.py cipp_tools.py cloudflare_tools.py acronis_tools.py partner_center_tools.py teams_tools.py cloudbuild_tools.py ovhcloud_tools.py ./
 COPY app ./app
 
 # Pre-compile application bytecode to speed up cold starts
